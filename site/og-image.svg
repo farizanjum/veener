@@ -180,8 +180,11 @@
     </g>
   </g>
 
-  <!-- Subtle Lower-Left Swiss Label in the Isometric Band -->
-  <text x="68" y="424" fill="#6B6D76" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" font-weight="600" letter-spacing="0.06em">AES-256-GCM + ARGON2ID</text>
-  <text x="68" y="448" fill="#565860" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13">135 tok/s local GPU covers</text>
-  <text x="68" y="556" fill="#107A4D" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" font-weight="600">[ LOCAL-FIRST OBSIDIAN PLUGIN ]</text>
+  <!-- Lower-Left Conversion CTA Button & Tag -->
+  <text x="68" y="434" fill="#6B6D76" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" font-weight="600" letter-spacing="0.06em">AES-256-GCM + ARGON2ID</text>
+  <text x="68" y="458" fill="#565860" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13.5">100% offline · Free &amp; Open Source</text>
+  <g transform="translate(68, 492)">
+    <rect x="0" y="0" width="236" height="54" rx="8" fill="#107A4D" />
+    <text x="118" y="33" text-anchor="middle" fill="#FFFFFF" font-family="'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="18" font-weight="700" letter-spacing="-0.01em">Try Live Demo →</text>
+  </g>
 </svg>

@@ -83,48 +83,65 @@ For a complete walkthrough of every feature, read the **[Hands-On User Tutorial]
 See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for the deep-dive technical specification, cryptographic envelope format, session state machine, and edge-case catalog, and **[docs/QA.md](docs/QA.md)** for the live-vault verification checklist.
 
 ```text
-src/
-  main.ts                 Plugin entry, command registration, event wiring
-  settings.ts             Settings schema, model catalog, active model resolver
-  registry.ts             Protected-note registry and rename tracking
-  crypto/
-    crypto.ts             Argon2id KDF, AES-256-GCM DEK/KEK wrapping, 4 KB block padding
-    payload.ts            YAML frontmatter (draft_cache) parser, serializer, file-size matching
-    images.ts             Vault image absorption and permanent restoration
-  view/
-    session.ts            Per-view locked/unlocked RAM session state machine
-    patch.ts              MarkdownView save interception and history replacement
-    save.ts               Save-path decision logic (locked vs. unlocked buffer routing)
-    imageWidget.ts        CodeMirror 6 widget rendering decrypted images via RAM blob: URLs
-  capture/
-    UnlockCapture.ts      CodeMirror 6 transactionFilter for ;;password and ;;!PIN capture
-  lock/
-    LockEngine.ts         Idle timer, blur, tab-switch, and Ctrl+Shift+X panic orchestration
-    clipboard.ts          Clipboard hash tracking and auto-wipe on mask
-    contentProtection.ts  Electron setContentProtection screen-capture shield
-    power.ts              OS lock/suspend listeners and web storage cleanup
-  decoy/
-    wizard.ts             Protect-this-note modal wizard with live cover preview
-    templates.ts          12 built-in parameterized cover templates
-    title.ts              Cover title extraction and safe file renaming
-    strength.ts           Password entropy and feedback scoring
-  llm/
-    nativeRuntime.ts      Windows Vulkan GPU runtime via local llama-server
-    runtime.ts            Single-thread wllama WebAssembly fallback runtime
-    preferredRuntime.ts   Automatic GPU-to-WASM runtime selector
-    generator.ts          Decoy generation pipeline and retry loop
-    prompt.ts             Persona-aware prompts and adaptive cover length targets
-    validate.ts           Burstiness, AI cliche, PII, and n-gram overlap validator
-    download.ts           Resumable model downloader with SHA-256 verification
-  shred/
-    duress.ts             RAM-first emergency crypto-shredding orchestrator
-    pin.ts                Argon2id Destruction PIN hashing and verification
-    hygiene.ts            Vault and OS security hygiene checks
-  ui/
-    settingsTab.ts        Plugin settings, model manager, hygiene checklist, VeraCrypt guide
-    downloadModal.ts      Pause/resume GGUF download modal
-    modals.ts             Password unlock/change modals (with Show/Hide) and PIN setup modal
-    statusBar.ts          Capture progress dots and (cover)/(real) word counter
+veener/
+├── src/
+│   ├── main.ts                  # Plugin entry, command registration, event wiring
+│   ├── settings.ts              # Settings schema, model catalog, active model resolver
+│   ├── registry.ts              # Protected-note registry and file-rename tracking
+│   │
+│   ├── crypto/
+│   │   ├── cipher.ts            # AES-256-GCM DEK/KEK wrapping and 4 KB block padding
+│   │   ├── kdf.ts               # Argon2id key derivation (64 MiB, 3 iterations, p=4)
+│   │   ├── payload.ts           # YAML frontmatter (draft_cache) parser & serializer
+│   │   ├── images.ts            # Vault image absorption and permanent restoration
+│   │   └── random.ts            # CSPRNG salt and 96-bit nonce generation
+│   │
+│   ├── view/
+│   │   ├── session.ts           # Per-view locked/unlocked RAM session & title swap
+│   │   ├── patch.ts             # MarkdownView save interception & undo history wipe
+│   │   ├── saveDecision.ts      # Save-path routing (locked cover vs. unlocked RAM)
+│   │   └── imageWidget.ts       # CodeMirror 6 widget for in-memory blob: images
+│   │
+│   ├── capture/
+│   │   ├── UnlockCapture.ts     # CodeMirror 6 transactionFilter for ;; & ;;! capture
+│   │   └── buffer.ts            # Blind inline password/PIN state machine
+│   │
+│   ├── lock/
+│   │   ├── LockEngine.ts        # Idle timer, blur, tab-switch, & Ctrl+Shift+X panic
+│   │   ├── backoff.ts           # Silent exponential backoff on failed ;; unlocks
+│   │   ├── clipboard.ts         # SHA-256 clipboard tracking and auto-wipe on mask
+│   │   └── power.ts             # OS lock/suspend listeners & Electron screen shield
+│   │
+│   ├── decoy/
+│   │   ├── wizard.ts            # Protect-this-note modal wizard & cover length picker
+│   │   ├── templates.ts         # 12 built-in parameterized cover templates
+│   │   ├── title.ts             # Cover H1 title extraction and safe file renaming
+│   │   ├── strength.ts          # Password entropy and crack-time estimator
+│   │   └── rng.ts               # Seeded PRNG for deterministic template fills
+│   │
+│   ├── llm/
+│   │   ├── preferredRuntime.ts  # Automatic Vulkan GPU-to-WASM runtime selector
+│   │   ├── nativeRuntime.ts     # Local llama-server Vulkan GPU lifecycle manager
+│   │   ├── nativeRuntimeNode.ts # Node process spawner & loopback HTTP client
+│   │   ├── runtime.ts           # Single-thread wllama WebAssembly fallback runtime
+│   │   ├── generator.ts         # Decoy generation pipeline and retry loop
+│   │   ├── prompt.ts            # Persona-aware prompts & Auto/Short/Med/Long targets
+│   │   ├── validate.ts          # Burstiness, AI cliche, PII, & n-gram overlap checks
+│   │   └── download.ts          # Resumable GGUF model downloader with SHA-256 verify
+│   │
+│   ├── shred/
+│   │   ├── duress.ts            # RAM-first emergency ;;!PIN crypto-shredding engine
+│   │   ├── pin.ts               # Argon2id Destruction PIN hashing and verification
+│   │   └── hygiene.ts           # Core File Recovery & OS security hygiene checks
+│   │
+│   └── ui/
+│       ├── settingsTab.ts       # Plugin settings, model manager, & VeraCrypt guide
+│       ├── modals.ts            # Password unlock/change & PIN modals (Show/Hide)
+│       ├── downloadModal.ts     # Pause/resume GGUF model download progress modal
+│       └── statusBar.ts         # Stealth ;; capture dots & plain word/line counts
+│
+├── site/                        # Swiss/Greptile marketing website & interactive demo
+└── docs/                        # Architecture spec, user tutorial, & QA checklist
 ```
 
 ### Development Commands

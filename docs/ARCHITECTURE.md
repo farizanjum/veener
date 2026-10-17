@@ -349,35 +349,66 @@ A settings-pane checklist (auto-run at onboarding, re-runnable): File Recovery s
 
 **Stack:** TypeScript (strict), esbuild via the official Obsidian sample plugin template, Web Crypto API, `hash-wasm` (Argon2id), Vitest for unit tests. Target: Obsidian desktop ≥ 1.5.
 
-```
-src/
-  main.ts                 // plugin entry, commands, ribbon-free registration
-  settings.ts             // settings tab + onboarding checklist
-  crypto/
-    kdf.ts                // Argon2id wrapper (Uint8Array in/out)
-    cipher.ts             // AES-256-GCM encrypt/decrypt + 4KB padding
-    payload.ts            // payload encode/decode/parse (portable + stealth modes)
-  views/
-    DecoyView.ts          // extends MarkdownView, load/save interception, lock/unlock swap
-  capture/
-    UnlockCapture.ts      // transactionFilter, rolling buffer, status-bar dots
-  lock/
-    LockEngine.ts         // idle timer, blur/leaf/power listeners, panic chord, clipboard taint
-  decoy/
-    templates.ts          // ~50 cover templates + topic weaving
-    wizard.ts             // protect-note wizard
-  llm/
-    runtime.ts            // wllama Web Worker lifecycle: load/unload, mutex, 30s timeout
-    download.ts           // HF download: consent modal, progress, HTTP-Range resume, SHA-256 verify
-    generator.ts          // prompt assembly, interest sanitization, single-turn generation
-    validate.ts           // output checks: length, PII patterns, 8-gram overlap vs real text
-  ui/
-    statusBar.ts          // capture dots, subtle states only
-  shred/
-    duress.ts             // destruction PIN capture + shred orchestration (RAM-first ordering)
-    hygiene.ts            // hygiene check: caches, crash dumps, search-exclusion guidance
-styles.css
-test/                     // crypto + payload unit tests
+```text
+veener/
+├── src/
+│   ├── main.ts                  # Plugin entry, command registration, event wiring
+│   ├── settings.ts              # Settings schema, model catalog, active model resolver
+│   ├── registry.ts              # Protected-note registry and file-rename tracking
+│   │
+│   ├── crypto/
+│   │   ├── cipher.ts            # AES-256-GCM DEK/KEK wrapping and 4 KB block padding
+│   │   ├── kdf.ts               # Argon2id key derivation (64 MiB, 3 iterations, p=4)
+│   │   ├── payload.ts           # YAML frontmatter (draft_cache) parser & serializer
+│   │   ├── images.ts            # Vault image absorption and permanent restoration
+│   │   └── random.ts            # CSPRNG salt and 96-bit nonce generation
+│   │
+│   ├── view/
+│   │   ├── session.ts           # Per-view locked/unlocked RAM session & title swap
+│   │   ├── patch.ts             # MarkdownView save interception & undo history wipe
+│   │   ├── saveDecision.ts      # Save-path routing (locked cover vs. unlocked RAM)
+│   │   └── imageWidget.ts       # CodeMirror 6 widget for in-memory blob: images
+│   │
+│   ├── capture/
+│   │   ├── UnlockCapture.ts     # CodeMirror 6 transactionFilter for ;; & ;;! capture
+│   │   └── buffer.ts            # Blind inline password/PIN state machine
+│   │
+│   ├── lock/
+│   │   ├── LockEngine.ts        # Idle timer, blur, tab-switch, & Ctrl+Shift+X panic
+│   │   ├── backoff.ts           # Silent exponential backoff on failed ;; unlocks
+│   │   ├── clipboard.ts         # SHA-256 clipboard tracking and auto-wipe on mask
+│   │   └── power.ts             # OS lock/suspend listeners & Electron screen shield
+│   │
+│   ├── decoy/
+│   │   ├── wizard.ts            # Protect-this-note modal wizard & cover length picker
+│   │   ├── templates.ts         # 12 built-in parameterized cover templates
+│   │   ├── title.ts             # Cover H1 title extraction and safe file renaming
+│   │   ├── strength.ts           # Password entropy and crack-time estimator
+│   │   └── rng.ts               # Seeded PRNG for deterministic template fills
+│   │
+│   ├── llm/
+│   │   ├── preferredRuntime.ts  # Automatic Vulkan GPU-to-WASM runtime selector
+│   │   ├── nativeRuntime.ts     # Local llama-server Vulkan GPU lifecycle manager
+│   │   ├── nativeRuntimeNode.ts # Node process spawner & loopback HTTP client
+│   │   ├── runtime.ts           # Single-thread wllama WebAssembly fallback runtime
+│   │   ├── generator.ts         # Decoy generation pipeline and retry loop
+│   │   ├── prompt.ts            # Persona-aware prompts & Auto/Short/Med/Long targets
+│   │   ├── validate.ts           # Burstiness, AI cliche, PII, & n-gram overlap checks
+│   │   └── download.ts          # Resumable GGUF model downloader with SHA-256 verify
+│   │
+│   ├── shred/
+│   │   ├── duress.ts            # RAM-first emergency ;;!PIN crypto-shredding engine
+│   │   ├── pin.ts               # Argon2id Destruction PIN hashing and verification
+│   │   └── hygiene.ts           # Core File Recovery & OS security hygiene checks
+│   │
+│   └── ui/
+│       ├── settingsTab.ts       # Plugin settings, model manager, & VeraCrypt guide
+│       ├── modals.ts            # Password unlock/change & PIN modals (Show/Hide)
+│       ├── downloadModal.ts     # Pause/resume GGUF model download progress modal
+│       └── statusBar.ts         # Stealth ;; capture dots & plain word/line counts
+│
+├── styles.css                   # Plugin modal, wizard, and hygiene check styles
+└── test/                        # Vitest unit & integration test suite
 ```
 
 | Phase | Deliverable | Verification gate |
