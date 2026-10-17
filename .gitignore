@@ -7,3 +7,5 @@ dist/
 assets/wllama/
 assets/llama-vulkan/*.dll
 assets/llama-vulkan/*.exe
+
+.vercel
