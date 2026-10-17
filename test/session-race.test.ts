@@ -12,7 +12,15 @@ import { computeSavedContent } from "../src/view/saveDecision";
 const DECOY = "## Grocery list\n\n- milk, eggs, bread";
 const INITIAL_REAL = "Top secret project alpha notes";
 const EDITED_REAL = "Top secret project alpha notes\nUpdated line in RAM";
+const LATE_EDITED_REAL = "Top secret project alpha notes\nUpdated line in RAM\nTyped during image load";
 const PASSWORD = "correct horse battery staple";
+
+interface FakePane {
+	readonly view: MarkdownView;
+	getEditorText(): string;
+	setEditorText(next: string): void;
+	setFile(next: TFile | null): void;
+}
 
 interface FakeHarness {
 	readonly app: App;
@@ -23,12 +31,16 @@ interface FakeHarness {
 	readonly lockedCount: () => number;
 	getEditorText(): string;
 	setEditorText(next: string): void;
+	setFile(next: TFile | null): void;
+	createPane(initialText?: string): FakePane;
+	setImageLookupDelay(delayMs: number, onLookup?: () => void): void;
 }
 
 function createFakeHarness(initialEditorText: string): FakeHarness {
-	let editorText = initialEditorText;
 	let lockedEvents = 0;
 	const modifyCalls: string[] = [];
+	let imageLookupDelayMs = 0;
+	let onImageLookup: (() => void) | undefined;
 
 	const file = {
 		path: "Weekend Errands.md",
@@ -37,21 +49,57 @@ function createFakeHarness(initialEditorText: string): FakeHarness {
 		extension: "md",
 	} as unknown as TFile;
 
-	const view = {
-		file,
-		editor: {
-			getValue: () => editorText,
-		},
-		setViewData: (data: string) => {
-			editorText = data;
-		},
-	} as unknown as MarkdownView;
+	function createPane(initialText: string = initialEditorText): FakePane {
+		let paneText = initialText;
+		const viewObj: {
+			file: TFile | null;
+			editor: { getValue: () => string };
+			setViewData: (data: string) => void;
+		} = {
+			file,
+			editor: {
+				getValue: () => paneText,
+			},
+			setViewData: (data: string) => {
+				paneText = data;
+			},
+		};
+		return {
+			view: viewObj as unknown as MarkdownView,
+			getEditorText: () => paneText,
+			setEditorText: (next: string) => {
+				paneText = next;
+			},
+			setFile: (next: TFile | null) => {
+				viewObj.file = next;
+			},
+		};
+	}
+
+	const primaryPane = createPane(initialEditorText);
+
+	const fakeImageFile = {
+		path: "Pasted image.png",
+		name: "Pasted image.png",
+		extension: "png",
+	};
 
 	const app = {
 		metadataCache: {
-			getFirstLinkpathDest: () => null,
+			getFirstLinkpathDest: (link: string) => {
+				onImageLookup?.();
+				return link === "Pasted image.png" ? fakeImageFile : null;
+			},
 		},
 		vault: {
+			getAbstractFileByPath: () => null,
+			readBinary: async () => {
+				if (imageLookupDelayMs > 0) {
+					await new Promise((resolve) => setTimeout(resolve, imageLookupDelayMs));
+				}
+				return new Uint8Array([137, 80, 78, 71]).buffer;
+			},
+			delete: async () => undefined,
 			modify: async (_target: TFile, data: string) => {
 				await new Promise((resolve) => setTimeout(resolve, 15));
 				modifyCalls.push(data);
@@ -70,19 +118,23 @@ function createFakeHarness(initialEditorText: string): FakeHarness {
 	return {
 		app,
 		file,
-		view,
+		view: primaryPane.view,
 		hooks,
 		modifyCalls,
 		lockedCount: () => lockedEvents,
-		getEditorText: () => editorText,
-		setEditorText: (next: string) => {
-			editorText = next;
+		getEditorText: primaryPane.getEditorText,
+		setEditorText: primaryPane.setEditorText,
+		setFile: primaryPane.setFile,
+		createPane,
+		setImageLookupDelay: (delayMs: number, callback?: () => void) => {
+			imageLookupDelayMs = delayMs;
+			onImageLookup = callback;
 		},
 	};
 }
 
 describe("SessionManager race conditions (Issue #2)", () => {
-	it("coalesces concurrent lock() calls and snapshots plaintext before async awaits", async () => {
+	it("coalesces concurrent lock() calls and never overwrites real text with decoy", async () => {
 		// Given: an unlocked session whose user has edited the real note in RAM
 		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
 		const parsed = parseFileContent(fileContent);
@@ -101,22 +153,102 @@ describe("SessionManager race conditions (Issue #2)", () => {
 		expect(outcome).toBe("ok");
 		harness.setEditorText(EDITED_REAL);
 
-		// When: two mask triggers fire concurrently and editor text is mutated mid-flight
+		// When: two mask triggers fire concurrently
 		const firstLock = sessions.lock(session, "leaf-change");
 		expect(session.lockingPromise).not.toBeNull();
-		harness.setEditorText(DECOY);
 		const secondLock = sessions.lock(session, "window-blur");
+		expect(secondLock).toBe(firstLock);
 		await Promise.all([firstLock, secondLock]);
 
-		// Then: vault.modify ran exactly once and persisted the edited real text, never the decoy
+		// Then: vault.modify ran once, persisted the edited real text, and restored decoy to view
 		expect(session.lockingPromise).toBeNull();
 		expect(session.state).toBe("locked");
+		expect(harness.getEditorText()).toBe(DECOY);
 		expect(harness.modifyCalls).toHaveLength(1);
 		const savedOnDisk = parseFileContent(harness.modifyCalls[0] ?? "");
 		expect(savedOnDisk).not.toBeNull();
 		if (!savedOnDisk) throw new Error("Expected saved payload on disk");
 		const unlockedAgain = await unlockPayload(savedOnDisk.payload, PASSWORD);
 		expect(unlockedAgain.realText).toBe(EDITED_REAL);
+		unlockedAgain.dek.fill(0);
+	});
+
+	it("captures edits typed while absorbNewEditorImages is awaiting during lock()", async () => {
+		// Given: an unlocked note containing an embedded image that takes time to read
+		const textWithImage = `${EDITED_REAL}\n![[Pasted image.png]]`;
+		const finalTypedDuringImageLoad = `${textWithImage}\n${LATE_EDITED_REAL}`;
+		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+		const parsed = parseFileContent(fileContent);
+		if (!parsed) throw new Error("Expected parsed payload");
+
+		const harness = createFakeHarness(DECOY);
+		const sessions = new SessionManager(
+			harness.app,
+			harness.hooks,
+			() => ";;",
+			() => null,
+		);
+		const session = sessions.attachFromLoad(harness.view, harness.file, parsed);
+		await sessions.unlock(session, PASSWORD);
+		harness.setEditorText(textWithImage);
+
+		// When: the user types additional real text while absorbNewEditorImages is awaiting readBinary
+		harness.setImageLookupDelay(20, () => {
+			harness.setEditorText(finalTypedDuringImageLoad);
+		});
+		await sessions.lock(session, "layout-change");
+
+		// Then: the saved payload includes the edits made while the image was loading
+		expect(harness.modifyCalls).toHaveLength(1);
+		const savedOnDisk = parseFileContent(harness.modifyCalls[0] ?? "");
+		if (!savedOnDisk) throw new Error("Expected saved payload on disk");
+		const unlockedAgain = await unlockPayload(savedOnDisk.payload, PASSWORD);
+		expect(unlockedAgain.realText).toBe(finalTypedDuringImageLoad);
+		unlockedAgain.dek.fill(0);
+	});
+
+	it("snapshots DEK before awaiting and does not write old decoy if view switched files mid-lock", async () => {
+		// Given: an unlocked session where a file transition happens while lock() is awaiting
+		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+		const parsed = parseFileContent(fileContent);
+		if (!parsed) throw new Error("Expected parsed payload");
+
+		const harness = createFakeHarness(DECOY);
+		const sessions = new SessionManager(
+			harness.app,
+			harness.hooks,
+			() => ";;",
+			() => null,
+		);
+		const session = sessions.attachFromLoad(harness.view, harness.file, parsed);
+		await sessions.unlock(session, PASSWORD);
+		const textWithImage = `${EDITED_REAL}\n![[Pasted image.png]]`;
+		harness.setEditorText(textWithImage);
+
+		const newFile = {
+			path: "Other Note.md",
+			name: "Other Note.md",
+			basename: "Other Note",
+			extension: "md",
+		} as unknown as TFile;
+		const newFileText = "# Normal Second File Content";
+
+		// When: during image absorption, the view switches to a different file and zeroes session.dek
+		harness.setImageLookupDelay(20, () => {
+			session.dek?.fill(0);
+			session.dek = null;
+			harness.setFile(newFile);
+			harness.setEditorText(newFileText);
+		});
+		await sessions.lock(session, "file-switch");
+
+		// Then: the original file was still encrypted using the snapshotted DEK, and the new file's editor was not overwritten with the old decoy
+		expect(harness.modifyCalls).toHaveLength(1);
+		expect(harness.getEditorText()).toBe(newFileText);
+		const savedOnDisk = parseFileContent(harness.modifyCalls[0] ?? "");
+		if (!savedOnDisk) throw new Error("Expected saved payload on disk");
+		const unlockedAgain = await unlockPayload(savedOnDisk.payload, PASSWORD);
+		expect(unlockedAgain.realText).toBe(textWithImage);
 		unlockedAgain.dek.fill(0);
 	});
 
@@ -187,46 +319,63 @@ describe("SessionManager race conditions (Issue #2)", () => {
 		clearSpy.mockRestore();
 	});
 
-	it("preserves rotated password payload on an open session across subsequent saves", async () => {
-		// Given: an open session that flushed unlocked edits before password rotation
+	it("synchronizes password rotation and unprotection across multiple panes open to the same file", async () => {
+		// Given: two panes (pane1 and pane2) showing the same protected note
 		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
 		const parsed = parseFileContent(fileContent);
 		if (!parsed) throw new Error("Expected parsed payload");
 
 		const harness = createFakeHarness(DECOY);
+		const secondPane = harness.createPane(DECOY);
 		const sessions = new SessionManager(
 			harness.app,
 			harness.hooks,
 			() => ";;",
 			() => null,
 		);
-		const session = sessions.attachFromLoad(harness.view, harness.file, parsed);
-		await sessions.unlock(session, PASSWORD);
+
+		const session1 = sessions.attachFromLoad(harness.view, harness.file, parsed);
+		const session2 = sessions.attachFromLoad(secondPane.view, harness.file, parsed);
+		expect(sessions.getAllByPath(harness.file.path)).toHaveLength(2);
+
+		// Unlock pane 1, edit real text, and lock so both panes receive the flushed payload
+		await sessions.unlock(session1, PASSWORD);
 		harness.setEditorText(EDITED_REAL);
-		await sessions.lock(session, "change-password");
+		await sessions.lock(session1, "change-password");
+		expect(session2.originalPayload).toEqual(session1.originalPayload);
 
-		// When: password is rotated and synced onto the open session
+		// When: password is rotated across all sessions for the file path
 		const newPassword = "brand new passphrase 2026";
-		const rotated = await changePassword(session.originalPayload, PASSWORD, newPassword);
-		session.originalPayload = rotated;
-		if (session.pendingPayload !== null) {
-			session.pendingPayload = rotated;
+		const rotated = await changePassword(session1.originalPayload, PASSWORD, newPassword);
+		for (const openSession of sessions.getAllByPath(harness.file.path)) {
+			openSession.originalPayload = rotated;
+			if (openSession.pendingPayload !== null) {
+				openSession.pendingPayload = rotated;
+			}
 		}
-		const savedAfterRotation = computeSavedContent({
-			unlocked: session.state === "unlocked",
-			editorValue: harness.getEditorText(),
-			decoyBody: session.decoyBody,
-			originalPayload: session.originalPayload,
-			pendingPayload: session.pendingPayload,
-		});
 
-		// Then: the saved content unlocks with the new password and preserves the flushed edits
-		const reparsed = parseFileContent(savedAfterRotation);
+		// Then: saving from the FIRST pane (not just the last attached pane) uses the rotated password
+		const savedFromFirstPane = computeSavedContent({
+			unlocked: session1.state === "unlocked",
+			editorValue: harness.getEditorText(),
+			decoyBody: session1.decoyBody,
+			originalPayload: session1.originalPayload,
+			pendingPayload: session1.pendingPayload,
+		});
+		const reparsed = parseFileContent(savedFromFirstPane);
 		expect(reparsed).not.toBeNull();
 		if (!reparsed) throw new Error("Expected reparsed file");
 		await expect(unlockPayload(reparsed.payload, PASSWORD)).rejects.toThrow();
 		const unlockedWithNew = await unlockPayload(reparsed.payload, newPassword);
 		expect(unlockedWithNew.realText).toBe(EDITED_REAL);
 		unlockedWithNew.dek.fill(0);
+
+		// And when: unprotecting detaches all sessions for the path
+		for (const openSession of sessions.getAllByPath(harness.file.path)) {
+			sessions.discardAndDetach(openSession.view);
+		}
+		expect(sessions.getAllByPath(harness.file.path)).toHaveLength(0);
+		expect(sessions.get(harness.view)).toBeNull();
+		expect(sessions.get(secondPane.view)).toBeNull();
 	});
 });

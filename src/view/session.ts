@@ -45,7 +45,7 @@ const REENCRYPT_DEBOUNCE_MS = 250;
 
 export class SessionManager {
 	private readonly byView = new WeakMap<MarkdownView, ViewSession>();
-	private readonly byPath = new Map<string, ViewSession>();
+	private readonly byPath = new Map<string, Set<ViewSession>>();
 
 	constructor(
 		private readonly app: App,
@@ -54,16 +54,45 @@ export class SessionManager {
 		private readonly unlockBlockReason: () => string | null,
 	) {}
 
+	private addToPath(path: string, session: ViewSession): void {
+		let set = this.byPath.get(path);
+		if (!set) {
+			set = new Set<ViewSession>();
+			this.byPath.set(path, set);
+		}
+		set.add(session);
+	}
+
+	private removeFromPath(path: string, session: ViewSession): void {
+		const set = this.byPath.get(path);
+		if (!set) return;
+		set.delete(session);
+		if (set.size === 0) {
+			this.byPath.delete(path);
+		}
+	}
+
 	get(view: MarkdownView): ViewSession | null {
 		return this.byView.get(view) ?? null;
 	}
 
+	getAllByPath(path: string): ViewSession[] {
+		const set = this.byPath.get(path);
+		return set ? [...set] : [];
+	}
+
 	getByPath(path: string): ViewSession | null {
-		return this.byPath.get(path) ?? null;
+		const sessions = this.getAllByPath(path);
+		if (sessions.length === 0) return null;
+		return sessions.find((s) => s.state === "unlocked") ?? sessions[sessions.length - 1] ?? null;
 	}
 
 	all(): ViewSession[] {
-		return [...this.byPath.values()];
+		const out: ViewSession[] = [];
+		for (const set of this.byPath.values()) {
+			out.push(...set);
+		}
+		return out;
 	}
 
 	attachFromLoad(view: MarkdownView, file: TFile, parsed: ParsedFile): ViewSession {
@@ -90,9 +119,7 @@ export class SessionManager {
 				}
 				this.hooks.onLocked(existing);
 			}
-			if (this.byPath.get(existing.file.path) === existing) {
-				this.byPath.delete(existing.file.path);
-			}
+			this.removeFromPath(existing.file.path, existing);
 			this.byView.delete(view);
 		}
 		const session: ViewSession = {
@@ -111,15 +138,21 @@ export class SessionManager {
 			reencryptTimer: null,
 		};
 		this.byView.set(view, session);
-		this.byPath.set(file.path, session);
+		this.addToPath(file.path, session);
 		return session;
 	}
 
 	renamePath(oldPath: string, newPath: string): void {
-		const session = this.byPath.get(oldPath);
-		if (!session) return;
+		if (oldPath === newPath) return;
+		const existingSet = this.byPath.get(oldPath);
+		if (!existingSet) return;
 		this.byPath.delete(oldPath);
-		this.byPath.set(newPath, session);
+		const targetSet = this.byPath.get(newPath);
+		if (targetSet) {
+			for (const session of existingSet) targetSet.add(session);
+		} else {
+			this.byPath.set(newPath, existingSet);
+		}
 	}
 
 	pruneDetached(activeViews: Set<MarkdownView>): void {
@@ -133,9 +166,7 @@ export class SessionManager {
 		if (!session) return;
 		void this.lock(session, "detach");
 		this.byView.delete(view);
-		if (this.byPath.get(session.file.path) === session) {
-			this.byPath.delete(session.file.path);
-		}
+		this.removeFromPath(session.file.path, session);
 	}
 
 	discardAndDetach(view: MarkdownView): void {
@@ -154,9 +185,7 @@ export class SessionManager {
 			session.reencryptTimer = null;
 		}
 		this.byView.delete(view);
-		if (this.byPath.get(session.file.path) === session) {
-			this.byPath.delete(session.file.path);
-		}
+		this.removeFromPath(session.file.path, session);
 		this.hooks.onLocked(session);
 	}
 
@@ -204,14 +233,20 @@ export class SessionManager {
 		return inlineEl?.textContent?.trim() || session.realTitle;
 	}
 
-	async absorbNewEditorImages(session: ViewSession, currentText?: string): Promise<void> {
-		if (session.state !== "unlocked" || !session.dek) return;
+	async absorbNewEditorImages(
+		session: ViewSession,
+		currentText?: string,
+		dekOverride?: Uint8Array<ArrayBuffer> | null,
+	): Promise<void> {
+		const activeDek = dekOverride ?? session.dek;
+		if (session.state !== "unlocked" || !activeDek) return;
 		const text = currentText ?? session.view.editor.getValue();
 		const newImages = await absorbVaultImages(this.app, session.file.path, text);
 		if (Object.keys(newImages).length === 0) return;
-		if (session.state !== "unlocked" || !session.dek) return;
+		const encryptionDek = dekOverride ?? session.dek;
+		if (!encryptionDek) return;
 		const encryptedNew = await encryptImageMap(
-			session.dek,
+			encryptionDek,
 			session.originalPayload.note_id,
 			newImages,
 		);
@@ -263,36 +298,65 @@ export class SessionManager {
 		}
 	}
 
-	async lock(session: ViewSession, reason: string): Promise<void> {
+	lock(session: ViewSession, reason: string): Promise<void> {
 		if (session.lockingPromise !== null) return session.lockingPromise;
-		if (session.state !== "unlocked") return;
+		if (session.state !== "unlocked") return Promise.resolve();
 		if (session.reencryptTimer !== null) {
 			clearTimeout(session.reencryptTimer);
 			session.reencryptTimer = null;
 		}
 		console.debug(`Veneer: masking note (${reason})`);
 		const sameFile = session.view.file === session.file;
-		const currentText = sameFile ? session.view.editor.getValue() : "";
-		const currentTitle = sameFile ? this.readEditedInlineTitle(session) : session.realTitle;
+		let currentText = sameFile ? session.view.editor.getValue() : "";
+		let currentTitle = sameFile ? this.readEditedInlineTitle(session) : session.realTitle;
+		const dek = session.dek ? new Uint8Array(session.dek) : null;
 		const run = (async (): Promise<void> => {
 			try {
-				if (session.dek && sameFile) {
-					await this.absorbNewEditorImages(session, currentText);
+				if (dek && sameFile) {
+					await this.absorbNewEditorImages(session, currentText, dek);
+					if (session.view.file === session.file && session.state === "unlocked") {
+						const postAbsorbText = session.view.editor.getValue();
+						if (postAbsorbText !== currentText && postAbsorbText !== session.decoyBody) {
+							currentText = postAbsorbText;
+							await this.absorbNewEditorImages(session, currentText, dek);
+						}
+						currentTitle = this.readEditedInlineTitle(session);
+					}
 					session.realTitle = currentTitle;
 					session.pendingPayload = await reencryptRealText(
 						session.originalPayload,
-						session.dek,
+						dek,
 						currentText,
 						session.originalPayload.images,
 						session.realTitle,
 					);
+					if (session.view.file === session.file && session.state === "unlocked") {
+						const latestText = session.view.editor.getValue();
+						if (latestText !== currentText && latestText !== session.decoyBody) {
+							currentText = latestText;
+							await this.absorbNewEditorImages(session, currentText, dek);
+							currentTitle = this.readEditedInlineTitle(session);
+							session.realTitle = currentTitle;
+							session.pendingPayload = await reencryptRealText(
+								session.originalPayload,
+								dek,
+								currentText,
+								session.originalPayload.images,
+								session.realTitle,
+							);
+						}
+					}
 					await this.app.vault.modify(
 						session.file,
 						serializeFile(session.decoyBody, session.pendingPayload),
 					);
 					session.originalPayload = session.pendingPayload;
+					for (const peer of this.getAllByPath(session.file.path)) {
+						peer.originalPayload = session.pendingPayload;
+					}
 				}
 			} finally {
+				dek?.fill(0);
 				session.dek?.fill(0);
 				session.dek = null;
 				this.revokeImageUrls(session);
@@ -304,7 +368,7 @@ export class SessionManager {
 					clearTimeout(session.reencryptTimer);
 					session.reencryptTimer = null;
 				}
-				if (sameFile) {
+				if (sameFile && session.view.file === session.file) {
 					session.view.setViewData(session.decoyBody, true);
 					this.applyDisplayedTitle(session, session.file.basename);
 				}

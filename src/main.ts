@@ -379,15 +379,16 @@ export default class VeneerPlugin extends Plugin {
 	}
 
 	private async refreshDecoy(file: TFile): Promise<void> {
+		for (const session of this.sessions.getAllByPath(file.path)) {
+			if (session.state === "unlocked") {
+				await this.sessions.lock(session, "refresh-decoy");
+			}
+		}
 		const content = await this.app.vault.read(file);
 		const parsed = parseFileContent(content);
 		if (!parsed) {
 			new Notice("Not a protected note.");
 			return;
-		}
-		const session = this.sessions.getByPath(file.path);
-		if (session && session.state === "unlocked") {
-			await this.sessions.lock(session, "refresh-decoy");
 		}
 		const result = await this.generator.generate(
 			"auto",
@@ -402,9 +403,11 @@ export default class VeneerPlugin extends Plugin {
 		);
 		const { title: rawTitle, body: decoyBody } = splitTitleFromBody(result.text.trim());
 		const finalBody = decoyBody.length > 0 ? decoyBody : result.text.trim();
-		if (session) {
+		for (const session of this.sessions.getAllByPath(file.path)) {
 			session.decoyBody = finalBody;
-			session.view.setViewData(finalBody, true);
+			if (session.view.file === file) {
+				session.view.setViewData(finalBody, true);
+			}
 		}
 		await this.app.vault.modify(file, serializeFile(finalBody, parsed.payload));
 		await this.retitleToFile(file, rawTitle);
@@ -446,9 +449,10 @@ export default class VeneerPlugin extends Plugin {
 	private async changePasswordViaModal(): Promise<void> {
 		const file = this.app.workspace.getActiveFile();
 		if (!file) return;
-		const activeSession = this.sessions.getByPath(file.path);
-		if (activeSession && activeSession.state === "unlocked") {
-			await this.sessions.lock(activeSession, "change-password");
+		for (const activeSession of this.sessions.getAllByPath(file.path)) {
+			if (activeSession.state === "unlocked") {
+				await this.sessions.lock(activeSession, "change-password");
+			}
 		}
 		const content = await this.app.vault.read(file);
 		const parsed = parseFileContent(content);
@@ -466,8 +470,7 @@ export default class VeneerPlugin extends Plugin {
 		}
 		try {
 			const rotated = await changePassword(parsed.payload, oldPassword, newPassword);
-			const openSession = this.sessions.getByPath(file.path);
-			if (openSession) {
+			for (const openSession of this.sessions.getAllByPath(file.path)) {
 				openSession.originalPayload = rotated;
 				if (openSession.pendingPayload !== null) {
 					openSession.pendingPayload = rotated;
@@ -483,9 +486,10 @@ export default class VeneerPlugin extends Plugin {
 	private async unprotectViaModal(): Promise<void> {
 		const file = this.app.workspace.getActiveFile();
 		if (!file) return;
-		const activeSession = this.sessions.getByPath(file.path);
-		if (activeSession && activeSession.state === "unlocked") {
-			await this.sessions.lock(activeSession, "unprotect");
+		for (const activeSession of this.sessions.getAllByPath(file.path)) {
+			if (activeSession.state === "unlocked") {
+				await this.sessions.lock(activeSession, "unprotect");
+			}
 		}
 		const content = await this.app.vault.read(file);
 		const parsed = parseFileContent(content);
@@ -499,11 +503,15 @@ export default class VeneerPlugin extends Plugin {
 			const { realText, dek, images, realTitle } = await unlockPayload(parsed.payload, password);
 			dek.fill(0);
 			await restoreVaultImages(this.app, file.parent?.path ?? "", images);
-			const session = this.sessions.getByPath(file.path);
-			if (session) this.sessions.discardAndDetach(session.view);
+			const openSessions = this.sessions.getAllByPath(file.path);
+			for (const session of openSessions) {
+				this.sessions.discardAndDetach(session.view);
+			}
 			await this.app.vault.modify(file, `${realText}\n`);
-			if (session && session.view.file === file) {
-				session.view.setViewData(realText, true);
+			for (const session of openSessions) {
+				if (session.view.file === file) {
+					session.view.setViewData(realText, true);
+				}
 			}
 			await this.registry.remove(file.path);
 			if (realTitle && realTitle.trim().length > 0) {
@@ -551,7 +559,7 @@ export default class VeneerPlugin extends Plugin {
 		const root = adapter.getBasePath?.() ?? "";
 		const base = path.join(root, this.app.vault.configDir, "plugins", "deocy");
 		const modelPath = path.join(base, "models", model.file);
-
+		
 		const wllama = new WllamaRuntime(
 			modelPath,
 			path.join(base, "assets", "wllama", "wasm", "wllama.wasm"),
