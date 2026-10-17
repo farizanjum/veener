@@ -45,21 +45,26 @@ export function mimeForPath(filePath: string): string {
 	return "application/octet-stream";
 }
 
-export async function absorbVaultImages(
+export interface StagedVaultImages {
+	absorbed: Record<string, { mime: string; data: Uint8Array<ArrayBuffer> }>;
+	filesToDelete: TFile[];
+}
+
+export async function readLinkedVaultImages(
 	app: App,
 	sourcePath: string,
 	markdown: string,
-): Promise<Record<string, { mime: string; data: Uint8Array<ArrayBuffer> }>> {
+): Promise<StagedVaultImages> {
 	const links = extractImageLinks(markdown);
 	const absorbed: Record<string, { mime: string; data: Uint8Array<ArrayBuffer> }> = {};
-	const deletedPaths = new Set<string>();
+	const filesToDelete: TFile[] = [];
+	const seenPaths = new Set<string>();
 
 	for (const link of links) {
 		const resolved =
 			app.metadataCache?.getFirstLinkpathDest?.(link, sourcePath) ??
-			app.vault.getAbstractFileByPath(link);
+			app.vault?.getAbstractFileByPath?.(link);
 		if (!isTFile(resolved)) continue;
-		if (deletedPaths.has(resolved.path)) continue;
 
 		try {
 			const binary = await app.vault.readBinary(resolved);
@@ -69,13 +74,38 @@ export async function absorbVaultImages(
 			if (resolved.name !== link) {
 				absorbed[resolved.name] = { mime, data };
 			}
-			deletedPaths.add(resolved.path);
-			await app.vault.delete(resolved, true);
+			if (!seenPaths.has(resolved.path)) {
+				seenPaths.add(resolved.path);
+				filesToDelete.push(resolved);
+			}
 		} catch (error) {
-			console.warn(`Veneer: failed to absorb image ${link}`, error);
+			console.warn(`Veneer: failed to read image ${link}`, error);
 		}
 	}
 
+	return { absorbed, filesToDelete };
+}
+
+export async function deleteStagedVaultImages(
+	app: App,
+	filesToDelete: readonly TFile[],
+): Promise<void> {
+	for (const file of filesToDelete) {
+		try {
+			await app.vault.delete(file, true);
+		} catch (error) {
+			console.warn(`Veneer: failed to delete absorbed image ${file.path}`, error);
+		}
+	}
+}
+
+export async function absorbVaultImages(
+	app: App,
+	sourcePath: string,
+	markdown: string,
+): Promise<Record<string, { mime: string; data: Uint8Array<ArrayBuffer> }>> {
+	const { absorbed, filesToDelete } = await readLinkedVaultImages(app, sourcePath, markdown);
+	await deleteStagedVaultImages(app, filesToDelete);
 	return absorbed;
 }
 

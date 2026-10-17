@@ -7,7 +7,11 @@ import {
 	type ParsedFile,
 	type PayloadV1,
 } from "../crypto/payload";
-import { absorbVaultImages } from "../crypto/images";
+import {
+	deleteStagedVaultImages,
+	readLinkedVaultImages,
+	type StagedVaultImages,
+} from "../crypto/images";
 import { BackoffTracker } from "../lock/backoff";
 import { CaptureBuffer } from "../capture/buffer";
 
@@ -32,6 +36,8 @@ export interface ViewSession {
 	readonly backoff: BackoffTracker;
 	readonly capture: CaptureBuffer;
 	reencryptTimer: ReturnType<typeof setTimeout> | null;
+	reencryptSeq: number;
+	reencryptPromise: Promise<void> | null;
 }
 
 export interface SessionHooks {
@@ -75,6 +81,7 @@ export class SessionManager {
 				return existing;
 			}
 			if (existing.state === "unlocked") {
+				existing.reencryptSeq += 1;
 				existing.dek?.fill(0);
 				existing.dek = null;
 				this.revokeImageUrls(existing);
@@ -106,6 +113,8 @@ export class SessionManager {
 			backoff: new BackoffTracker(),
 			capture: new CaptureBuffer(this.triggerPrefix()),
 			reencryptTimer: null,
+			reencryptSeq: 0,
+			reencryptPromise: null,
 		};
 		this.byView.set(view, session);
 		this.byPath.set(file.path, session);
@@ -179,28 +188,72 @@ export class SessionManager {
 		return inlineEl?.textContent?.trim() || session.realTitle;
 	}
 
-	async absorbNewEditorImages(session: ViewSession): Promise<void> {
-		if (session.state !== "unlocked" || !session.dek) return;
-		const text = session.view.editor.getValue();
-		if (!text.includes("!")) return;
-		const newImages = await absorbVaultImages(this.app, session.file.path, text);
-		if (Object.keys(newImages).length === 0) return;
-		if (session.state !== "unlocked" || !session.dek) return;
+	private async stageEditorImages(
+		session: ViewSession,
+		text: string,
+	): Promise<{
+		staged: StagedVaultImages;
+		mergedImages: PayloadV1["images"];
+	} | null> {
+		if (session.state !== "unlocked" || !session.dek) return null;
+		if (!text.includes("!")) {
+			return {
+				staged: { absorbed: {}, filesToDelete: [] },
+				mergedImages: session.originalPayload.images,
+			};
+		}
+		const staged = await readLinkedVaultImages(this.app, session.file.path, text);
+		if (session.state !== "unlocked" || !session.dek) return null;
+		if (Object.keys(staged.absorbed).length === 0) {
+			return {
+				staged,
+				mergedImages: session.originalPayload.images,
+			};
+		}
 		const encryptedNew = await encryptImageMap(
 			session.dek,
 			session.originalPayload.note_id,
-			newImages,
+			staged.absorbed,
 		);
-		session.originalPayload = {
-			...session.originalPayload,
-			images: {
+		if (session.state !== "unlocked" || !session.dek) return null;
+		return {
+			staged,
+			mergedImages: {
 				...(session.originalPayload.images ?? {}),
 				...encryptedNew,
 			},
 		};
-		this.populateImageUrls(session, newImages);
-		const cm = (session.view.editor as unknown as { cm?: { dispatch: (tr: Record<string, never>) => void } }).cm;
-		cm?.dispatch({});
+	}
+
+	private async finalizeStagedImages(
+		session: ViewSession,
+		staged: StagedVaultImages,
+	): Promise<void> {
+		if (Object.keys(staged.absorbed).length === 0) return;
+		await deleteStagedVaultImages(this.app, staged.filesToDelete);
+		if (session.state === "unlocked") {
+			this.populateImageUrls(session, staged.absorbed);
+			const cm = (
+				session.view.editor as unknown as {
+					cm?: { dispatch: (tr: Record<string, never>) => void };
+				}
+			).cm;
+			cm?.dispatch({});
+		}
+	}
+
+	async absorbNewEditorImages(session: ViewSession): Promise<void> {
+		if (session.state !== "unlocked" || !session.dek) return;
+		const text = session.view.editor.getValue();
+		const result = await this.stageEditorImages(session, text);
+		if (!result || Object.keys(result.staged.absorbed).length === 0) return;
+		if (result.mergedImages !== undefined) {
+			session.originalPayload = {
+				...session.originalPayload,
+				images: result.mergedImages,
+			};
+		}
+		await this.finalizeStagedImages(session, result.staged);
 	}
 
 	async unlock(session: ViewSession, password: string): Promise<UnlockOutcome> {
@@ -239,17 +292,28 @@ export class SessionManager {
 	async lock(session: ViewSession, reason: string): Promise<void> {
 		if (session.state !== "unlocked") return;
 		console.debug(`Veneer: masking note (${reason})`);
+		session.reencryptSeq += 1;
+		if (session.reencryptTimer !== null) {
+			clearTimeout(session.reencryptTimer);
+			session.reencryptTimer = null;
+		}
+		if (session.reencryptPromise !== null) {
+			await session.reencryptPromise;
+		}
+		if (session.state !== "unlocked") return;
 		const sameFile = session.view.file === session.file;
 		try {
 			if (session.dek && sameFile) {
-				await this.absorbNewEditorImages(session);
 				const current = session.view.editor.getValue();
-				session.realTitle = this.readEditedInlineTitle(session);
+				const currentTitle = this.readEditedInlineTitle(session);
+				const imageStage = await this.stageEditorImages(session, current);
+				const mergedImages = imageStage?.mergedImages ?? session.originalPayload.images;
+				session.realTitle = currentTitle;
 				session.pendingPayload = await reencryptRealText(
 					session.originalPayload,
 					session.dek,
 					current,
-					session.originalPayload.images,
+					mergedImages,
 					session.realTitle,
 				);
 				await this.app.vault.modify(
@@ -257,6 +321,9 @@ export class SessionManager {
 					serializeFile(session.decoyBody, session.pendingPayload),
 				);
 				session.originalPayload = session.pendingPayload;
+				if (imageStage && imageStage.staged.filesToDelete.length > 0) {
+					await deleteStagedVaultImages(this.app, imageStage.staged.filesToDelete);
+				}
 			}
 		} finally {
 			session.dek?.fill(0);
@@ -290,6 +357,7 @@ export class SessionManager {
 	 */
 	hardKillAll(): void {
 		for (const session of this.all()) {
+			session.reencryptSeq += 1;
 			session.dek?.fill(0);
 			session.dek = null;
 			this.revokeImageUrls(session);
@@ -310,30 +378,65 @@ export class SessionManager {
 	/** Debounced ciphertext refresh so the synchronous save path never sees plaintext. */
 	scheduleReencrypt(session: ViewSession): void {
 		if (session.state !== "unlocked" || !session.dek) return;
+		const seq = ++session.reencryptSeq;
 		if (session.reencryptTimer !== null) clearTimeout(session.reencryptTimer);
 		session.reencryptTimer = setTimeout(() => {
 			session.reencryptTimer = null;
-			void (async () => {
-				if (session.state !== "unlocked" || !session.dek) return;
-				try {
-					await this.absorbNewEditorImages(session);
-					if (session.state !== "unlocked" || !session.dek) return;
-					const currentTitle = this.readEditedInlineTitle(session);
-					session.realTitle = currentTitle;
-					const nextPayload = await reencryptRealText(
-						session.originalPayload,
-						session.dek,
-						session.view.editor.getValue(),
-						session.originalPayload.images,
-						session.realTitle,
-					);
-					if (session.state !== "unlocked" || !session.dek) return;
-					session.pendingPayload = nextPayload;
-					(session.view as unknown as { requestSave?: () => void }).requestSave?.();
-				} catch (error) {
-					console.warn("Veneer: re-encryption skipped, keeping last good ciphertext", error);
-				}
-			})();
+			const prev = session.reencryptPromise ?? Promise.resolve();
+			const next = prev
+				.catch(() => undefined)
+				.then(async () => {
+					if (session.state !== "unlocked" || !session.dek || session.reencryptSeq !== seq) {
+						return;
+					}
+					try {
+						const snapshotText = session.view.editor.getValue();
+						const snapshotTitle = this.readEditedInlineTitle(session);
+						const imageStage = await this.stageEditorImages(session, snapshotText);
+						if (
+							!imageStage ||
+							session.state !== "unlocked" ||
+							!session.dek ||
+							session.reencryptSeq !== seq
+						) {
+							return;
+						}
+						const nextPayload = await reencryptRealText(
+							session.originalPayload,
+							session.dek,
+							snapshotText,
+							imageStage.mergedImages,
+							snapshotTitle,
+						);
+						if (
+							session.state !== "unlocked" ||
+							!session.dek ||
+							session.reencryptSeq !== seq ||
+							session.view.file !== session.file
+						) {
+							return;
+						}
+						session.realTitle = snapshotTitle;
+						session.originalPayload = nextPayload;
+						session.pendingPayload = nextPayload;
+						await this.app.vault.modify(
+							session.file,
+							serializeFile(session.decoyBody, nextPayload),
+						);
+						await this.finalizeStagedImages(session, imageStage.staged);
+						if (session.state === "unlocked" && session.reencryptSeq === seq) {
+							(session.view as unknown as { requestSave?: () => void }).requestSave?.();
+						}
+					} catch (error) {
+						console.warn("Veneer: re-encryption skipped, keeping last good ciphertext", error);
+					}
+				})
+				.finally(() => {
+					if (session.reencryptPromise === next) {
+						session.reencryptPromise = null;
+					}
+				});
+			session.reencryptPromise = next;
 		}, REENCRYPT_DEBOUNCE_MS);
 	}
 }
