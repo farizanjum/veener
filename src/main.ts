@@ -294,7 +294,17 @@ export default class VeneerPlugin extends Plugin {
 
 	private registerFileTracking(): void {
 		this.registerEvent(
-			this.app.workspace.on("editor-change", () => {
+			this.app.workspace.on("editor-change", (_editor, info) => {
+				const view =
+					info instanceof MarkdownView
+						? info
+						: this.app.workspace.getActiveViewOfType(MarkdownView);
+				if (view) {
+					const session = this.sessions.get(view);
+					if (session && session.state === "unlocked") {
+						this.sessions.scheduleReencrypt(session);
+					}
+				}
 				this.updateWordCounter();
 			}),
 		);

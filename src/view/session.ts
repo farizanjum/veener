@@ -40,7 +40,7 @@ export interface SessionHooks {
 	onUnlockBlocked(reason: string): void;
 }
 
-const REENCRYPT_DEBOUNCE_MS = 250;
+export const REENCRYPT_DEBOUNCE_MS = 600;
 
 export class SessionManager {
 	private readonly byView = new WeakMap<MarkdownView, ViewSession>();
@@ -182,6 +182,7 @@ export class SessionManager {
 	async absorbNewEditorImages(session: ViewSession): Promise<void> {
 		if (session.state !== "unlocked" || !session.dek) return;
 		const text = session.view.editor.getValue();
+		if (!text.includes("!")) return;
 		const newImages = await absorbVaultImages(this.app, session.file.path, text);
 		if (Object.keys(newImages).length === 0) return;
 		if (session.state !== "unlocked" || !session.dek) return;
@@ -319,13 +320,16 @@ export class SessionManager {
 					if (session.state !== "unlocked" || !session.dek) return;
 					const currentTitle = this.readEditedInlineTitle(session);
 					session.realTitle = currentTitle;
-					session.pendingPayload = await reencryptRealText(
+					const nextPayload = await reencryptRealText(
 						session.originalPayload,
 						session.dek,
 						session.view.editor.getValue(),
 						session.originalPayload.images,
 						session.realTitle,
 					);
+					if (session.state !== "unlocked" || !session.dek) return;
+					session.pendingPayload = nextPayload;
+					(session.view as unknown as { requestSave?: () => void }).requestSave?.();
 				} catch (error) {
 					console.warn("Veneer: re-encryption skipped, keeping last good ciphertext", error);
 				}
