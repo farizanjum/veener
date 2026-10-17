@@ -1,0 +1,17 @@
+{
+  "name": "Veneer",
+  "short_name": "Veneer",
+  "description": "Notes that look like ordinary notes. Hide your real notes, titles, and images behind an everyday cover note in Obsidian.",
+  "start_url": "/",
+  "display": "standalone",
+  "theme_color": "#F1EFEB",
+  "background_color": "#F1EFEB",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "64x64 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

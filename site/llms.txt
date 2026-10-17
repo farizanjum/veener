@@ -1,0 +1,23 @@
+# Veneer
+
+> Notes that look like ordinary notes. Plausible deniability for Obsidian notes: everyday decoy text on disk, AES-256-GCM encrypted real notes, titles, and images in YAML frontmatter, unlocked inline in RAM by typing `;;` and your password on any line.
+
+Veneer is an open-source, desktop-only Obsidian plugin that hides sensitive notes, real note titles, and embedded vault images behind realistic everyday cover notes (such as grocery lists, meeting notes, or debug logs). On disk, in Obsidian search, in graph view, and across cloud sync, a protected note is an ordinary Markdown file with no lock icon, modal dialog, or visual tell.
+
+## Key Features
+
+- **Inline `;;` Blind Unlock**: Type `;;` followed by your password and Space or Enter at the start of any line. Keystrokes are intercepted by a CodeMirror 6 transaction filter before touching the DOM, undo history, or disk. Wrong passwords produce zero error messages or visual feedback.
+- **Real Title + Image Encryption**: Encrypts the real note body, the real note title, and referenced local vault images (`![[image.png]]`) inside a 4KB-padded AES-256-GCM envelope stored in the `draft_cache` YAML frontmatter property. Unencrypted image files are removed from the vault folder and rendered from in-memory `blob:` URLs only while unlocked.
+- **Local Vulkan + WASM Decoy Generation**: Generates persona-matched cover notes completely offline using local GGUF models (Qwen3 0.6B/1.7B/4B, Phi-4 Mini, or custom GGUF) via native `llama-server` Vulkan GPU acceleration (~135.5 tokens/sec) with automatic `wllama` WebAssembly fallback, plus 12 instant built-in templates.
+- **Automatic Masking**: Re-masks notes to their cover text after 60 seconds of inactivity, on window blur (`Alt+Tab`), tab switch, OS screen lock, or the `Ctrl+Shift+X` panic hotkey, while wiping undo history and clearing copied clipboard text.
+- **Duress PIN (`;;!`)**: Typing `;;!` followed by a 4-8 digit destruction PIN at the start of any line crypto-shreds all protected payloads across the vault in RAM and on disk, leaving pure cover notes behind.
+
+## Documentation and Resources
+
+- [Landing Page](https://veener.fariz.tech/): Overview, interactive inline `;;` demo, architecture diagram, and security model.
+- [Privacy Policy](https://veener.fariz.tech/privacy.html): Zero data collection, zero telemetry, local cryptography, and offline GGUF model execution policy.
+- [Terms & Conditions](https://veener.fariz.tech/terms.html): MIT open-source license, cryptographic responsibility, and threat model disclosures.
+- [Security Policy](https://veener.fariz.tech/security.html): Cryptographic specification (`AES-256-GCM`, `Argon2id` 64 MiB / 3 iterations, 4 KB block padding, RAM `blob:` image isolation, `;;!` Destruction PIN) and responsible vulnerability disclosure (`farizanjum@veener.fariz.tech`).
+- [Full LLM Reference Documentation](https://veener.fariz.tech/llms-full.txt): Complete plain-English and technical specification covering how Veneer works, cryptographic envelope format, inline capture state machine, local Vulkan + WASM decoy generation, duress PIN `;;!`, threat model, and CLI build/install steps.
+- [OpenGraph Social Card](https://veener.fariz.tech/og-image.svg): Visual overview of how `Grocery run (Saturday).md` transforms via `;;` into `Q4 Acquisition Targets.md`.
+- [GitHub Repository](https://github.com/farizanjum/vener): MIT-licensed TypeScript source code and architecture documentation.

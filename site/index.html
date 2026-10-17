@@ -1,0 +1,4636 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Veneer | Notes that look like ordinary notes for Obsidian</title>
+  <meta name="description" content="Someone looks over your shoulder? They see a boring grocery list. Type ;; and your password on any line? Your real note, real title, and hidden images appear." />
+  <meta name="theme-color" content="#F1EFEB" />
+  <link rel="canonical" href="https://veener.fariz.tech/" />
+
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://veener.fariz.tech/" />
+  <meta property="og:title" content="Veneer | Notes that look like ordinary notes for Obsidian" />
+  <meta property="og:description" content="Someone looks over your shoulder? They see a boring grocery list. Type ;; and your password on any line? Your real note, real title, and hidden images appear." />
+  <meta property="og:image" content="/og-image.svg" />
+
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Veneer | Notes that look like ordinary notes for Obsidian" />
+  <meta name="twitter:description" content="Local-first Obsidian plugin that hides your real note, title, and images behind a believable everyday cover note." />
+  <meta name="twitter:image" content="/og-image.svg" />
+
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="alternate" type="text/plain" href="/llms.txt" title="LLM Context" />
+
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/geist@1.3.1/dist/fonts/geist-sans/style.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/geist@1.3.1/dist/fonts/geist-mono/style.css" />
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "SoftwareApplication",
+        "name": "Veneer",
+        "applicationCategory": "SecurityApplication",
+        "operatingSystem": "Windows, macOS, Linux",
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "USD"
+        },
+        "description": "Local-first Obsidian plugin that hides your real note, title, and images inside encrypted YAML frontmatter behind a believable cover note."
+      },
+      {
+        "@type": "FAQPage",
+        "mainEntity": [
+          {
+            "@type": "Question",
+            "name": "How do I unlock a note without a password box popping up?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Click on any empty line inside your note and type ;; followed by your password, then press Enter. A CodeMirror 6 filter catches your keystrokes before they appear on screen or touch the file. Wrong passwords do nothing at all, so there is never an error message or password prompt."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "What happens if I edit the fake cover note while it's locked?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Nothing breaks. Your real note stays safely encrypted inside the YAML frontmatter property (draft_cache). You can check off groceries or add lines to the cover note anytime without touching your hidden data."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "What if my real note is 500+ words long? Won't a tiny grocery list look suspicious?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Veneer pads encrypted payloads to 4 KB blocks and matches the cover note size so a short grocery list never looks suspiciously heavy on disk. You can also set cover length to Auto or Long to generate a 500-word multi-section cover note in about 4 seconds on your local GPU."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "What happens when I paste screenshots or images into a protected note?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Veneer automatically absorbs local vault images into the AES-256-GCM encrypted payload and deletes the raw image file from your vault folder. When you unlock the note, your images render inline from a temporary RAM blob: URL that disappears the moment the note masks."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Does the AI model ever use the internet or read my other notes?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Never. After a one-time GGUF model download, cover generation runs 100% offline on your GPU (RTX Vulkan at roughly 135 tokens/sec) or CPU. It only uses the short job description and everyday topics you type in settings, and never reads your vault."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "What happens if someone forces me to unlock my laptop? (The ;;! Destruction PIN)",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Typing ;;! followed by your emergency PIN on any line zeroes the keys in RAM and deletes the encrypted frontmatter payload from your protected notes. Each file permanently becomes just its harmless cover note."
+            }
+          }
+        ]
+      }
+    ]
+  }
+  </script>
+
+  <style>
+    :root {
+      --bg: #F1EFEB;
+      --surface: #F8F7F3;
+      --footer-bg: #EAE7DF;
+      --ink: #141413;
+      --muted: #5E5D58;
+      --rule: #CFCBC2;
+      --footer-rule: #D5D2C8;
+      --cross: #8C8980;
+      --green: #107A4D;
+      --green-soft: rgba(16, 122, 77, 0.1);
+      --danger: #B42318;
+      --sim-bg: #1E201E;
+      --sim-chrome: #141614;
+      --sim-sidebar: #171917;
+      --sim-surface: #232623;
+      --sim-border: #2A2D2A;
+      --sim-text: #ECEAE4;
+      --sim-muted: #8E8D86;
+      --font-sans: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    * {
+      scrollbar-width: thin;
+      scrollbar-color: rgba(20, 20, 19, 0.2) transparent;
+    }
+    .sim-window * {
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+    }
+    ::-webkit-scrollbar {
+      width: 5px;
+      height: 5px;
+    }
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(20, 20, 19, 0.18);
+      border-radius: 999px;
+    }
+    ::-webkit-scrollbar-button {
+      display: none;
+      width: 0;
+      height: 0;
+    }
+    .sim-window ::-webkit-scrollbar {
+      width: 5px;
+      height: 5px;
+    }
+    .sim-window ::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.14);
+      border-radius: 999px;
+    }
+    .sim-window ::-webkit-scrollbar-thumb:hover {
+      background: rgba(255, 255, 255, 0.28);
+    }
+    .sim-window ::-webkit-scrollbar-button {
+      display: none;
+      width: 0;
+      height: 0;
+    }
+
+    html, body {
+      max-width: 100%;
+      overflow-x: hidden;
+    }
+
+    html {
+      background: var(--bg);
+      color: var(--ink);
+      font-family: var(--font-sans);
+      -webkit-font-smoothing: antialiased;
+      scroll-behavior: smooth;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--ink);
+      min-height: 100vh;
+    }
+
+    ::selection {
+      background: var(--green);
+      color: #FFFFFF;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    button, select, input {
+      font: inherit;
+      color: inherit;
+      background: none;
+      border: none;
+    }
+
+    button, select {
+      cursor: pointer;
+    }
+
+    .swiss-band {
+      width: 100%;
+      border-bottom: 1px solid var(--rule);
+      position: relative;
+    }
+
+    .swiss-frame {
+      max-width: 1280px;
+      margin: 0 auto;
+      border-left: 1px solid var(--rule);
+      border-right: 1px solid var(--rule);
+      position: relative;
+    }
+
+    .grid-cross {
+      position: absolute;
+      width: 11px;
+      height: 11px;
+      pointer-events: none;
+      z-index: 20;
+    }
+    .grid-cross::before,
+    .grid-cross::after {
+      content: "";
+      position: absolute;
+      background: var(--cross);
+    }
+    .grid-cross::before {
+      top: 5px;
+      left: 0;
+      width: 11px;
+      height: 1px;
+    }
+    .grid-cross::after {
+      top: 0;
+      left: 5px;
+      width: 1px;
+      height: 11px;
+    }
+    .grid-cross.tl { top: -6px; left: -6px; }
+    .grid-cross.tr { top: -6px; right: -6px; }
+    .grid-cross.bl { bottom: -6px; left: -6px; }
+    .grid-cross.br { bottom: -6px; right: -6px; }
+
+    mark.hl, .hl {
+      background: rgba(16, 122, 77, 0.12);
+      color: var(--green);
+      padding: 2px 7px;
+      border-radius: 4px;
+      font-weight: 600;
+    }
+
+    .hero-sub strong,
+    .swiss-intro-right strong,
+    .compare-box strong,
+    .step-desc strong,
+    .faq-a strong {
+      color: var(--ink);
+      font-weight: 600;
+    }
+
+    main .swiss-band {
+      border-top: 1px solid var(--rule);
+      border-bottom: 1px solid var(--rule);
+      margin-bottom: 72px;
+      background: var(--bg);
+    }
+
+    main .swiss-band:first-child {
+      border-top: none;
+    }
+
+    main .swiss-band.pre-footer-swiss {
+      margin-bottom: 0;
+    }
+
+    .announcement-bar {
+      background: #141413;
+      color: #ECEAE4;
+      border-bottom: 1px solid #2A2D2A;
+      font-family: var(--font-mono);
+      font-size: 12px;
+    }
+
+    .announcement-inner {
+      max-width: 1280px;
+      margin: 0 auto;
+      min-height: 36px;
+      padding: 6px 20px;
+      border-left: 1px solid #2A2D2A;
+      border-right: 1px solid #2A2D2A;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .announcement-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .announcement-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 1px 7px;
+      border-radius: 3px;
+      background: var(--green);
+      color: #FFFFFF;
+      font-size: 10.5px;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    .announcement-link {
+      color: #6CE9A6;
+      text-decoration: underline;
+      text-underline-offset: 3px;
+      white-space: nowrap;
+    }
+
+    .top-nav {
+      position: sticky;
+      top: 0;
+      z-index: 60;
+      background: rgba(241, 239, 235, 0.92);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--rule);
+    }
+
+    .nav-grid {
+      max-width: 1280px;
+      height: 62px;
+      margin: 0 auto;
+      border-left: 1px solid var(--rule);
+      border-right: 1px solid var(--rule);
+      display: grid;
+      grid-template-columns: 270px 1fr auto auto;
+      align-items: stretch;
+    }
+
+    .nav-cell {
+      padding: 0 20px;
+      border-right: 1px solid var(--rule);
+      display: flex;
+      align-items: center;
+    }
+
+    .nav-cell:last-child {
+      border-right: none;
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-family: var(--font-sans);
+      font-size: 17px;
+      font-weight: 600;
+      letter-spacing: -0.03em;
+      color: var(--ink);
+    }
+
+    .brand-pill {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--green);
+      background: var(--green-soft);
+      border: 1px solid rgba(16, 122, 77, 0.25);
+      padding: 2px 6px;
+      border-radius: 3px;
+      letter-spacing: 0.03em;
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      color: var(--muted);
+    }
+
+    .nav-links a {
+      transition: color 0.15s ease;
+    }
+
+    .nav-links a:hover {
+      color: var(--ink);
+    }
+
+    .nav-btn-ghost {
+      height: 36px;
+      padding: 0 13px;
+      border-radius: 6px;
+      border: 1px solid var(--rule);
+      background: var(--surface);
+      color: var(--ink);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 500;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      transition: border-color 0.15s ease, background 0.15s ease;
+    }
+
+    .nav-btn-ghost:hover {
+      border-color: var(--ink);
+      background: #FFFFFF;
+    }
+
+    .nav-btn-solid {
+      height: 36px;
+      padding: 0 14px;
+      border-radius: 6px;
+      background: var(--green);
+      color: #FFFFFF;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 500;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: opacity 0.15s ease;
+    }
+
+    .nav-btn-solid:hover {
+      opacity: 0.92;
+    }
+
+    .mobile-menu-cell {
+      display: none;
+      padding: 0 12px;
+      align-items: center;
+      justify-content: flex-end;
+    }
+
+    .mobile-menu-toggle {
+      width: 44px;
+      height: 44px;
+      border-radius: 6px;
+      border: 1px solid var(--rule);
+      background: var(--surface);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--ink);
+    }
+
+    .mobile-drawer {
+      display: none;
+      background: var(--surface);
+      border-top: 1px solid var(--rule);
+      padding: 12px 20px 18px;
+      flex-direction: column;
+      gap: 8px;
+      font-family: var(--font-mono);
+      font-size: 13px;
+    }
+
+    .mobile-drawer.open {
+      display: flex;
+    }
+
+    .mobile-drawer a {
+      padding: 10px 4px;
+      border-bottom: 1px solid var(--rule);
+      color: var(--ink);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .mobile-drawer-ctas {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      padding-top: 8px;
+    }
+
+    .mobile-drawer-ctas a {
+      border-bottom: none;
+      justify-content: center;
+      height: 44px;
+      border-radius: 6px;
+    }
+
+    .hero-swiss-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      position: relative;
+    }
+
+    .hero-copy-cell {
+      padding: 64px 48px 0;
+      border-right: none;
+      border-bottom: 1px solid var(--rule);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      position: relative;
+    }
+
+    .hero-copy-cell > div:first-child {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      max-width: 820px;
+    }
+
+    .hero-sim-cell {
+      padding: 40px 48px;
+      background: rgba(235, 232, 224, 0.45);
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      align-self: flex-start;
+      padding: 5px 11px;
+      border-radius: 4px;
+      border: 1px solid var(--rule);
+      background: var(--surface);
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      color: var(--muted);
+      margin-bottom: 22px;
+    }
+
+    .pulse-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 0 0 rgba(16, 122, 77, 0.5);
+      animation: pulse 2.2s infinite;
+    }
+
+    @keyframes pulse {
+      0% { box-shadow: 0 0 0 0 rgba(16, 122, 77, 0.55); }
+      70% { box-shadow: 0 0 0 7px rgba(16, 122, 77, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(16, 122, 77, 0); }
+    }
+
+    .hero-h1 {
+      font-family: var(--font-sans);
+      font-size: clamp(2.6rem, 4.5vw, 4.1rem);
+      font-weight: 600;
+      letter-spacing: -0.04em;
+      line-height: 1.02;
+      color: var(--ink);
+      margin-bottom: 20px;
+    }
+
+    .hero-sub {
+      font-family: var(--font-mono);
+      font-size: 14.2px;
+      line-height: 1.72;
+      color: var(--muted);
+      max-width: 680px;
+      margin-bottom: 28px;
+    }
+
+    .hero-sub code {
+      color: var(--ink);
+      background: rgba(20, 20, 19, 0.08);
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-weight: 500;
+    }
+
+    .hero-ctas {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 0;
+    }
+
+    .btn-primary {
+      height: 44px;
+      padding: 0 18px;
+      border-radius: 6px;
+      background: var(--green);
+      color: #FFFFFF;
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      font-weight: 500;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      transition: transform 0.15s ease, opacity 0.15s ease;
+    }
+
+    .btn-primary:hover {
+      opacity: 0.93;
+      transform: translateY(-1px);
+    }
+
+    .btn-secondary {
+      height: 44px;
+      padding: 0 16px;
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--ink);
+      border: 1px solid var(--rule);
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      font-weight: 500;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      transition: border-color 0.15s ease, background 0.15s ease;
+    }
+
+    .btn-secondary:hover {
+      border-color: var(--ink);
+      background: #FFFFFF;
+    }
+
+    .micro-facts {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      border-top: 1px solid var(--rule);
+      margin: 44px -48px 0;
+    }
+
+    .micro-fact {
+      padding: 14px 16px;
+      border-right: 1px solid var(--rule);
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .micro-fact:last-child {
+      border-right: none;
+    }
+
+    .micro-fact svg {
+      color: var(--green);
+      flex-shrink: 0;
+    }
+
+    .sim-window {
+      position: relative;
+      background: var(--sim-bg);
+      border: 1px solid var(--sim-border);
+      border-radius: 10px;
+      box-shadow: 0 22px 54px rgba(20, 20, 19, 0.18), 0 2px 8px rgba(20, 20, 19, 0.08);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .sim-titlebar {
+      min-height: 42px;
+      background: var(--sim-chrome);
+      border-bottom: 1px solid var(--sim-border);
+      padding: 6px 10px 0;
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .sim-titlebar-left {
+      display: flex;
+      align-items: flex-end;
+      gap: 8px;
+      min-width: 0;
+      flex: 1;
+    }
+
+    .mac-dots {
+      display: flex;
+      gap: 6px;
+      padding: 0 4px 11px 2px;
+      flex-shrink: 0;
+    }
+
+    .mac-dots span {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #333633;
+    }
+
+    .mac-dots span:nth-child(1) { background: #E5534B; opacity: 0.8; }
+    .mac-dots span:nth-child(2) { background: #D29922; opacity: 0.8; }
+    .mac-dots span:nth-child(3) { background: #2EA043; opacity: 0.8; }
+
+    .sim-tabs-bar {
+      display: flex;
+      align-items: flex-end;
+      gap: 3px;
+      overflow-x: auto;
+      scrollbar-width: none;
+      min-width: 0;
+      flex: 1;
+    }
+
+    .sim-tabs-bar::-webkit-scrollbar {
+      display: none;
+    }
+
+    .obs-tab {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 32px;
+      padding: 0 8px 0 10px;
+      border-radius: 7px 7px 0 0;
+      background: #171917;
+      border: 1px solid transparent;
+      border-bottom: none;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--sim-muted);
+      white-space: nowrap;
+      flex-shrink: 0;
+      transition: background 0.15s ease, color 0.15s ease;
+    }
+
+    .obs-tab:hover {
+      background: #1B1D1B;
+      color: var(--sim-text);
+    }
+
+    .obs-tab.active {
+      background: var(--sim-bg);
+      color: var(--sim-text);
+      border-color: var(--sim-border);
+      z-index: 2;
+    }
+
+    .obs-tab.active::after {
+      content: "";
+      position: absolute;
+      bottom: -1px;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: var(--sim-bg);
+    }
+
+    .obs-tab.is-unlocked {
+      color: #6CE9A6;
+    }
+
+    .obs-tab-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #5E5D58;
+      flex-shrink: 0;
+    }
+
+    .obs-tab.is-unlocked .obs-tab-dot {
+      background: #10B981;
+      box-shadow: 0 0 6px rgba(16, 185, 129, 0.7);
+    }
+
+    .obs-tab.is-shredded .obs-tab-dot {
+      background: #F04438;
+    }
+
+    .obs-tab-close {
+      width: 16px;
+      height: 16px;
+      border-radius: 4px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--sim-muted);
+      font-size: 12px;
+      line-height: 1;
+      margin-left: 2px;
+    }
+
+    .obs-tab-close:hover {
+      background: rgba(255, 255, 255, 0.12);
+      color: #FFFFFF;
+    }
+
+    .obs-tab-add {
+      width: 26px;
+      height: 26px;
+      margin-bottom: 3px;
+      border-radius: 5px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--sim-muted);
+      flex-shrink: 0;
+    }
+
+    .obs-tab-add:hover {
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--sim-text);
+    }
+
+    .sim-view-switch {
+      display: inline-flex;
+      background: #101110;
+      padding: 2px;
+      border-radius: 6px;
+      border: 1px solid var(--sim-border);
+      margin-bottom: 5px;
+      flex-shrink: 0;
+    }
+
+    .sim-view-btn {
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      color: var(--sim-muted);
+      transition: background 0.15s ease, color 0.15s ease;
+    }
+
+    .sim-view-btn.active {
+      background: var(--sim-surface);
+      color: var(--sim-text);
+    }
+
+    .sim-action-strip {
+      background: #171917;
+      border-bottom: 1px solid var(--sim-border);
+      padding: 7px 10px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .sim-actions-left, .sim-actions-right {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      flex-wrap: wrap;
+    }
+
+    .sim-pill-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 5px 9px;
+      border-radius: 5px;
+      background: var(--sim-surface);
+      border: 1px solid var(--sim-border);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--sim-text);
+      transition: border-color 0.15s ease, background 0.15s ease, transform 0.12s ease;
+    }
+
+    .sim-pill-btn:hover {
+      border-color: #484C48;
+      background: #2A2E2A;
+    }
+
+    .sim-pill-btn:active {
+      transform: scale(0.98);
+    }
+
+    .sim-pill-btn.primary-sim {
+      background: rgba(16, 122, 77, 0.22);
+      border-color: rgba(16, 122, 77, 0.58);
+      color: #6CE9A6;
+    }
+
+    .sim-pill-btn.primary-sim:hover {
+      background: rgba(16, 122, 77, 0.34);
+    }
+
+    .sim-pill-btn.danger-sim {
+      color: #FDA29B;
+      border-color: rgba(240, 68, 56, 0.34);
+    }
+
+    .sim-pill-btn.danger-sim:hover {
+      background: rgba(240, 68, 56, 0.15);
+      border-color: rgba(240, 68, 56, 0.58);
+    }
+
+    .sim-select-group {
+      display: inline-flex;
+      align-items: center;
+      background: #121312;
+      border: 1px solid var(--sim-border);
+      border-radius: 5px;
+      padding: 3px 6px;
+      gap: 4px;
+    }
+
+    .sim-select {
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      color: var(--sim-muted);
+      background: transparent;
+      border: none;
+      outline: none;
+      padding: 1px;
+    }
+
+    .sim-select option {
+      background: #1A1C1A;
+      color: var(--sim-text);
+    }
+
+    .sim-body,
+    .sim-workspace {
+      position: relative;
+      display: flex;
+      height: 440px;
+      min-height: 440px;
+      background: var(--sim-bg);
+    }
+
+    .sim-ribbon {
+      width: 38px;
+      background: var(--sim-chrome);
+      border-right: 1px solid var(--sim-border);
+      padding: 8px 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+      z-index: 15;
+    }
+
+    .sim-ribbon-top, .sim-ribbon-bottom {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .ribbon-btn {
+      width: 28px;
+      height: 28px;
+      border-radius: 5px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--sim-muted);
+      transition: background 0.15s ease, color 0.15s ease;
+    }
+
+    .ribbon-btn:hover, .ribbon-btn.active {
+      background: var(--sim-surface);
+      color: var(--sim-text);
+    }
+
+    .sim-sidebar {
+      width: 192px;
+      background: var(--sim-sidebar);
+      border-right: 1px solid var(--sim-border);
+      padding: 12px 8px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      flex-shrink: 0;
+      transition: width 0.2s ease, opacity 0.2s ease, transform 0.2s ease;
+      z-index: 12;
+    }
+
+    .sim-sidebar.collapsed {
+      width: 0;
+      padding-left: 0;
+      padding-right: 0;
+      border-right: none;
+      overflow: hidden;
+      opacity: 0;
+    }
+
+    .vault-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 2px 8px 8px;
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      font-weight: 600;
+      color: var(--sim-muted);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .vault-files {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+
+    .vault-file-btn {
+      width: 100%;
+      padding: 7px 8px;
+      border-radius: 5px;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--sim-muted);
+      text-align: left;
+      transition: background 0.14s ease, color 0.14s ease;
+    }
+
+    .vault-file-btn:hover {
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--sim-text);
+    }
+
+    .vault-file-btn.active {
+      background: var(--sim-surface);
+      color: var(--sim-text);
+    }
+
+    .vault-file-btn.is-unlocked {
+      color: #6CE9A6;
+    }
+
+    .vault-file-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+    }
+
+    .vault-hint-box {
+      margin: 8px 4px 0;
+      padding: 8px;
+      border-radius: 5px;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--sim-border);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      line-height: 1.5;
+      color: var(--sim-muted);
+    }
+
+    .sim-editor-scroll {
+      flex: 1;
+      height: 440px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding: 20px 22px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 16px;
+      min-width: 0;
+    }
+
+    .sim-Breadcrumb {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--sim-muted);
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .sim-canvas-inner {
+      transition: opacity 0.2s cubic-bezier(0.22, 1, 0.36, 1), transform 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+      overflow: visible;
+    }
+
+    .sim-canvas-inner.animating {
+      opacity: 0;
+      transform: translateY(5px);
+    }
+
+    .sim-note-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+
+    .sim-note-title {
+      font-family: var(--font-sans);
+      font-size: 20px;
+      font-weight: 600;
+      letter-spacing: -0.03em;
+      color: var(--sim-text);
+    }
+
+    .sim-state-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      padding: 3px 9px;
+      border-radius: 999px;
+      background: #171917;
+      border: 1px solid var(--sim-border);
+      color: var(--sim-muted);
+      flex-shrink: 0;
+    }
+
+    .sim-state-badge.is-unlocked {
+      background: rgba(16, 122, 77, 0.18);
+      border-color: rgba(16, 122, 77, 0.55);
+      color: #6CE9A6;
+    }
+
+    .sim-state-badge.is-shredded {
+      background: rgba(240, 68, 56, 0.16);
+      border-color: rgba(240, 68, 56, 0.45);
+      color: #FDA29B;
+    }
+
+    .sim-note-body {
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      line-height: 1.74;
+      color: #D2D0C8;
+      white-space: pre-wrap;
+      word-break: break-word;
+      overflow: visible;
+    }
+
+    .sim-image-card {
+      margin-top: 14px;
+      padding: 11px 13px;
+      border-radius: 7px;
+      background: #151715;
+      border: 1px solid rgba(16, 122, 77, 0.42);
+      overflow: visible;
+    }
+
+    .sim-image-meta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      color: #6CE9A6;
+      margin-bottom: 7px;
+      flex-wrap: wrap;
+    }
+
+    .sim-image-card img {
+      display: block;
+      width: 100%;
+      height: auto;
+      border-radius: 4px;
+    }
+
+    .sim-trigger-bar {
+      padding-top: 11px;
+      border-top: 1px dashed #2E322E;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      overflow: visible;
+    }
+
+    .sim-trigger-input {
+      width: 100%;
+      background: transparent;
+      border: none;
+      outline: none;
+      color: var(--sim-text);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      overflow: visible;
+    }
+
+    .sim-trigger-input::placeholder {
+      color: #72716A;
+    }
+
+    .sim-trigger-hint {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--sim-muted);
+      white-space: nowrap;
+    }
+
+    .sim-toast {
+      position: absolute;
+      bottom: 40px;
+      right: 14px;
+      z-index: 25;
+      background: #141614;
+      border: 1px solid rgba(16, 185, 129, 0.45);
+      color: #ECEAE4;
+      padding: 8px 12px;
+      border-radius: 6px;
+      box-shadow: 0 10px 26px rgba(0, 0, 0, 0.45);
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      pointer-events: none;
+      opacity: 0;
+      transform: translateY(8px);
+      transition: opacity 0.2s ease, transform 0.2s ease;
+    }
+
+    .sim-toast.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .sim-palette-backdrop {
+      position: absolute;
+      inset: 0;
+      z-index: 30;
+      background: rgba(12, 13, 12, 0.72);
+      backdrop-filter: blur(3px);
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      padding: 44px 16px 16px;
+    }
+
+    .sim-palette-backdrop[hidden] {
+      display: none;
+    }
+
+    .sim-palette-modal {
+      width: 100%;
+      max-width: 450px;
+      background: #181A18;
+      border: 1px solid #353935;
+      border-radius: 8px;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.55);
+      overflow: hidden;
+    }
+
+    .sim-palette-header {
+      padding: 10px 12px;
+      border-bottom: 1px solid #2A2D2A;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .sim-palette-input {
+      width: 100%;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--sim-text);
+      outline: none;
+    }
+
+    .sim-palette-input::placeholder {
+      color: var(--sim-muted);
+    }
+
+    .sim-palette-esc {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--sim-muted);
+      background: #232623;
+      padding: 2px 6px;
+      border-radius: 4px;
+      border: 1px solid #323632;
+    }
+
+    .sim-palette-list {
+      padding: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .sim-palette-item {
+      width: 100%;
+      padding: 8px 10px;
+      border-radius: 5px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      color: var(--sim-text);
+      text-align: left;
+      transition: background 0.12s ease;
+    }
+
+    .sim-palette-item:hover {
+      background: rgba(16, 122, 77, 0.22);
+      color: #6CE9A6;
+    }
+
+    .sim-palette-kbd {
+      font-size: 10px;
+      color: var(--sim-muted);
+      background: #121412;
+      padding: 2px 6px;
+      border-radius: 4px;
+      border: 1px solid #2A2D2A;
+      flex-shrink: 0;
+    }
+
+    .sim-statusbar {
+      height: 30px;
+      background: var(--sim-chrome);
+      border-top: 1px solid var(--sim-border);
+      padding: 0 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--sim-muted);
+    }
+
+    .sim-status-left, .sim-status-right {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .blind-dots {
+      color: #6CE9A6;
+      letter-spacing: 2px;
+      font-weight: 600;
+    }
+
+    .swiss-section-intro {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      border-bottom: 1px solid var(--rule);
+    }
+
+    .swiss-intro-left {
+      padding: 48px;
+      border-right: 1px solid var(--rule);
+    }
+
+    .swiss-intro-right {
+      padding: 48px;
+      display: flex;
+      align-items: center;
+      font-family: var(--font-mono);
+      font-size: 13.8px;
+      line-height: 1.7;
+      color: var(--muted);
+    }
+
+    .section-h2 {
+      font-family: var(--font-sans);
+      font-size: clamp(1.75rem, 2.8vw, 2.3rem);
+      font-weight: 600;
+      letter-spacing: -0.035em;
+      line-height: 1.12;
+      color: var(--ink);
+    }
+
+    .compare-swiss-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      position: relative;
+    }
+
+    .compare-cell {
+      padding: 40px 36px;
+      border-right: 1px solid var(--rule);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 18px;
+      position: relative;
+    }
+
+    .compare-cell:last-child {
+      border-right: none;
+    }
+
+    .compare-title {
+      font-family: var(--font-sans);
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      color: var(--ink);
+      margin-bottom: 14px;
+    }
+
+    .compare-box {
+      padding: 15px;
+      border-radius: 6px;
+      border: 1px solid var(--rule);
+      background: var(--surface);
+      font-family: var(--font-mono);
+      font-size: 12.8px;
+      line-height: 1.64;
+      color: var(--muted);
+    }
+
+    .compare-box.positive {
+      background: rgba(16, 122, 77, 0.06);
+      border-color: rgba(16, 122, 77, 0.32);
+      color: var(--ink);
+    }
+
+    .compare-tag {
+      display: inline-block;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 600;
+      margin-bottom: 6px;
+      color: var(--danger);
+    }
+
+    .compare-box.positive .compare-tag {
+      color: var(--green);
+    }
+
+    .steps-swiss-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      position: relative;
+    }
+
+    .step-cell {
+      padding: 40px 32px;
+      border-right: 1px solid var(--rule);
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      position: relative;
+    }
+
+    .step-cell:last-child {
+      border-right: none;
+    }
+
+    .step-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: var(--green);
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      font-weight: 600;
+    }
+
+    .step-icon {
+      width: 34px;
+      height: 34px;
+      border-radius: 6px;
+      background: var(--green-soft);
+      border: 1px solid rgba(16, 122, 77, 0.22);
+      color: var(--green);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .step-title {
+      font-family: var(--font-sans);
+      font-size: 17px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      color: var(--ink);
+    }
+
+    .step-desc {
+      font-family: var(--font-mono);
+      font-size: 12.8px;
+      line-height: 1.66;
+      color: var(--muted);
+    }
+
+    .step-desc code {
+      color: var(--ink);
+      background: rgba(20, 20, 19, 0.07);
+      padding: 1px 5px;
+      border-radius: 3px;
+    }
+
+    .install-swiss-grid {
+      display: grid;
+      grid-template-columns: 1.08fr 0.92fr;
+      position: relative;
+    }
+
+    .install-left-cell {
+      padding: 48px;
+      border-right: 1px solid var(--rule);
+      background: rgba(248, 247, 243, 0.45);
+    }
+
+    .install-right-cell {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .terminal-card {
+      background: #141614;
+      border: 1px solid var(--sim-border);
+      border-radius: 8px;
+      overflow: hidden;
+      color: var(--sim-text);
+    }
+
+    .terminal-bar {
+      height: 38px;
+      background: #1A1C1A;
+      border-bottom: 1px solid var(--sim-border);
+      padding: 0 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      color: var(--sim-muted);
+    }
+
+    .copy-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 5px;
+      background: var(--sim-surface);
+      border: 1px solid var(--sim-border);
+      color: var(--sim-text);
+      font-family: var(--font-mono);
+      font-size: 11px;
+    }
+
+    .copy-btn:hover {
+      border-color: var(--green);
+    }
+
+    .terminal-pre {
+      padding: 18px 20px;
+      font-family: var(--font-mono);
+      font-size: 12.2px;
+      line-height: 1.74;
+      color: #D6D5CE;
+      overflow-x: auto;
+      white-space: pre;
+    }
+
+    .spec-row {
+      padding: 18px 28px;
+      border-bottom: 1px solid var(--rule);
+      display: grid;
+      grid-template-columns: 110px 1fr;
+      gap: 14px;
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      line-height: 1.6;
+    }
+
+    .spec-row:last-child {
+      border-bottom: none;
+    }
+
+    .spec-key {
+      color: var(--green);
+      font-weight: 600;
+      font-size: 11.5px;
+      text-transform: uppercase;
+    }
+
+    .spec-val {
+      color: var(--muted);
+    }
+
+    .spec-val strong {
+      color: var(--ink);
+    }
+
+    .faq-swiss-grid {
+      display: grid;
+      grid-template-columns: 0.72fr 1.28fr;
+      position: relative;
+    }
+
+    .faq-left-cell {
+      padding: 48px;
+      border-right: 1px solid var(--rule);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 20px;
+    }
+
+    .faq-right-cell {
+      display: flex;
+      flex-direction: column;
+    }
+
+    details.faq-item {
+      border-bottom: 1px solid var(--rule);
+      background: transparent;
+      transition: background 0.15s ease;
+    }
+
+    details.faq-item:last-child {
+      border-bottom: none;
+    }
+
+    details.faq-item[open] {
+      background: var(--surface);
+    }
+
+    summary.faq-q {
+      list-style: none;
+      padding: 22px 28px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      cursor: pointer;
+      font-family: var(--font-sans);
+      font-size: 16.5px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      color: var(--ink);
+      user-select: none;
+    }
+
+    summary.faq-q::-webkit-details-marker {
+      display: none;
+    }
+
+    .faq-toggle-icon {
+      width: 26px;
+      height: 26px;
+      border-radius: 4px;
+      border: 1px solid var(--rule);
+      background: var(--bg);
+      color: var(--green);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--font-mono);
+      font-size: 15px;
+      flex-shrink: 0;
+      transition: transform 0.2s ease, background 0.2s ease;
+    }
+
+    details.faq-item[open] .faq-toggle-icon {
+      transform: rotate(45deg);
+      background: var(--green-soft);
+      border-color: rgba(16, 122, 77, 0.35);
+    }
+
+    .faq-a {
+      padding: 0 28px 22px;
+      font-family: var(--font-mono);
+      font-size: 13.2px;
+      line-height: 1.72;
+      color: var(--muted);
+    }
+
+    .faq-a code {
+      color: var(--ink);
+      background: rgba(20, 20, 19, 0.07);
+      padding: 1px 6px;
+      border-radius: 3px;
+    }
+
+    main .swiss-band.pre-footer-swiss {
+      position: relative;
+      background: #111412;
+      color: #ECEAE4;
+      overflow: hidden;
+      border-top: 1px solid #252A26;
+      border-bottom: 1px solid #252A26;
+    }
+
+    #cta-shader-canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+      pointer-events: none;
+      z-index: 1;
+      opacity: 0.92;
+    }
+
+    .pre-footer-swiss .swiss-frame {
+      position: relative;
+      z-index: 2;
+      border-left-color: rgba(255, 255, 255, 0.1);
+      border-right-color: rgba(255, 255, 255, 0.1);
+    }
+
+    .pre-footer-grid {
+      display: grid;
+      grid-template-columns: 1.12fr 0.88fr;
+      align-items: center;
+      min-height: 420px;
+    }
+
+    .pre-footer-left {
+      padding: 72px 48px;
+      border-right: 1px solid rgba(255, 255, 255, 0.1);
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 20px;
+    }
+
+    .pre-footer-kicker {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 11px;
+      border-radius: 4px;
+      background: rgba(40, 233, 159, 0.1);
+      border: 1px solid rgba(40, 233, 159, 0.3);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      color: #28E99F;
+      text-transform: uppercase;
+    }
+
+    .pre-footer-title {
+      font-family: var(--font-sans);
+      font-size: clamp(2rem, 3.2vw, 2.85rem);
+      font-weight: 600;
+      letter-spacing: -0.04em;
+      line-height: 1.08;
+      color: #F4F3EE;
+    }
+
+    .pre-footer-title .cta-hl {
+      color: #28E99F;
+      background: rgba(40, 233, 159, 0.12);
+      padding: 0 8px;
+      border-radius: 5px;
+      box-decoration-break: clone;
+      -webkit-box-decoration-break: clone;
+    }
+
+    .pre-footer-sub {
+      font-family: var(--font-mono);
+      font-size: 13.5px;
+      line-height: 1.7;
+      color: #A6ABA7;
+      max-width: 520px;
+    }
+
+    .pre-footer-sub strong {
+      color: #F4F3EE;
+      font-weight: 600;
+    }
+
+    .pre-footer-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      padding-top: 6px;
+    }
+
+    .btn-cta-emerald {
+      height: 46px;
+      padding: 0 20px;
+      border-radius: 6px;
+      background: #28E99F;
+      color: #092217;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      box-shadow: 0 10px 28px rgba(40, 233, 159, 0.25);
+      transition: transform 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    .btn-cta-emerald:hover {
+      background: #52F2B4;
+      transform: translateY(-1px);
+      box-shadow: 0 14px 32px rgba(40, 233, 159, 0.36);
+    }
+
+    .btn-cta-glass {
+      height: 46px;
+      padding: 0 18px;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.06);
+      color: #ECEAE4;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      backdrop-filter: blur(8px);
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      font-weight: 500;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      transition: background 0.15s ease, border-color 0.15s ease;
+    }
+
+    .btn-cta-glass:hover {
+      background: rgba(255, 255, 255, 0.12);
+      border-color: #28E99F;
+      color: #28E99F;
+    }
+
+    .pre-footer-right {
+      padding: 56px 48px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      perspective: 1100px;
+    }
+
+    .cta-tilt-rig {
+      position: relative;
+      width: 100%;
+      max-width: 410px;
+      height: 268px;
+      transform-style: preserve-3d;
+      transform: rotateX(8deg) rotateY(-12deg);
+      transition: transform 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+      cursor: pointer;
+    }
+
+    .cta-layer-card {
+      position: absolute;
+      inset: 0;
+      border-radius: 10px;
+      padding: 18px 20px;
+      font-family: var(--font-mono);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.32s ease;
+      user-select: none;
+    }
+
+    .cta-layer-ram {
+      background: rgba(14, 22, 18, 0.94);
+      border: 1px solid rgba(40, 233, 159, 0.55);
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.65), 0 0 36px rgba(40, 233, 159, 0.16);
+      color: #ECEAE4;
+      transform: translate3d(18px, 18px, -16px);
+    }
+
+    .cta-layer-cover {
+      background: #F4F2EC;
+      border: 1px solid #CFCBC2;
+      box-shadow: -12px 18px 38px rgba(0, 0, 0, 0.45);
+      color: #141413;
+      transform: translate3d(-16px, -16px, 26px) rotateZ(-3.5deg);
+      transform-origin: bottom left;
+    }
+
+    .cta-tilt-rig:hover .cta-layer-cover,
+    .cta-tilt-rig.peeled .cta-layer-cover {
+      transform: translate3d(-34px, -32px, 44px) rotateZ(-8deg) rotateY(-10deg);
+    }
+
+    .cta-tilt-rig:hover .cta-layer-ram,
+    .cta-tilt-rig.peeled .cta-layer-ram {
+      transform: translate3d(24px, 22px, -4px);
+      box-shadow: 0 28px 64px rgba(0, 0, 0, 0.75), 0 0 48px rgba(40, 233, 159, 0.28);
+    }
+
+    .cta-card-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 11px;
+      padding-bottom: 10px;
+      border-bottom: 1px dashed rgba(140, 137, 128, 0.35);
+    }
+
+    .cta-card-pill {
+      padding: 2px 7px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .cta-layer-cover .cta-card-pill {
+      background: rgba(20, 20, 19, 0.08);
+      color: #5E5D58;
+    }
+
+    .cta-layer-ram .cta-card-pill {
+      background: rgba(40, 233, 159, 0.16);
+      color: #28E99F;
+      border: 1px solid rgba(40, 233, 159, 0.4);
+    }
+
+    .cta-card-title {
+      font-family: var(--font-sans);
+      font-size: 16px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      margin: 10px 0 6px;
+    }
+
+    .cta-card-lines {
+      font-size: 11.5px;
+      line-height: 1.62;
+      opacity: 0.88;
+      white-space: pre-line;
+    }
+
+    .cta-card-foot {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-top: 10px;
+      border-top: 1px solid rgba(140, 137, 128, 0.22);
+      font-size: 10.5px;
+      opacity: 0.8;
+    }
+
+    .arch-footer {
+      background-color: #EFEFEA;
+      background-image: radial-gradient(#C8C9C2 1px, transparent 1px);
+      background-size: 18px 18px;
+      color: var(--ink);
+      border-top: 1px solid #D5D6D0;
+      position: relative;
+    }
+
+    .arch-footer .grid-cross::before,
+    .arch-footer .grid-cross::after {
+      background: #20E6A1;
+    }
+
+    .arch-footer-grid {
+      max-width: 1280px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: 1.45fr 1fr 1fr 1fr;
+      border-left: 1px solid #D5D6D0;
+      border-right: 1px solid #D5D6D0;
+      border-bottom: 1px solid #D5D6D0;
+      position: relative;
+    }
+
+    .arch-footer-col {
+      padding: 40px 28px;
+      border-right: 1px solid #D5D6D0;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      position: relative;
+    }
+
+    .arch-footer-col:last-child {
+      border-right: none;
+    }
+
+    .footer-wordmark {
+      display: inline-flex;
+      align-items: center;
+      gap: 14px;
+      font-family: var(--font-sans);
+      font-size: clamp(2.2rem, 4.2vw, 3.4rem);
+      font-weight: 700;
+      letter-spacing: -0.05em;
+      color: #23242E;
+      line-height: 0.95;
+      margin-bottom: 4px;
+    }
+
+    .footer-wordmark-icon {
+      width: clamp(34px, 4vw, 46px);
+      height: clamp(34px, 4vw, 46px);
+      flex-shrink: 0;
+      border-radius: 10px;
+    }
+
+    .footer-col-label {
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      color: #6B6D76;
+      margin-bottom: 6px;
+    }
+
+    .footer-desc {
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      line-height: 1.65;
+      color: #565860;
+      max-width: 340px;
+    }
+
+    .footer-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      align-self: flex-start;
+      padding: 4px 10px;
+      border-radius: 4px;
+      background: rgba(255, 255, 255, 0.72);
+      border: 1px solid #D5D6D0;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: #23242E;
+    }
+
+    .footer-links {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      color: #363842;
+    }
+
+    .footer-links a:hover {
+      color: #107A4D;
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    .veneer-playground-wrap {
+      max-width: 1280px;
+      margin: 0 auto;
+      position: relative;
+      border-left: 1px solid #D5D6D0;
+      border-right: 1px solid #D5D6D0;
+      overflow: hidden;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    .playground-micro-label {
+      position: absolute;
+      z-index: 6;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #7D8089;
+      pointer-events: none;
+      line-height: 1.45;
+    }
+
+    .playground-micro-label.top-left {
+      top: 22px;
+      left: 28px;
+    }
+
+    .playground-micro-label.drag-hint {
+      top: 38px;
+      left: 38%;
+      color: #6B6E77;
+    }
+
+    .playground-micro-label.drag-hint strong {
+      display: block;
+      font-weight: 600;
+      color: #20B47C;
+    }
+
+    #veneer-letter-svg {
+      display: block;
+      width: 100%;
+      height: auto;
+      min-height: 300px;
+      max-height: 500px;
+      touch-action: pan-y;
+      cursor: grab;
+    }
+
+    #veneer-letter-svg.is-dragging {
+      cursor: grabbing;
+    }
+
+    .veneer-letter-node {
+      cursor: grab;
+      outline: none;
+    }
+
+    .veneer-letter-node:active {
+      cursor: grabbing;
+    }
+
+    .veneer-letter-node .letter-side,
+    .veneer-letter-node .letter-front {
+      stroke: #FFFFFF;
+      stroke-width: 1.2px;
+      stroke-linejoin: round;
+      transition: fill 200ms ease;
+    }
+
+    .veneer-letter-node:focus-visible .letter-front {
+      stroke: #107A4D;
+      stroke-width: 2.4px;
+    }
+
+    .arch-footer-bottom-band {
+      border-top: 1px solid #D5D6D0;
+      border-bottom: 1px solid #D5D6D0;
+      background: rgba(239, 239, 234, 0.85);
+    }
+
+    .arch-footer-bottom {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 12px 28px;
+      border-left: 1px solid #D5D6D0;
+      border-right: 1px solid #D5D6D0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      letter-spacing: 0.04em;
+      color: #6B6D76;
+      position: relative;
+    }
+
+    .arch-footer-bottom-right {
+      display: flex;
+      justify-content: flex-end;
+    }
+
+    .footer-reset-btn {
+      width: 30px;
+      height: 30px;
+      padding: 0;
+      border-radius: 5px;
+      border: 1px solid #D5D6D0;
+      background: rgba(255, 255, 255, 0.65);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: #454750;
+      transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease, transform 0.15s ease;
+    }
+
+    .footer-reset-btn:hover {
+      border-color: #20E6A1;
+      background: #FFFFFF;
+      color: #141413;
+      transform: rotate(-35deg);
+    }
+
+    .footer-reset-btn:active {
+      transform: scale(0.95) rotate(-60deg);
+    }
+
+    @media (max-width: 960px) {
+      .nav-grid {
+        grid-template-columns: 1fr auto;
+      }
+      .nav-cell.hide-tablet {
+        display: none;
+      }
+      .mobile-menu-cell {
+        display: flex;
+      }
+      .hero-swiss-grid,
+      .swiss-section-intro,
+      .compare-swiss-grid,
+      .install-swiss-grid,
+      .faq-swiss-grid,
+      .pre-footer-grid {
+        grid-template-columns: 1fr;
+      }
+      .hero-copy-cell {
+        padding: 48px 32px 0;
+      }
+      .micro-facts {
+        margin: 36px -32px 0;
+      }
+      .hero-sim-cell,
+      .swiss-intro-left,
+      .swiss-intro-right,
+      .compare-cell,
+      .install-left-cell,
+      .faq-left-cell,
+      .pre-footer-left,
+      .pre-footer-right {
+        padding: 36px 32px;
+      }
+      .hero-copy-cell,
+      .swiss-intro-left,
+      .compare-cell,
+      .install-left-cell,
+      .faq-left-cell,
+      .pre-footer-left {
+        border-right: none;
+        border-bottom: 1px solid var(--rule);
+      }
+      .pre-footer-left {
+        border-bottom-color: rgba(255, 255, 255, 0.1);
+      }
+      .compare-cell:last-child {
+        border-bottom: none;
+      }
+      .steps-swiss-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+      .step-cell:nth-child(2) {
+        border-right: none;
+      }
+      .step-cell:nth-child(1),
+      .step-cell:nth-child(2) {
+        border-bottom: 1px solid var(--rule);
+      }
+      .arch-footer-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+      .arch-footer-col {
+        border-bottom: 1px solid var(--footer-rule);
+      }
+      .arch-footer-col:nth-of-type(2n) {
+        border-right: none;
+      }
+      .sim-sidebar {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 38px;
+        width: 215px;
+        box-shadow: 14px 0 32px rgba(0, 0, 0, 0.55);
+      }
+      .sim-sidebar.collapsed {
+        transform: translateX(-110%);
+        width: 215px;
+        opacity: 0;
+        pointer-events: none;
+      }
+    }
+
+    @media (max-width: 640px) {
+      main .swiss-band {
+        margin-bottom: 44px;
+      }
+      .swiss-frame,
+      .nav-grid,
+      .announcement-inner,
+      .arch-footer-grid,
+      .veneer-playground-wrap,
+      .arch-footer-bottom {
+        border-left: none;
+        border-right: none;
+      }
+      .hero-copy-cell {
+        padding: 32px 18px 0;
+      }
+      .hero-h1 {
+        font-size: clamp(2.15rem, 9vw, 2.85rem);
+      }
+      .hero-ctas {
+        flex-direction: column;
+        align-items: stretch;
+        width: 100%;
+      }
+      .hero-ctas .btn-primary,
+      .hero-ctas .btn-secondary {
+        width: 100%;
+        justify-content: center;
+      }
+      .hero-sim-cell,
+      .swiss-intro-left,
+      .swiss-intro-right,
+      .compare-cell,
+      .step-cell,
+      .install-left-cell,
+      .faq-left-cell,
+      .pre-footer-left,
+      .pre-footer-right {
+        padding: 28px 18px;
+      }
+      .sim-titlebar {
+        height: auto;
+        min-height: 42px;
+        flex-wrap: wrap;
+        padding: 6px 10px;
+        gap: 6px;
+      }
+      .sim-titlebar-left {
+        width: 100%;
+        overflow-x: auto;
+      }
+      .sim-view-switch {
+        width: 100%;
+        justify-content: stretch;
+      }
+      .sim-view-btn {
+        flex: 1;
+        text-align: center;
+      }
+      .sim-body,
+      .sim-workspace,
+      .sim-editor-scroll {
+        height: 380px;
+        min-height: 380px;
+      }
+      .sim-statusbar {
+        height: auto;
+        min-height: 30px;
+        padding: 6px 10px;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .spec-row {
+        padding: 16px 18px;
+        grid-template-columns: 1fr;
+        gap: 6px;
+      }
+      summary.faq-q {
+        padding: 18px;
+        font-size: 15.5px;
+      }
+      .faq-a {
+        padding: 0 18px 18px;
+      }
+      .pre-footer-actions {
+        width: 100%;
+      }
+      .btn-cta-emerald,
+      .btn-cta-glass {
+        width: 100%;
+        justify-content: center;
+      }
+      .pre-footer-right .cta-tilt-rig {
+        max-width: 100%;
+        height: 235px;
+        transform: none;
+      }
+      .cta-layer-ram {
+        transform: translate3d(0, 0, 0);
+      }
+      .cta-layer-cover {
+        transform: translate3d(6px, 10px, 12px);
+      }
+      .cta-tilt-rig:hover .cta-layer-cover,
+      .cta-tilt-rig.peeled .cta-layer-cover {
+        transform: translate3d(10px, 42px, 18px) rotateZ(2deg);
+      }
+      .cta-tilt-rig:hover .cta-layer-ram,
+      .cta-tilt-rig.peeled .cta-layer-ram {
+        transform: translate3d(0, -4px, 0);
+      }
+      #veneer-letter-svg {
+        min-height: 220px;
+        max-height: 310px;
+      }
+      .playground-micro-label.top-left {
+        top: 12px;
+        left: 16px;
+        font-size: 10px;
+      }
+      .playground-micro-label.drag-hint {
+        top: 12px;
+        left: auto;
+        right: 16px;
+        text-align: right;
+        font-size: 10px;
+      }
+      .arch-footer-bottom {
+        display: flex;
+        flex-direction: row;
+        justify-content: space-between;
+        text-align: left;
+        padding: 12px 18px;
+      }
+      .arch-footer-bottom-right {
+        justify-content: flex-end;
+      }
+      .micro-facts {
+        grid-template-columns: 1fr;
+        margin: 28px -18px 0;
+      }
+      .micro-fact {
+        border-right: none;
+        border-bottom: 1px solid var(--rule);
+      }
+      .micro-fact:last-child {
+        border-bottom: none;
+      }
+      .steps-swiss-grid,
+      .arch-footer-grid {
+        grid-template-columns: 1fr;
+      }
+      .step-cell {
+        border-right: none;
+        border-bottom: 1px solid var(--rule);
+      }
+      .step-cell:last-child {
+        border-bottom: none;
+      }
+      .arch-footer-col {
+        border-right: none;
+        padding: 26px 16px;
+      }
+      .sim-pill-btn {
+        min-height: 44px;
+        padding: 0 11px;
+      }
+      .sim-select-group {
+        min-height: 44px;
+        padding: 0 10px;
+      }
+      .ribbon-btn {
+        width: 34px;
+        height: 36px;
+      }
+      .sim-editor-scroll {
+        padding: 16px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="announcement-bar" role="region" aria-label="Release announcement">
+    <div class="announcement-inner">
+      <div class="announcement-left">
+        <span class="announcement-badge">NEW</span>
+        <span>Veneer v1.0: Local GPU AI covers (135 tok/s) + automatic encrypted image hiding</span>
+      </div>
+      <a href="#live-demo" class="announcement-link">Try the multi-tab simulator &rarr;</a>
+    </div>
+  </div>
+
+  <header class="top-nav">
+    <nav class="nav-grid" aria-label="Main navigation">
+      <div class="nav-cell">
+        <a href="#" class="brand">
+          <svg width="26" height="26" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+            <rect width="64" height="64" rx="14" fill="#107A4D" />
+            <path d="M64 64H16C7 64 2 57 2 48C2 39 9 33 17 33C24 33 29 38 29 45C29 50 25 53 20 53C16 53 13 50 13 46C13 43 16 41 19 41L25 55C23 50 22 45 22 39C22 28 29 20 38 18C40 11 45 7 52 7C58 7 63 12 64 19V64Z" fill="#F1EFEB" />
+            <circle cx="18" cy="46" r="7" fill="#107A4D" />
+            <circle cx="19" cy="46" r="3.5" fill="#F1EFEB" />
+            <path d="M39 64C39 51 46 45 57 45H64V64H39Z" fill="#141413" />
+            <circle cx="34" cy="34" r="5.8" fill="#141413" />
+            <circle cx="32" cy="32" r="2" fill="#F1EFEB" />
+            <circle cx="51" cy="34" r="5.8" fill="#141413" />
+            <circle cx="49" cy="32" r="2" fill="#F1EFEB" />
+          </svg>
+          <span>Veneer</span>
+          <span class="brand-pill">[ OBSIDIAN ]</span>
+        </a>
+      </div>
+
+      <div class="nav-cell hide-tablet">
+        <div class="nav-links">
+          <a href="#live-demo">Live Demo</a>
+          <a href="#why">Why Lock Screens Fail</a>
+          <a href="#how">How It Works</a>
+          <a href="#install">Install</a>
+          <a href="#faq">FAQ</a>
+        </div>
+      </div>
+
+      <div class="nav-cell hide-tablet">
+        <a href="https://github.com/farizanjum/vener" class="nav-btn-ghost" target="_blank" rel="noopener">
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path fill="none" d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5c.08-1.25-.27-2.48-1-3.5c.28-1.15.28-2.35 0-3.5c0 0-1 0-3 1.5c-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.4 5.4 0 0 0 4 9c0 3.5 3 5.5 6 5.5c-.39.49-.68 1.05-.85 1.65S8.93 17.38 9 18v4"/><path fill="none" d="M9 18c-4.51 2-5-2-7-2"/></svg>
+          <span>GitHub</span>
+        </a>
+      </div>
+
+      <div class="nav-cell hide-tablet">
+        <a href="#install" class="nav-btn-solid">
+          <span>Download Plugin</span>
+        </a>
+      </div>
+
+      <div class="mobile-menu-cell">
+        <button type="button" class="mobile-menu-toggle" id="mobile-menu-btn" aria-label="Toggle navigation menu" aria-expanded="false">
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path fill="none" d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+      </div>
+    </nav>
+
+    <div class="mobile-drawer" id="mobile-drawer" aria-label="Mobile navigation">
+      <a href="#live-demo" class="mobile-nav-link"><span>[ 01 ] Live Obsidian Demo</span><span>&rarr;</span></a>
+      <a href="#why" class="mobile-nav-link"><span>[ 02 ] Why Lock Screens Fail</span><span>&rarr;</span></a>
+      <a href="#how" class="mobile-nav-link"><span>[ 03 ] How It Works</span><span>&rarr;</span></a>
+      <a href="#install" class="mobile-nav-link"><span>[ 04 ] Install Guide</span><span>&rarr;</span></a>
+      <a href="#faq" class="mobile-nav-link"><span>[ 05 ] FAQ</span><span>&rarr;</span></a>
+      <div class="mobile-drawer-ctas">
+        <a href="https://github.com/farizanjum/vener" class="btn-secondary" target="_blank" rel="noopener">GitHub</a>
+        <a href="#install" class="btn-primary mobile-nav-link">Download Plugin</a>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section class="swiss-band" id="live-demo" aria-label="Hero and interactive Obsidian workspace">
+      <div class="swiss-frame">
+        <span class="grid-cross tl" aria-hidden="true"></span>
+        <span class="grid-cross tr" aria-hidden="true"></span>
+        <span class="grid-cross bl" aria-hidden="true"></span>
+        <span class="grid-cross br" aria-hidden="true"></span>
+
+        <div class="hero-swiss-grid">
+          <div class="hero-copy-cell">
+            <span class="grid-cross tr" aria-hidden="true"></span>
+            <span class="grid-cross br" aria-hidden="true"></span>
+            <div>
+              <div class="status-pill">
+                <span class="pulse-dot" aria-hidden="true"></span>
+                <span>Local-first Obsidian plugin &middot; Zero cloud calls</span>
+              </div>
+
+              <h1 class="hero-h1">
+                Notes that look like<br />
+                <span style="color: var(--green)">ordinary notes.</span>
+              </h1>
+
+              <p class="hero-sub">
+                Someone looks over your shoulder? They see a <strong>boring grocery list</strong>. Type <mark class="hl">;; + password</mark> on any line and your <strong>real note, real title, and hidden images</strong> appear in RAM. Switch tabs or walk away, and the cover comes right back.
+              </p>
+
+              <div class="hero-ctas">
+                <a href="#install" class="btn-primary">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path fill="none" d="M12 19h8M4 17l6-6l-6-6"/></svg>
+                  <span>Install in Obsidian</span>
+                </a>
+                <button type="button" class="btn-secondary" id="hero-demo-trigger">
+                  <span>Unlock the live demo</span>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path fill="none" d="M5 12h14m-7-7l7 7l-7 7"/></svg>
+                </button>
+              </div>
+            </div>
+
+            <div class="micro-facts">
+              <div class="micro-fact">
+                <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path fill="none" d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path fill="none" d="m9 12l2 2l4-4"/></svg>
+                <span>AES-256-GCM + Argon2id</span>
+              </div>
+              <div class="micro-fact">
+                <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path fill="none" d="M15.914 4a1.5 1.5 0 0 0-2.474-1.561l-9 9A1.5 1.5 0 0 0 5.5 14h4.002a.5.5 0 0 1 .471.666L8.086 20a1.5 1.5 0 0 0 2.475 1.56l9-9A1.5 1.5 0 0 0 18.5 10h-3.997a.5.5 0 0 1-.472-.667z"/></svg>
+                <span>135 tok/s RTX Vulkan</span>
+              </div>
+              <div class="micro-fact">
+                <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect fill="none" width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle fill="none" cx="9" cy="9" r="2"/><path fill="none" d="m21 15l-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>
+                <span>Auto-masks on tab switch</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="hero-sim-cell">
+            <div class="sim-window" aria-label="Interactive Multi-Tab Obsidian Workspace Simulator">
+              <div class="sim-titlebar">
+                <div class="sim-titlebar-left">
+                  <div class="mac-dots" aria-hidden="true">
+                    <span></span><span></span><span></span>
+                  </div>
+                  <div class="sim-tabs-bar" id="sim-tabs-bar" role="tablist" aria-label="Open Obsidian tabs"></div>
+                  <button type="button" class="obs-tab-add" id="btn-open-all-tabs" title="Open all vault tabs" aria-label="Open all vault tabs">+</button>
+                </div>
+
+                <div class="sim-view-switch" role="tablist" aria-label="View mode">
+                  <button type="button" class="sim-view-btn active" data-view="editor" id="view-editor-btn">Editor</button>
+                  <button type="button" class="sim-view-btn" data-view="disk" id="view-disk-btn">Raw .md on Disk</button>
+                </div>
+              </div>
+
+              <div class="sim-action-strip">
+                <div class="sim-actions-left">
+                  <button type="button" class="sim-pill-btn primary-sim" id="btn-sim-unlock">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect fill="none" width="18" height="11" x="3" y="11" rx="2" ry="2"/><path fill="none" d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>
+                    <span>Unlock (;;demo)</span>
+                  </button>
+
+                  <button type="button" class="sim-pill-btn" id="btn-sim-mask">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path fill="none" d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575a1 1 0 0 1 0 .696a10.8 10.8 0 0 1-1.444 2.49m-6.41-.679a3 3 0 0 1-4.242-4.242"/><path fill="none" d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151a1 1 0 0 1 0-.696a10.75 10.75 0 0 1 4.446-5.143M2 2l20 20"/></svg>
+                    <span>Mask (Ctrl+Shift+X)</span>
+                  </button>
+
+                  <button type="button" class="sim-pill-btn" id="btn-sim-cover">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path fill="none" d="M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594zM20 2v4m2-2h-4"/><circle fill="none" cx="4" cy="20" r="2"/></svg>
+                    <span>New AI Cover</span>
+                  </button>
+
+                  <button type="button" class="sim-pill-btn" id="btn-sim-palette" title="Open Obsidian Command Palette (Ctrl+P)">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path fill="none" d="m4 17l6-6l-6-6m8 14h8"/></svg>
+                    <span>Ctrl+P</span>
+                  </button>
+
+                  <div class="sim-select-group" aria-label="AI Cover Persona and Length">
+                    <select id="sim-persona" class="sim-select" aria-label="Cover persona">
+                      <option value="0">Engineer</option>
+                      <option value="1">Designer</option>
+                      <option value="2">Founder</option>
+                    </select>
+                    <span style="color: #444744">&middot;</span>
+                    <select id="sim-length" class="sim-select" aria-label="Cover length">
+                      <option value="short">Short</option>
+                      <option value="long">500w Long</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div class="sim-actions-right">
+                  <button type="button" class="sim-pill-btn danger-sim" id="btn-sim-shred">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path fill="none" d="M12 3q1 4 4 6.5t3 5.5a1 1 0 0 1-14 0a5 5 0 0 1 1-3a1 1 0 0 0 5 0c0-2-1.5-3-1.5-5q0-2 2.5-4"/></svg>
+                    <span>Shred (;;!9911)</span>
+                  </button>
+                  <button type="button" class="sim-pill-btn" id="btn-sim-restore" hidden>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path fill="none" d="M3 12a9 9 0 1 0 9-9a9.75 9.75 0 0 0-6.74 2.74L3 8"/><path fill="none" d="M3 3v5h5"/></svg>
+                    <span>Restore</span>
+                  </button>
+                </div>
+              </div>
+
+              <div class="sim-workspace sim-body">
+                <div class="sim-ribbon" aria-label="Obsidian left ribbon">
+                  <div class="sim-ribbon-top">
+                    <button type="button" class="ribbon-btn active" id="ribbon-sidebar-toggle" title="Toggle Vault File Explorer" aria-label="Toggle Vault File Explorer">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect fill="none" width="18" height="18" x="3" y="3" rx="2"/><path fill="none" d="M9 3v18"/></svg>
+                    </button>
+                    <button type="button" class="ribbon-btn" id="ribbon-palette-btn" title="Open Command Palette (Ctrl+P)" aria-label="Open Command Palette">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path fill="none" d="m4 17l6-6l-6-6m8 14h8"/></svg>
+                    </button>
+                    <button type="button" class="ribbon-btn" id="ribbon-cover-btn" title="Generate new AI cover (135 tok/s)" aria-label="Generate new AI cover">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path fill="none" d="M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z"/></svg>
+                    </button>
+                    <button type="button" class="ribbon-btn" id="ribbon-panic-btn" title="Panic: Mask all protected notes (Ctrl+Shift+X)" aria-label="Panic mask all protected notes">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path fill="none" d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></svg>
+                    </button>
+                  </div>
+                  <div class="sim-ribbon-bottom">
+                    <button type="button" class="ribbon-btn" id="ribbon-settings-btn" title="Open Veneer Command Palette" aria-label="Veneer settings and commands">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle fill="none" cx="12" cy="12" r="3"/><path fill="none" d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83a2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33a1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2a2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0a2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2a2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83a2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2a2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0a2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2a2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                    </button>
+                  </div>
+                </div>
+
+                <aside class="sim-sidebar" id="sim-sidebar" aria-label="Vault file explorer">
+                  <div>
+                    <div class="vault-header">
+                      <span>my-vault</span>
+                      <span>3 notes</span>
+                    </div>
+                    <div class="vault-files" id="vault-files-list"></div>
+                  </div>
+                  <div class="vault-hint-box">
+                    Tip: Unlock a note, then click another tab to see automatic tab-switch masking in action.
+                  </div>
+                </aside>
+
+                <div class="sim-editor-scroll" id="sim-scroll">
+                  <div class="sim-canvas-inner" id="sim-canvas-inner">
+                    <div class="sim-Breadcrumb">
+                      <span>my-vault</span>
+                      <span>/</span>
+                      <span id="sim-breadcrumb-file">Grocery run (Saturday).md</span>
+                    </div>
+                    <div class="sim-note-header">
+                      <div class="sim-note-title" id="sim-note-title">Grocery run (Saturday)</div>
+                      <span class="sim-state-badge" id="sim-state-badge">Cover active</span>
+                    </div>
+
+                    <div class="sim-note-body" id="sim-note-body"></div>
+
+                    <div class="sim-image-card" id="sim-image-card" hidden>
+                      <div class="sim-image-meta">
+                        <span>system-topology.png &middot; decrypted in RAM only</span>
+                        <span>blob:obsidian.md/7c9e-ram</span>
+                      </div>
+                      <img id="sim-blob-img" alt="Decrypted system topology diagram rendered in RAM" />
+                    </div>
+                  </div>
+
+                  <div class="sim-trigger-bar" id="sim-trigger-bar">
+                    <input
+                      type="text"
+                      class="sim-trigger-input"
+                      id="sim-trigger-input"
+                      placeholder="Click here and type ;;demo then Enter (keystrokes stay invisible)..."
+                      autocomplete="off"
+                      spellcheck="false"
+                      aria-label="Blind inline password trigger"
+                    />
+                    <span class="sim-trigger-hint">;;demo &crarr;</span>
+                  </div>
+                </div>
+
+                <div class="sim-toast" id="sim-toast" role="status" aria-live="polite">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#10B981" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path fill="none" d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path fill="none" d="m9 12l2 2l4-4"/></svg>
+                  <span id="sim-toast-text">Masked on tab switch</span>
+                </div>
+
+                <div class="sim-palette-backdrop" id="sim-palette-backdrop" hidden>
+                  <div class="sim-palette-modal" role="dialog" aria-label="Obsidian Command Palette">
+                    <div class="sim-palette-header">
+                      <input type="text" class="sim-palette-input" id="sim-palette-input" placeholder="Type a Veneer command..." autocomplete="off" />
+                      <button type="button" class="sim-palette-esc" id="sim-palette-close">ESC</button>
+                    </div>
+                    <div class="sim-palette-list" id="sim-palette-list">
+                      <button type="button" class="sim-palette-item" data-cmd="unlock">
+                        <span>Veneer: Unlock this note (;;demo)</span>
+                        <span class="sim-palette-kbd">;;demo</span>
+                      </button>
+                      <button type="button" class="sim-palette-item" data-cmd="cover">
+                        <span>Veneer: Protect / Generate new AI cover (135 tok/s)</span>
+                        <span class="sim-palette-kbd">Vulkan GPU</span>
+                      </button>
+                      <button type="button" class="sim-palette-item" data-cmd="panic">
+                        <span>Veneer: Panic: mask all protected notes (Ctrl+Shift+X)</span>
+                        <span class="sim-palette-kbd">Ctrl+Shift+X</span>
+                      </button>
+                      <button type="button" class="sim-palette-item" data-cmd="disk">
+                        <span>Veneer: Inspect raw .md file on disk (draft_cache)</span>
+                        <span class="sim-palette-kbd">YAML</span>
+                      </button>
+                      <button type="button" class="sim-palette-item" data-cmd="shred">
+                        <span>Veneer: Trigger destruction PIN (;;!9911)</span>
+                        <span class="sim-palette-kbd">;;!9911</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="sim-statusbar">
+                <div class="sim-status-left">
+                  <span id="sim-status-mode">Veneer: Cover</span>
+                  <span class="blind-dots" id="sim-blind-dots"></span>
+                </div>
+                <div class="sim-status-right">
+                  <span id="sim-status-counts">24 words | 6 lines</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="swiss-band" id="why" aria-label="Why lock screens fail">
+      <div class="swiss-frame">
+        <span class="grid-cross tl" aria-hidden="true"></span>
+        <span class="grid-cross tr" aria-hidden="true"></span>
+        <span class="grid-cross bl" aria-hidden="true"></span>
+        <span class="grid-cross br" aria-hidden="true"></span>
+
+        <div class="swiss-section-intro">
+          <div class="swiss-intro-left">
+            <h2 class="section-h2">Why lock screens fail <mark class="hl">(and how Veneer fixes it)</mark></h2>
+          </div>
+          <div class="swiss-intro-right">
+            <div>
+              Standard encryption tools hide what you wrote, but <strong>announce to everyone nearby</strong> that you are hiding something. Veneer <mark class="hl">removes the tell completely</mark> with believable cover notes.
+            </div>
+          </div>
+        </div>
+
+        <div class="compare-swiss-grid">
+          <article class="compare-cell">
+            <span class="grid-cross tr" aria-hidden="true"></span>
+            <span class="grid-cross br" aria-hidden="true"></span>
+            <div>
+              <h3 class="compare-title">1. The &ldquo;Locked File&rdquo; Tell</h3>
+              <div class="compare-box">
+                <div class="compare-tag">01 - Standard Lock Screen</div>
+                <p>A password popup screams <em>&ldquo;I&rsquo;m hiding something important.&rdquo;</em> Anyone glancing at your screen knows right away which file to ask about.</p>
+              </div>
+            </div>
+            <div class="compare-box positive">
+              <div class="compare-tag">01 + Veneer Cover Note</div>
+              <p>Veneer opens as a normal grocery list, debug log, or workout note. Nothing asks you to unlock. Type <code>;;</code> blind on any line when you want your real note.</p>
+            </div>
+          </article>
+
+          <article class="compare-cell">
+            <span class="grid-cross tr" aria-hidden="true"></span>
+            <span class="grid-cross br" aria-hidden="true"></span>
+            <div>
+              <h3 class="compare-title">2. The Pasted Screenshot Leak</h3>
+              <div class="compare-box">
+                <div class="compare-tag">02 - Unencrypted Attachments</div>
+                <p>Normally, pasting an image in Obsidian leaves <code>Pasted image.png</code> sitting right in your vault folder for anyone to open in Finder or Explorer.</p>
+              </div>
+            </div>
+            <div class="compare-box positive">
+              <div class="compare-tag">02 + Encrypted Image Absorption</div>
+              <p>Veneer sucks local vault images into the encrypted <code>AES-256-GCM</code> note and deletes the raw file from disk. While unlocked, images render from a temporary RAM <code>blob:</code> URL.</p>
+            </div>
+          </article>
+
+          <article class="compare-cell">
+            <div>
+              <h3 class="compare-title">3. The Filename Leak</h3>
+              <div class="compare-box">
+                <div class="compare-tag">03 - Exposed Note Title</div>
+                <p>A note titled <code>Q4 Acquisition Targets.md</code> gives away the secret in your sidebar even if the body inside is encrypted.</p>
+              </div>
+            </div>
+            <div class="compare-box positive">
+              <div class="compare-tag">03 + Automatic Title Swap</div>
+              <p>Veneer renames the file on disk to match your cover (<code>Grocery run (Saturday).md</code>) and only displays your real title inside the editor while unlocked.</p>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="swiss-band" id="how" aria-label="How Veneer works in 4 steps">
+      <div class="swiss-frame">
+        <span class="grid-cross tl" aria-hidden="true"></span>
+        <span class="grid-cross tr" aria-hidden="true"></span>
+        <span class="grid-cross bl" aria-hidden="true"></span>
+        <span class="grid-cross br" aria-hidden="true"></span>
+
+        <div class="swiss-section-intro">
+          <div class="swiss-intro-left">
+            <h2 class="section-h2">How it works in <mark class="hl">4 steps</mark></h2>
+          </div>
+          <div class="swiss-intro-right">
+            <div>
+              No modal dialogs or separate vaults. Everything happens <strong>inline inside your normal Obsidian tabs</strong> with <mark class="hl">zero plaintext on disk</mark>.
+            </div>
+          </div>
+        </div>
+
+        <div class="steps-swiss-grid">
+          <div class="step-cell">
+            <span class="grid-cross tr" aria-hidden="true"></span>
+            <span class="grid-cross br" aria-hidden="true"></span>
+            <div class="step-top">
+              <span>STEP 01</span>
+              <span class="step-icon" aria-hidden="true">
+                <svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path fill="none" d="M12 20v2m0-20v2m5 16v2m0-20v2M2 12h2m-2 5h2M2 7h2m16 5h2m-2 5h2M20 7h2M7 20v2M7 2v2"/><rect fill="none" width="16" height="16" x="4" y="4" rx="2"/><rect fill="none" width="8" height="8" x="8" y="8" rx="1"/></svg>
+              </span>
+            </div>
+            <h3 class="step-title">Pick or generate a cover.</h3>
+            <p class="step-desc">
+              Click <em>Protect this note</em>. Your local GPU writes a believable cover note (50 to 500 words) matched to your job in under a second via <code>RTX Vulkan</code>.
+            </p>
+          </div>
+
+          <div class="step-cell">
+            <span class="grid-cross tr" aria-hidden="true"></span>
+            <span class="grid-cross br" aria-hidden="true"></span>
+            <div class="step-top">
+              <span>STEP 02</span>
+              <span class="step-icon" aria-hidden="true">
+                <svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path fill="none" d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z"/><circle fill="none" cx="16.5" cy="7.5" r=".5"/></svg>
+              </span>
+            </div>
+            <h3 class="step-title">Type <code>;;</code> + password on any line.</h3>
+            <p class="step-desc">
+              Nothing shows up on screen as you type. Press <code>Enter</code>, and <code>Argon2id</code> unlocks your real title, text, and images in memory.
+            </p>
+          </div>
+
+          <div class="step-cell">
+            <span class="grid-cross tr" aria-hidden="true"></span>
+            <span class="grid-cross br" aria-hidden="true"></span>
+            <div class="step-top">
+              <span>STEP 03</span>
+              <span class="step-icon" aria-hidden="true">
+                <svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path fill="none" d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path fill="none" d="m9 12l2 2l4-4"/></svg>
+              </span>
+            </div>
+            <h3 class="step-title">Edit normally, never leak to disk.</h3>
+            <p class="step-desc">
+              Every auto-save re-encrypts in RAM into the YAML <code>draft_cache</code> property. Obsidian&rsquo;s search and cloud sync only ever see the cover.
+            </p>
+          </div>
+
+          <div class="step-cell">
+            <div class="step-top">
+              <span>STEP 04</span>
+              <span class="step-icon" aria-hidden="true">
+                <svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect fill="none" width="18" height="11" x="3" y="11" rx="2" ry="2"/><path fill="none" d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+              </span>
+            </div>
+            <h3 class="step-title">Switch tabs or walk away, it masks.</h3>
+            <p class="step-desc">
+              Click another tab, Alt+Tab, close your laptop, or hit <code>Ctrl+Shift+X</code>. Keys are zeroed in RAM and the cover returns right away.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="swiss-band" id="install" aria-label="Install in 60 seconds">
+      <div class="swiss-frame">
+        <span class="grid-cross tl" aria-hidden="true"></span>
+        <span class="grid-cross tr" aria-hidden="true"></span>
+        <span class="grid-cross bl" aria-hidden="true"></span>
+        <span class="grid-cross br" aria-hidden="true"></span>
+
+        <div class="swiss-section-intro">
+          <div class="swiss-intro-left">
+            <h2 class="section-h2">Install in <mark class="hl">60 seconds</mark></h2>
+          </div>
+          <div class="swiss-intro-right">
+            <div>
+              Build from source into your vault&rsquo;s <strong>.obsidian/plugins/deocy/</strong> directory. <mark class="hl">Zero telemetry</mark>.
+            </div>
+          </div>
+        </div>
+
+        <div class="install-swiss-grid">
+          <div class="install-left-cell">
+            <span class="grid-cross tr" aria-hidden="true"></span>
+            <span class="grid-cross br" aria-hidden="true"></span>
+            <div class="terminal-card">
+              <div class="terminal-bar">
+                <span>bash &middot; build &amp; copy plugin</span>
+                <button type="button" class="copy-btn" id="copy-install-btn">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect fill="none" width="14" height="14" x="8" y="8" rx="2" ry="2"/><path fill="none" d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+                  <span id="copy-install-label">Copy</span>
+                </button>
+              </div>
+              <pre class="terminal-pre" id="install-code">git clone https://github.com/farizanjum/vener.git
+cd vener
+npm install &amp;&amp; npm run build
+cp -r main.js manifest.json styles.css assets/ &lt;vault&gt;/.obsidian/plugins/deocy/</pre>
+            </div>
+          </div>
+
+          <div class="install-right-cell">
+            <div class="spec-row">
+              <span class="spec-key">STEP 01</span>
+              <span class="spec-val">Enable <strong>Veneer</strong> in Obsidian Settings &rarr; Community plugins.</span>
+            </div>
+            <div class="spec-row">
+              <span class="spec-key">STEP 02</span>
+              <span class="spec-val">Disable <strong>File Recovery</strong> in Core plugins so Obsidian never writes unencrypted snapshots.</span>
+            </div>
+            <div class="spec-row">
+              <span class="spec-key">CIPHER</span>
+              <span class="spec-val"><strong>AES-256-GCM</strong> + <strong>Argon2id</strong> (64 MiB memory cost, 4 KB block padding).</span>
+            </div>
+            <div class="spec-row">
+              <span class="spec-key">LOCAL AI</span>
+              <span class="spec-val"><strong>Qwen3 0.6B / 1.7B / 4B GGUF</strong> via RTX Vulkan (~135 tok/s) or single-thread WASM fallback.</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="swiss-band" id="faq" aria-label="Frequently asked questions">
+      <div class="swiss-frame">
+        <span class="grid-cross tl" aria-hidden="true"></span>
+        <span class="grid-cross tr" aria-hidden="true"></span>
+        <span class="grid-cross bl" aria-hidden="true"></span>
+        <span class="grid-cross br" aria-hidden="true"></span>
+
+        <div class="faq-swiss-grid">
+          <div class="faq-left-cell">
+            <span class="grid-cross tr" aria-hidden="true"></span>
+            <span class="grid-cross br" aria-hidden="true"></span>
+            <div>
+              <h2 class="section-h2" style="margin-bottom: 14px;">Frequently asked <mark class="hl">questions</mark></h2>
+              <p class="step-desc">
+                Direct answers on <strong>blind inline unlocking</strong>, cover edits, <mark class="hl">encrypted image absorption</mark>, offline GPU covers, and the emergency destruction PIN.
+              </p>
+            </div>
+            <div class="status-pill" style="margin-bottom: 0;">
+              <span class="pulse-dot" aria-hidden="true"></span>
+              <span>Test any feature in the simulator above</span>
+            </div>
+          </div>
+
+          <div class="faq-right-cell">
+            <details class="faq-item" open>
+              <summary class="faq-q">
+                <span>1. How do I unlock a note without a password box popping up?</span>
+                <span class="faq-toggle-icon" aria-hidden="true">+</span>
+              </summary>
+              <div class="faq-a">
+                Click on any empty line inside your note and type <code>;;</code> followed by your password, then press <code>Enter</code>. A CodeMirror 6 filter catches your keystrokes before they appear on screen or touch the file. If someone types the wrong password, nothing happens at all: no error message, no shake animation, and no popup.
+              </div>
+            </details>
+
+            <details class="faq-item">
+              <summary class="faq-q">
+                <span>2. What happens if I edit the fake cover note while it&rsquo;s locked?</span>
+                <span class="faq-toggle-icon" aria-hidden="true">+</span>
+              </summary>
+              <div class="faq-a">
+                Nothing breaks. Your real note stays safely encrypted inside the YAML frontmatter property (<code>draft_cache</code>). You can check off groceries, fix a typo, or add lines to the cover note anytime without touching your hidden data.
+              </div>
+            </details>
+
+            <details class="faq-item">
+              <summary class="faq-q">
+                <span>3. What if my real note is 500+ words long? Won&rsquo;t a tiny grocery list look suspicious?</span>
+                <span class="faq-toggle-icon" aria-hidden="true">+</span>
+              </summary>
+              <div class="faq-a">
+                Veneer handles this in two ways. First, it pads encrypted payloads to 4 KB blocks and matches the cover note&rsquo;s file size so a short grocery list never looks suspiciously heavy on disk. Second, you can set cover length to <code>Auto</code> or <code>Long</code> so your local GPU writes a 500-word multi-section cover note in about 4 seconds.
+              </div>
+            </details>
+
+            <details class="faq-item">
+              <summary class="faq-q">
+                <span>4. What happens when I paste screenshots or images into a protected note?</span>
+                <span class="faq-toggle-icon" aria-hidden="true">+</span>
+              </summary>
+              <div class="faq-a">
+                Veneer automatically absorbs local vault images (like <code>![[system-topology.png]]</code>) into the <code>AES-256-GCM</code> encrypted payload and deletes the unencrypted image file from your vault folder. While your note is unlocked, images render inline from a temporary RAM <code>blob:</code> URL that vanishes the moment the note masks.
+              </div>
+            </details>
+
+            <details class="faq-item">
+              <summary class="faq-q">
+                <span>5. Does the AI model ever use the internet or read my other notes?</span>
+                <span class="faq-toggle-icon" aria-hidden="true">+</span>
+              </summary>
+              <div class="faq-a">
+                Never. After a one-time GGUF model download, cover generation runs 100% offline on your machine using <code>RTX Vulkan</code> GPU acceleration (around 135 tokens/sec) or CPU fallback. It only uses the short job description and everyday topics you type in settings, and never reads your vault.
+              </div>
+            </details>
+
+            <details class="faq-item">
+              <summary class="faq-q">
+                <span>6. What happens if someone forces me to unlock my laptop? (The <code>;;!</code> Destruction PIN)</span>
+                <span class="faq-toggle-icon" aria-hidden="true">+</span>
+              </summary>
+              <div class="faq-a">
+                Typing <code>;;!</code> followed by your emergency PIN on any line zeroes the keys in RAM and deletes the encrypted <code>draft_cache</code> frontmatter payload from your protected notes. Each file permanently becomes just its harmless cover note on disk, while the screen looks like a normal cover note.
+              </div>
+            </details>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="swiss-band pre-footer-swiss" id="cta-shader-band" aria-label="Get started with Veneer">
+      <canvas id="cta-shader-canvas" aria-hidden="true"></canvas>
+      <div class="swiss-frame">
+        <span class="grid-cross tl" aria-hidden="true"></span>
+        <span class="grid-cross tr" aria-hidden="true"></span>
+        <span class="grid-cross bl" aria-hidden="true"></span>
+        <span class="grid-cross br" aria-hidden="true"></span>
+
+        <div class="pre-footer-grid">
+          <div class="pre-footer-left">
+            <span class="pre-footer-kicker">
+              <span class="pulse-dot" aria-hidden="true"></span>
+              <span>AES-256-GCM &middot; ARGON2ID &middot; LOCAL GPU</span>
+            </span>
+            <h2 class="pre-footer-title">
+              Hide the notes you can&rsquo;t afford to <span class="cta-hl">leave on screen.</span>
+            </h2>
+            <p class="pre-footer-sub">
+              Your vault stays <strong>normal markdown on disk</strong>. Your real thoughts, titles, and screenshots stay <strong>encrypted in RAM</strong> until you type <code>;;</code> on any line.
+            </p>
+            <div class="pre-footer-actions">
+              <a href="#install" class="btn-cta-emerald">
+                <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path fill="none" d="M12 19h8M4 17l6-6l-6-6"/></svg>
+                <span>Download Plugin</span>
+              </a>
+              <a href="#live-demo" class="btn-cta-glass">
+                <span>Try Live Demo &uarr;</span>
+              </a>
+            </div>
+          </div>
+
+          <div class="pre-footer-right">
+            <div class="cta-tilt-rig" id="cta-tilt-rig" title="Hover or click to peel the cover layer back">
+              <div class="cta-layer-card cta-layer-ram">
+                <div>
+                  <div class="cta-card-top">
+                    <span style="color: #28E99F;">AES-256-GCM &middot; ;;demo</span>
+                    <span class="cta-card-pill">ENCRYPTED RAM LAYER</span>
+                  </div>
+                  <div class="cta-card-title" style="color: #F4F3EE;">Q4 Acquisition Targets.md</div>
+                  <div class="cta-card-lines" style="color: #9EEBCF;">Target A: Horizon Labs ($14.2M cash)
+- term sheet signed Friday
+- ![[system-topology.png]] &rarr; blob:ram
+- auto-masks on tab switch</div>
+                </div>
+                <div class="cta-card-foot">
+                  <span style="color: #28E99F;">Zero disk plaintext</span>
+                  <span>Argon2id &middot; 64 MiB</span>
+                </div>
+              </div>
+
+              <div class="cta-layer-card cta-layer-cover">
+                <div>
+                  <div class="cta-card-top">
+                    <span>my-vault / Grocery run.md</span>
+                    <span class="cta-card-pill">SURFACE COVER LAYER</span>
+                  </div>
+                  <div class="cta-card-title">Grocery run (Saturday)</div>
+                  <div class="cta-card-lines">- paneer, Greek yogurt, spinach
+- 2 bags espresso beans (medium roast)
+- USB-C braided cable
+- ask landlord about balcony latch</div>
+                </div>
+                <div class="cta-card-foot">
+                  <span>Visible on disk &amp; sync</span>
+                  <span style="color: var(--green); font-weight: 600;">Hover to peel &nearr;</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="arch-footer" aria-label="Site footer">
+    <div class="arch-footer-grid">
+      <span class="grid-cross tl" aria-hidden="true"></span>
+      <span class="grid-cross tr" aria-hidden="true"></span>
+      <span class="grid-cross bl" aria-hidden="true"></span>
+      <span class="grid-cross br" aria-hidden="true"></span>
+
+      <div class="arch-footer-col">
+        <span class="grid-cross tr" aria-hidden="true"></span>
+        <span class="grid-cross br" aria-hidden="true"></span>
+        <a href="#" class="footer-wordmark">
+          <svg class="footer-wordmark-icon" width="44" height="44" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+            <rect width="64" height="64" rx="14" fill="#107A4D" />
+            <path d="M64 64H16C7 64 2 57 2 48C2 39 9 33 17 33C24 33 29 38 29 45C29 50 25 53 20 53C16 53 13 50 13 46C13 43 16 41 19 41L25 55C23 50 22 45 22 39C22 28 29 20 38 18C40 11 45 7 52 7C58 7 63 12 64 19V64Z" fill="#F1EFEB" />
+            <circle cx="18" cy="46" r="7" fill="#107A4D" />
+            <circle cx="19" cy="46" r="3.5" fill="#F1EFEB" />
+            <path d="M39 64C39 51 46 45 57 45H64V64H39Z" fill="#141413" />
+            <circle cx="34" cy="34" r="5.8" fill="#141413" />
+            <circle cx="32" cy="32" r="2" fill="#F1EFEB" />
+            <circle cx="51" cy="34" r="5.8" fill="#141413" />
+            <circle cx="49" cy="32" r="2" fill="#F1EFEB" />
+          </svg>
+          <span>VENEER</span>
+        </a>
+        <p class="footer-desc">
+          Local-first Obsidian plugin that hides your real note, title, and images behind a believable everyday cover note.
+        </p>
+        <span class="footer-badge">MIT License</span>
+      </div>
+
+      <div class="arch-footer-col">
+        <span class="grid-cross tr" aria-hidden="true"></span>
+        <span class="grid-cross br" aria-hidden="true"></span>
+        <div class="footer-col-label">PRODUCT</div>
+        <ul class="footer-links">
+          <li><a href="#live-demo">Overview</a></li>
+          <li><a href="#how">How It Works</a></li>
+          <li><a href="#install">Install</a></li>
+        </ul>
+      </div>
+
+      <div class="arch-footer-col">
+        <span class="grid-cross tr" aria-hidden="true"></span>
+        <span class="grid-cross br" aria-hidden="true"></span>
+        <div class="footer-col-label">RESOURCES</div>
+        <ul class="footer-links">
+          <li><a href="/privacy.html">Privacy Policy</a></li>
+          <li><a href="/terms.html">Terms &amp; Conditions</a></li>
+          <li><a href="/security.html">Security</a></li>
+          <li><a href="/llms.txt">llms.txt</a></li>
+        </ul>
+      </div>
+
+      <div class="arch-footer-col">
+        <div class="footer-col-label">ELSEWHERE</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/farizanjum/vener" target="_blank" rel="noopener">GitHub</a></li>
+          <li><a href="mailto:farizanjum@veener.fariz.tech">farizanjum@veener.fariz.tech</a></li>
+          <li><a href="/og-image.svg">Brand Kit</a></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="veneer-playground-wrap" id="veneer-playground-wrap" role="region" aria-label="VENEER interactive letter playground">
+      <span class="sr-only">VENEER interactive 3D-extruded letter playground</span>
+      <span class="grid-cross bl" aria-hidden="true"></span>
+      <span class="grid-cross br" aria-hidden="true"></span>
+
+      <svg id="veneer-letter-svg" viewBox="0 0 1280 500" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg>
+    </div>
+
+    <div class="arch-footer-bottom-band">
+      <div class="arch-footer-bottom">
+        <span class="grid-cross tl" aria-hidden="true"></span>
+        <span class="grid-cross tr" aria-hidden="true"></span>
+        <span class="grid-cross bl" aria-hidden="true"></span>
+        <span class="grid-cross br" aria-hidden="true"></span>
+        <span>&copy; 2026 VENEER</span>
+        <div class="arch-footer-bottom-right">
+          <button type="button" id="veneer-playground-reset" class="footer-reset-btn" title="Reset letters" aria-label="Reset VENEER interactive letter playground">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path fill="none" d="M3 12a9 9 0 1 0 9-9a9.75 9.75 0 0 0-6.74 2.74L3 8"/><path fill="none" d="M3 3v5h5"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    const vaultNotes = [
+      {
+        id: "grocery",
+        coverTitle: "Grocery run (Saturday)",
+        coverShort: [
+          "- paneer, Greek yogurt, spinach\n- espresso beans (medium roast)\n- USB-C braided cable\n- ask the landlord about the balcony latch\n\nBudget: keep it under 1500 this weekend",
+          "- 2 bags whole bean coffee (light roast)\n- oat milk + greek yogurt\n- sourdough loaf from corner bakery\n- cherry tomatoes, garlic, olive oil\n- check if hardware store has M4 screws"
+        ],
+        coverLong: "Weekend errands & house stuff\n- paneer, Greek yogurt, spinach, cherry tomatoes\n- 2 bags whole bean coffee (medium roast)\n- USB-C braided cable + M4x12 machine screws from hardware store\n- ask the landlord about the balcony latch before Sunday\n\nHome server cleanup\n- rotate backups on local NAS box before Sunday night\n- check why docker container restarted yesterday\n- prune old unused images on the mini PC (disk is at 84%)\n- label ethernet patch cables behind the desk",
+        realTitle: "Q4 Acquisition Targets & Valuation",
+        realBody: "Target A: Horizon Labs ($14.2M cash + retention pool)\n- term sheet signed by both co-founders on Friday\n- key risk: soc2 renewal pending before nov 18 close\n- keep legal counsel on separate signal thread\n\n![[system-topology.png]]",
+        hasImage: true,
+        state: "locked",
+        variant: 0
+      },
+      {
+        id: "debug",
+        coverTitle: "Backend debug log",
+        coverShort: [
+          "[WARN] worker pool timeout after 3000ms on /v1/sync\nre: check connection pool max_idle before monday standup\ntodo: bump retry backoff from 200ms to 500ms w/ jitter",
+          "[INFO] local sqlite wal checkpoint finished in 14ms\nre: verify index on session_id + created_at\ntodo: clean up stale test fixtures in staging runner"
+        ],
+        coverLong: "Staging worker pool investigation\n[WARN] worker pool timeout after 3000ms on /v1/sync\nre: check connection pool max_idle before monday standup\ntodo: bump retry backoff from 200ms to 500ms w/ jitter\n\nFollow-up notes\n- reproduce connection spike with 40 concurrent local workers\n- check p99 latency after enabling prepared statements\n- ask infra team if runner cache was cleared on Thursday",
+        realTitle: "Seed Round Cap Table & Bridge Terms",
+        realBody: "Lead investor committed $2.4M @ $18M post-money cap.\n- founder vesting reset rejected in clause 4.2\n- wire instructions verified w/ CFO on Thursday\n- do not circulate deck outside board folder",
+        hasImage: false,
+        state: "locked",
+        variant: 0
+      },
+      {
+        id: "workout",
+        coverTitle: "Weekend workout log",
+        coverShort: [
+          "Saturday push day (approx 50 mins)\n- incline dumbbell press: 3x10 @ 27.5kg\n- overhead cable triceps: 3x12\n- shoulder felt slightly tight, deload next week",
+          "Sunday conditioning + mobility (40 mins)\n- 5km easy pace on treadmill (26m 10s)\n- thoracic spine foam roll + band pull-aparts\n- stretch hip flexors before monday morning"
+        ],
+        coverLong: "Saturday push day (approx 50 mins)\n- incline dumbbell press: 3x10 @ 27.5kg\n- flat barbell bench: 3x8 @ 70kg\n- overhead cable triceps extension: 3x12\n- lateral raises: 4x15 (slow eccentric)\n\nRecovery & meal prep notes\n- right shoulder felt slightly tight on last set, deload next week\n- prep 4 containers of rice, grilled chicken, and broccoli for Monday-Thursday\n- order new wrist wraps before Friday session",
+        realTitle: "Cold Storage & Master Recovery Keys",
+        realBody: "Vault #2 hardware quorum: 2-of-3 multisig\n- Device A: Zurich safe deposit box #419\n- Device B: home fireproof lockbox (passphrase: maple-river-99)\n- Emergency duress PIN set to ;;!9911",
+        hasImage: false,
+        state: "locked",
+        variant: 0
+      }
+    ];
+
+    const personaOverrides = [
+      null,
+      {
+        title: "Typography notes (v2)",
+        short: "- test 15px mono lead copy at 1.65 line height\n- reduce card border contrast on warm stone canvas\n- swap harsh black for #141413 warm ink\n- export 26px chameleon mark with rounded rect",
+        long: "Design system polish (sprint 14)\n- test 15px Geist Mono body copy at 1.68 line height on warm stone (#F1EFEB)\n- keep Swiss grid hairlines crisp at 1px solid #CFCBC2\n- check button hover states on both light stone and dark editor surfaces\n- verify all stroke icons use fill=\"none\" and round caps"
+      },
+      {
+        title: "Weekly sync prep",
+        short: "- confirm Q3 customer reference calls w/ ops\n- review updated contractor invoice for April\n- send board deck outline before Thursday\n- check flight options for SF next month",
+        long: "Monday ops & admin checklist\n- confirm Q3 customer reference calls with ops before Wednesday\n- review April contractor invoices and approve payout batch\n- send draft agenda for Thursday team sync\n- check flight options for SF customer visits next month"
+      }
+    ];
+
+    const topologySvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 86" fill="none" aria-hidden="true"><rect width="640" height="86" rx="6" fill="#141514"/><rect x="10" y="16" width="182" height="54" rx="6" fill="#1C1E1C" stroke="#107A4D"/><text x="24" y="39" fill="#ECEAE4" font-family="monospace" font-size="11.5">system-topology.png</text><text x="24" y="56" fill="#6CE9A6" font-family="monospace" font-size="10">Decrypted in RAM blob:</text><path d="M198 43H226" stroke="#5E5D58" stroke-width="1.5"/><rect x="232" y="16" width="180" height="54" rx="6" fill="#1C1E1C" stroke="#2A2D2A"/><text x="246" y="39" fill="#ECEAE4" font-family="monospace" font-size="11.5">AES-256-GCM + Argon2id</text><text x="246" y="56" fill="#8E8D86" font-family="monospace" font-size="10">64 MiB KDF / 4 KB pad</text><path d="M418 43H446" stroke="#5E5D58" stroke-width="1.5"/><rect x="452" y="16" width="178" height="54" rx="6" fill="#1C1E1C" stroke="#2A2D2A"/><text x="466" y="39" fill="#ECEAE4" font-family="monospace" font-size="11.5">YAML draft_cache</text><text x="466" y="56" fill="#8E8D86" font-family="monospace" font-size="10">Deleted from vault folder</text></svg>`;
+    document.getElementById("sim-blob-img").src = URL.createObjectURL(new Blob([topologySvg], { type: "image/svg+xml" }));
+
+    let openTabs = ["grocery", "debug", "workout"];
+    let activeNoteId = "grocery";
+    let personaIndex = 0;
+    let coverLength = "short";
+    let viewMode = "editor";
+    let blindBuffer = "";
+    let streamTimer = null;
+    let toastTimer = null;
+
+    const tabsBarEl = document.getElementById("sim-tabs-bar");
+    const vaultFilesListEl = document.getElementById("vault-files-list");
+    const sidebarEl = document.getElementById("sim-sidebar");
+    const sidebarToggleBtn = document.getElementById("ribbon-sidebar-toggle");
+    const canvasInnerEl = document.getElementById("sim-canvas-inner");
+    const breadcrumbFileEl = document.getElementById("sim-breadcrumb-file");
+    const noteTitleEl = document.getElementById("sim-note-title");
+    const stateBadgeEl = document.getElementById("sim-state-badge");
+    const noteBodyEl = document.getElementById("sim-note-body");
+    const imageCardEl = document.getElementById("sim-image-card");
+    const triggerBarEl = document.getElementById("sim-trigger-bar");
+    const triggerInputEl = document.getElementById("sim-trigger-input");
+    const statusModeEl = document.getElementById("sim-status-mode");
+    const blindDotsEl = document.getElementById("sim-blind-dots");
+    const statusCountsEl = document.getElementById("sim-status-counts");
+    const restoreBtnEl = document.getElementById("btn-sim-restore");
+    const shredBtnEl = document.getElementById("btn-sim-shred");
+    const toastEl = document.getElementById("sim-toast");
+    const toastTextEl = document.getElementById("sim-toast-text");
+    const paletteBackdropEl = document.getElementById("sim-palette-backdrop");
+    const paletteInputEl = document.getElementById("sim-palette-input");
+
+    function getNote(id) {
+      return vaultNotes.find((n) => n.id === id) || vaultNotes[0];
+    }
+
+    function getCoverTitle(note) {
+      if (personaIndex > 0 && note.id === "grocery") {
+        return personaOverrides[personaIndex].title;
+      }
+      return note.coverTitle;
+    }
+
+    function getCoverBody(note) {
+      if (personaIndex > 0 && note.id === "grocery") {
+        const over = personaOverrides[personaIndex];
+        return coverLength === "long" ? over.long : over.short;
+      }
+      if (coverLength === "long") {
+        return note.coverLong;
+      }
+      return note.coverShort[note.variant % note.coverShort.length];
+    }
+
+    function countWordsAndLines(text) {
+      const trimmed = text.trim();
+      const words = trimmed ? trimmed.split(/\s+/).length : 0;
+      const lines = trimmed ? trimmed.split("\n").length : 0;
+      return `${words} words | ${lines} lines`;
+    }
+
+    function showObsidianToast(msg) {
+      if (toastTimer) clearTimeout(toastTimer);
+      toastTextEl.textContent = msg;
+      toastEl.classList.add("visible");
+      toastTimer = setTimeout(() => {
+        toastEl.classList.remove("visible");
+      }, 2800);
+    }
+
+    function stopStream() {
+      if (streamTimer) {
+        clearInterval(streamTimer);
+        streamTimer = null;
+      }
+    }
+
+    function renderTabsAndSidebar() {
+      tabsBarEl.innerHTML = "";
+      openTabs.forEach((tabId) => {
+        const note = getNote(tabId);
+        const isActive = tabId === activeNoteId;
+        const isUnlocked = note.state === "unlocked" && viewMode === "editor";
+        const displayTitle = isUnlocked ? note.realTitle : getCoverTitle(note);
+
+        const tabBtn = document.createElement("button");
+        tabBtn.type = "button";
+        tabBtn.className = `obs-tab${isActive ? " active" : ""}${isUnlocked ? " is-unlocked" : ""}${note.state === "shredded" ? " is-shredded" : ""}`;
+        tabBtn.setAttribute("role", "tab");
+        tabBtn.setAttribute("aria-selected", isActive ? "true" : "false");
+
+        const dot = document.createElement("span");
+        dot.className = "obs-tab-dot";
+        dot.setAttribute("aria-hidden", "true");
+
+        const label = document.createElement("span");
+        label.textContent = `${displayTitle}.md`;
+
+        const closeSpan = document.createElement("span");
+        closeSpan.className = "obs-tab-close";
+        closeSpan.textContent = "\u00d7";
+        closeSpan.setAttribute("title", "Close tab");
+        closeSpan.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          closeTab(tabId);
+        });
+
+        tabBtn.appendChild(dot);
+        tabBtn.appendChild(label);
+        tabBtn.appendChild(closeSpan);
+        tabBtn.addEventListener("click", () => switchToNote(tabId));
+        tabsBarEl.appendChild(tabBtn);
+      });
+
+      vaultFilesListEl.innerHTML = "";
+      vaultNotes.forEach((note) => {
+        const isActive = note.id === activeNoteId;
+        const isUnlocked = note.state === "unlocked" && viewMode === "editor";
+        const cTitle = getCoverTitle(note);
+
+        const fileBtn = document.createElement("button");
+        fileBtn.type = "button";
+        fileBtn.className = `vault-file-btn${isActive ? " active" : ""}${isUnlocked ? " is-unlocked" : ""}`;
+
+        const dot = document.createElement("span");
+        dot.className = "obs-tab-dot";
+        dot.style.background = isUnlocked ? "#10B981" : (note.state === "shredded" ? "#F04438" : "#5E5D58");
+
+        const nameSpan = document.createElement("span");
+        nameSpan.className = "vault-file-name";
+        nameSpan.textContent = `${cTitle}.md`;
+
+        fileBtn.appendChild(dot);
+        fileBtn.appendChild(nameSpan);
+        fileBtn.addEventListener("click", () => {
+          switchToNote(note.id);
+          if (window.innerWidth <= 960) {
+            sidebarEl.classList.add("collapsed");
+            sidebarToggleBtn.classList.remove("active");
+          }
+        });
+        vaultFilesListEl.appendChild(fileBtn);
+      });
+    }
+
+    function switchToNote(targetId) {
+      if (!openTabs.includes(targetId)) {
+        openTabs.push(targetId);
+      }
+      if (targetId === activeNoteId) {
+        renderTabsAndSidebar();
+        return;
+      }
+
+      const prevNote = getNote(activeNoteId);
+      if (prevNote && prevNote.state === "unlocked") {
+        prevNote.state = "locked";
+        showObsidianToast(`Masked "${getCoverTitle(prevNote)}" on tab switch`);
+      }
+
+      activeNoteId = targetId;
+      blindBuffer = "";
+      blindDotsEl.textContent = "";
+      renderSimulator(true);
+    }
+
+    function closeTab(tabId) {
+      if (openTabs.length <= 1) {
+        showObsidianToast("At least one tab stays open in preview");
+        return;
+      }
+      const closingNote = getNote(tabId);
+      if (closingNote.state === "unlocked") {
+        closingNote.state = "locked";
+      }
+      openTabs = openTabs.filter((id) => id !== tabId);
+      if (activeNoteId === tabId) {
+        activeNoteId = openTabs[0];
+      }
+      renderSimulator(true);
+    }
+
+    function renderSimulator(animate = true) {
+      stopStream();
+      const note = getNote(activeNoteId);
+      const cTitle = getCoverTitle(note);
+      const cBody = getCoverBody(note);
+
+      document.getElementById("view-editor-btn").classList.toggle("active", viewMode === "editor");
+      document.getElementById("view-disk-btn").classList.toggle("active", viewMode === "disk");
+      renderTabsAndSidebar();
+
+      const applyContent = () => {
+        if (viewMode === "disk") {
+          breadcrumbFileEl.textContent = `${cTitle}.md (disk)`;
+          noteTitleEl.textContent = `${cTitle}.md`;
+          stateBadgeEl.className = "sim-state-badge";
+          stateBadgeEl.textContent = note.state === "shredded" ? "Pure markdown on disk" : "YAML frontmatter on disk";
+          imageCardEl.hidden = true;
+          triggerBarEl.hidden = true;
+
+          if (note.state === "shredded") {
+            const rawPure = `${cTitle}\n\n${cBody}`;
+            noteBodyEl.textContent = rawPure;
+            statusModeEl.textContent = "Disk view (payload shredded)";
+            statusCountsEl.textContent = countWordsAndLines(rawPure);
+          } else {
+            const rawDisk = `---\ndraft_cache: "deocy:v1:eyJ2IjoxLCJhbGciOiJBRVMtMjU2LUdDTSIsImtkZiI6IkFyZ29uMmlkIiwicGFkIjoiNEtCIn0="\n---\n${cBody}`;
+            noteBodyEl.textContent = rawDisk;
+            statusModeEl.textContent = "Disk view (ciphertext only)";
+            statusCountsEl.textContent = countWordsAndLines(rawDisk);
+          }
+          return;
+        }
+
+        if (note.state === "unlocked") {
+          breadcrumbFileEl.textContent = `${note.realTitle}.md`;
+          noteTitleEl.textContent = note.realTitle;
+          stateBadgeEl.className = "sim-state-badge is-unlocked";
+          stateBadgeEl.textContent = "Unlocked in RAM";
+          noteBodyEl.textContent = note.realBody;
+          imageCardEl.hidden = !note.hasImage;
+          triggerBarEl.hidden = false;
+          triggerInputEl.placeholder = "Type ;;!9911 + Enter to test emergency shred, or switch tabs to auto-mask...";
+          statusModeEl.textContent = "Veneer: Real (RAM only)";
+          statusCountsEl.textContent = countWordsAndLines(note.realBody);
+        } else if (note.state === "shredded") {
+          breadcrumbFileEl.textContent = `${cTitle}.md`;
+          noteTitleEl.textContent = cTitle;
+          stateBadgeEl.className = "sim-state-badge is-shredded";
+          stateBadgeEl.textContent = "Payload shredded";
+          noteBodyEl.textContent = cBody;
+          imageCardEl.hidden = true;
+          triggerBarEl.hidden = true;
+          statusModeEl.textContent = "Veneer: Shredded (cover only)";
+          statusCountsEl.textContent = countWordsAndLines(cBody);
+        } else {
+          breadcrumbFileEl.textContent = `${cTitle}.md`;
+          noteTitleEl.textContent = cTitle;
+          stateBadgeEl.className = "sim-state-badge";
+          stateBadgeEl.textContent = "Cover active";
+          noteBodyEl.textContent = cBody;
+          imageCardEl.hidden = true;
+          triggerBarEl.hidden = false;
+          triggerInputEl.placeholder = "Click here and type ;;demo then Enter (keystrokes stay invisible)...";
+          statusModeEl.textContent = "Veneer: Cover";
+          statusCountsEl.textContent = countWordsAndLines(cBody);
+        }
+
+        restoreBtnEl.hidden = note.state !== "shredded";
+        shredBtnEl.hidden = note.state === "shredded";
+      };
+
+      if (animate) {
+        canvasInnerEl.classList.add("animating");
+        setTimeout(() => {
+          applyContent();
+          canvasInnerEl.classList.remove("animating");
+        }, 130);
+      } else {
+        applyContent();
+      }
+    }
+
+    function playBlindUnlockAnimation() {
+      stopStream();
+      viewMode = "editor";
+      const note = getNote(activeNoteId);
+      if (note.state === "shredded") {
+        note.state = "locked";
+      }
+      if (note.state === "unlocked") {
+        note.state = "locked";
+        renderSimulator(false);
+      }
+      blindDotsEl.textContent = "";
+      let step = 0;
+      const timer = setInterval(() => {
+        step++;
+        blindDotsEl.textContent = "\u2022".repeat(Math.min(4, step));
+        if (step >= 5) {
+          clearInterval(timer);
+          setTimeout(() => {
+            blindDotsEl.textContent = "";
+            note.state = "unlocked";
+            renderSimulator(true);
+            showObsidianToast(`Unlocked "${note.realTitle}" in RAM`);
+          }, 130);
+        }
+      }, 75);
+    }
+
+    function streamNewCover() {
+      stopStream();
+      viewMode = "editor";
+      const note = getNote(activeNoteId);
+      note.state = "locked";
+      restoreBtnEl.hidden = true;
+      shredBtnEl.hidden = false;
+
+      const cTitle = getCoverTitle(note);
+      const fullText = getCoverBody(note);
+      renderTabsAndSidebar();
+      breadcrumbFileEl.textContent = `${cTitle}.md`;
+      noteTitleEl.textContent = cTitle;
+      stateBadgeEl.className = "sim-state-badge";
+      stateBadgeEl.textContent = "Generating on GPU (135 tok/s)...";
+      imageCardEl.hidden = true;
+      triggerBarEl.hidden = false;
+      noteBodyEl.textContent = "";
+
+      let idx = 0;
+      const stepSize = coverLength === "long" ? 18 : 8;
+      streamTimer = setInterval(() => {
+        idx += stepSize;
+        if (idx >= fullText.length) {
+          noteBodyEl.textContent = fullText;
+          stateBadgeEl.textContent = "Cover active";
+          statusCountsEl.textContent = countWordsAndLines(fullText);
+          stopStream();
+        } else {
+          noteBodyEl.textContent = fullText.slice(0, idx);
+          statusCountsEl.textContent = countWordsAndLines(noteBodyEl.textContent);
+        }
+      }, 20);
+    }
+
+    function maskAllNotes(toastMsg) {
+      vaultNotes.forEach((n) => {
+        if (n.state === "unlocked") n.state = "locked";
+      });
+      viewMode = "editor";
+      blindDotsEl.textContent = "";
+      renderSimulator(true);
+      showObsidianToast(toastMsg || "Masked all protected notes (Ctrl+Shift+X)");
+    }
+
+    function triggerShredAll() {
+      stopStream();
+      viewMode = "editor";
+      blindDotsEl.textContent = "\u2022\u2022\u2022\u2022";
+      setTimeout(() => {
+        blindDotsEl.textContent = "";
+        vaultNotes.forEach((n) => {
+          n.state = "shredded";
+        });
+        renderSimulator(true);
+        showObsidianToast("Destruction PIN (;;!9911): All payloads shredded");
+      }, 240);
+    }
+
+    function togglePalette(forceOpen) {
+      const isHidden = paletteBackdropEl.hasAttribute("hidden");
+      const shouldOpen = typeof forceOpen === "boolean" ? forceOpen : isHidden;
+      if (shouldOpen) {
+        paletteBackdropEl.removeAttribute("hidden");
+        paletteInputEl.value = "";
+        filterPaletteCommands("");
+        setTimeout(() => paletteInputEl.focus(), 30);
+      } else {
+        paletteBackdropEl.setAttribute("hidden", "");
+      }
+    }
+
+    function filterPaletteCommands(q) {
+      const clean = q.trim().toLowerCase();
+      document.querySelectorAll(".sim-palette-item").forEach((item) => {
+        const text = item.textContent.toLowerCase();
+        item.style.display = text.includes(clean) ? "flex" : "none";
+      });
+    }
+
+    document.getElementById("hero-demo-trigger").addEventListener("click", playBlindUnlockAnimation);
+    document.getElementById("btn-sim-unlock").addEventListener("click", playBlindUnlockAnimation);
+    document.getElementById("btn-sim-mask").addEventListener("click", () => maskAllNotes("Masked active note (Ctrl+Shift+X)"));
+    document.getElementById("ribbon-panic-btn").addEventListener("click", () => maskAllNotes("Panic: Masked all protected notes"));
+
+    document.getElementById("btn-sim-cover").addEventListener("click", () => {
+      const note = getNote(activeNoteId);
+      note.variant = (note.variant + 1) % 2;
+      streamNewCover();
+    });
+    document.getElementById("ribbon-cover-btn").addEventListener("click", () => {
+      const note = getNote(activeNoteId);
+      note.variant = (note.variant + 1) % 2;
+      streamNewCover();
+    });
+
+    document.getElementById("sim-persona").addEventListener("change", (e) => {
+      personaIndex = Number(e.target.value);
+      activeNoteId = "grocery";
+      if (!openTabs.includes("grocery")) openTabs.unshift("grocery");
+      streamNewCover();
+    });
+
+    document.getElementById("sim-length").addEventListener("change", (e) => {
+      coverLength = e.target.value;
+      streamNewCover();
+    });
+
+    document.getElementById("btn-sim-shred").addEventListener("click", triggerShredAll);
+
+    document.getElementById("btn-sim-restore").addEventListener("click", () => {
+      vaultNotes.forEach((n) => {
+        n.state = "locked";
+      });
+      viewMode = "editor";
+      renderSimulator(true);
+      showObsidianToast("Restored demo vault payloads");
+    });
+
+    document.getElementById("btn-open-all-tabs").addEventListener("click", () => {
+      openTabs = ["grocery", "debug", "workout"];
+      renderTabsAndSidebar();
+      showObsidianToast("All 3 vault tabs open");
+    });
+
+    sidebarToggleBtn.addEventListener("click", () => {
+      const collapsed = sidebarEl.classList.toggle("collapsed");
+      sidebarToggleBtn.classList.toggle("active", !collapsed);
+    });
+
+    document.getElementById("btn-sim-palette").addEventListener("click", () => togglePalette(true));
+    document.getElementById("ribbon-palette-btn").addEventListener("click", () => togglePalette(true));
+    document.getElementById("ribbon-settings-btn").addEventListener("click", () => togglePalette(true));
+    document.getElementById("sim-palette-close").addEventListener("click", () => togglePalette(false));
+    paletteBackdropEl.addEventListener("click", (e) => {
+      if (e.target === paletteBackdropEl) togglePalette(false);
+    });
+    paletteInputEl.addEventListener("input", (e) => filterPaletteCommands(e.target.value));
+
+    document.querySelectorAll(".sim-palette-item").forEach((item) => {
+      item.addEventListener("click", () => {
+        const cmd = item.dataset.cmd;
+        togglePalette(false);
+        if (cmd === "unlock") playBlindUnlockAnimation();
+        if (cmd === "cover") {
+          const note = getNote(activeNoteId);
+          note.variant = (note.variant + 1) % 2;
+          streamNewCover();
+        }
+        if (cmd === "panic") maskAllNotes("Panic: Masked all protected notes");
+        if (cmd === "disk") {
+          viewMode = "disk";
+          renderSimulator(true);
+        }
+        if (cmd === "shred") triggerShredAll();
+      });
+    });
+
+    document.addEventListener("keydown", (e) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === "p" || e.key.toLowerCase() === "k")) {
+        e.preventDefault();
+        togglePalette();
+      } else if (e.key === "Escape" && !paletteBackdropEl.hasAttribute("hidden")) {
+        togglePalette(false);
+      }
+    });
+
+    document.querySelectorAll(".sim-view-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        viewMode = btn.dataset.view;
+        renderSimulator(true);
+      });
+    });
+
+    triggerInputEl.addEventListener("keydown", (e) => {
+      const note = getNote(activeNoteId);
+      if (e.key === "Enter") {
+        if (blindBuffer.startsWith(";;!")) {
+          e.preventDefault();
+          blindBuffer = "";
+          blindDotsEl.textContent = "";
+          triggerInputEl.value = "";
+          triggerShredAll();
+          return;
+        }
+        if (blindBuffer.startsWith(";;") && blindBuffer.length > 2) {
+          e.preventDefault();
+          blindBuffer = "";
+          blindDotsEl.textContent = "";
+          triggerInputEl.value = "";
+          note.state = "unlocked";
+          renderSimulator(true);
+          showObsidianToast(`Unlocked "${note.realTitle}" in RAM`);
+          return;
+        }
+      }
+
+      if (e.key === "Backspace" && blindBuffer.length > 0) {
+        e.preventDefault();
+        blindBuffer = blindBuffer.slice(0, -1);
+        blindDotsEl.textContent = blindBuffer.length >= 2
+          ? "\u2022".repeat(Math.max(1, blindBuffer.length - 2))
+          : "";
+        return;
+      }
+
+      if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
+        if (
+          blindBuffer.startsWith(";;") ||
+          (blindBuffer === ";" && e.key === ";") ||
+          (blindBuffer === "" && e.key === ";")
+        ) {
+          e.preventDefault();
+          blindBuffer += e.key;
+          triggerInputEl.value = "";
+          blindDotsEl.textContent = blindBuffer.length >= 2
+            ? "\u2022".repeat(Math.max(1, blindBuffer.length - 2))
+            : "\u2022";
+        }
+      }
+    });
+
+    const mobileMenuBtn = document.getElementById("mobile-menu-btn");
+    const mobileDrawer = document.getElementById("mobile-drawer");
+    mobileMenuBtn.addEventListener("click", () => {
+      const isOpen = mobileDrawer.classList.toggle("open");
+      mobileMenuBtn.setAttribute("aria-expanded", isOpen ? "true" : "false");
+    });
+    document.querySelectorAll(".mobile-nav-link").forEach((link) => {
+      link.addEventListener("click", () => {
+        mobileDrawer.classList.remove("open");
+        mobileMenuBtn.setAttribute("aria-expanded", "false");
+      });
+    });
+
+    if (window.innerWidth <= 960) {
+      sidebarEl.classList.add("collapsed");
+      sidebarToggleBtn.classList.remove("active");
+    }
+
+    document.getElementById("copy-install-btn").addEventListener("click", () => {
+      const code = document.getElementById("install-code").textContent;
+      navigator.clipboard.writeText(code);
+      const label = document.getElementById("copy-install-label");
+      label.textContent = "Copied";
+      setTimeout(() => {
+        label.textContent = "Copy";
+      }, 1600);
+    });
+
+    renderSimulator(false);
+
+    // -------------------------------------------------------------------------
+    // Pre-Footer CTA WebGL GLSL Shader (#cta-shader-canvas) & 3D Tilt (#cta-tilt-rig)
+    // -------------------------------------------------------------------------
+    (function initCtaShaderAndTilt() {
+      const tiltRig = document.getElementById("cta-tilt-rig");
+      const rightCell = tiltRig ? tiltRig.closest(".pre-footer-right") : null;
+      if (tiltRig && rightCell) {
+        rightCell.addEventListener("pointermove", (e) => {
+          const rect = rightCell.getBoundingClientRect();
+          const nx = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+          const ny = ((e.clientY - rect.top) / rect.height) * 2 - 1;
+          const rotX = (8 - ny * 9).toFixed(2);
+          const rotY = (-12 + nx * 12).toFixed(2);
+          tiltRig.style.transform = `rotateX(${rotX}deg) rotateY(${rotY}deg)`;
+        });
+        rightCell.addEventListener("pointerleave", () => {
+          tiltRig.style.transform = "rotateX(8deg) rotateY(-12deg)";
+        });
+        tiltRig.addEventListener("click", () => {
+          tiltRig.classList.toggle("peeled");
+        });
+      }
+
+      const canvas = document.getElementById("cta-shader-canvas");
+      if (!canvas) return;
+      const gl = canvas.getContext("webgl", { alpha: false, antialias: false, powerPreference: "low-power" });
+      if (!gl) return;
+
+      const vsSource = `
+        attribute vec2 a_pos;
+        void main() {
+          gl_Position = vec4(a_pos, 0.0, 1.0);
+        }
+      `;
+      const fsSource = `
+        precision mediump float;
+        uniform vec2 u_res;
+        uniform float u_time;
+        uniform vec2 u_mouse;
+
+        float hash(vec2 p) {
+          return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+        }
+
+        float noise(vec2 p) {
+          vec2 i = floor(p);
+          vec2 f = fract(p);
+          vec2 u = f * f * (3.0 - 2.0 * f);
+          return mix(
+            mix(hash(i + vec2(0.0, 0.0)), hash(i + vec2(1.0, 0.0)), u.x),
+            mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x),
+            u.y
+          );
+        }
+
+        void main() {
+          vec2 uv = gl_FragCoord.xy / u_res.xy;
+          vec2 p = (gl_FragCoord.xy - 0.5 * u_res.xy) / min(u_res.x, u_res.y);
+          float t = u_time * 0.28;
+
+          float n1 = noise(p * 3.4 + vec2(t, -t * 0.6));
+          float n2 = noise(p * 6.8 - vec2(t * 0.7, t * 0.5) + n1 * 1.4);
+          float lines = abs(fract(n2 * 5.5) - 0.5);
+          float contour = smoothstep(0.08, 0.015, lines);
+
+          float dMouse = length(uv - u_mouse);
+          float glow = exp(-dMouse * 3.8);
+
+          vec3 baseBg = vec3(0.065, 0.078, 0.070);
+          vec3 emerald = vec3(0.125, 0.902, 0.631);
+          vec3 deepEmerald = vec3(0.063, 0.478, 0.302);
+
+          vec3 col = baseBg + deepEmerald * (n2 * 0.28 + glow * 0.25);
+          col = mix(col, emerald, contour * (0.14 + glow * 0.22));
+          gl_FragColor = vec4(col, 1.0);
+        }
+      `;
+
+      function compileShader(type, src) {
+        const sh = gl.createShader(type);
+        gl.shaderSource(sh, src);
+        gl.compileShader(sh);
+        if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+          gl.deleteShader(sh);
+          return null;
+        }
+        return sh;
+      }
+
+      const vs = compileShader(gl.VERTEX_SHADER, vsSource);
+      const fs = compileShader(gl.FRAGMENT_SHADER, fsSource);
+      if (!vs || !fs) return;
+
+      const prog = gl.createProgram();
+      gl.attachShader(prog, vs);
+      gl.attachShader(prog, fs);
+      gl.linkProgram(prog);
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return;
+      gl.useProgram(prog);
+
+      const buf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+
+      const aPos = gl.getAttribLocation(prog, "a_pos");
+      gl.enableVertexAttribArray(aPos);
+      gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+      const uRes = gl.getUniformLocation(prog, "u_res");
+      const uTime = gl.getUniformLocation(prog, "u_time");
+      const uMouse = gl.getUniformLocation(prog, "u_mouse");
+
+      let mouseX = 0.72;
+      let mouseY = 0.5;
+      const band = document.getElementById("cta-shader-band");
+      if (band) {
+        band.addEventListener("pointermove", (e) => {
+          const r = band.getBoundingClientRect();
+          mouseX = (e.clientX - r.left) / Math.max(1, r.width);
+          mouseY = 1.0 - (e.clientY - r.top) / Math.max(1, r.height);
+        });
+      }
+
+      function resizeCanvas() {
+        const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+        const w = Math.max(1, Math.floor(canvas.clientWidth * dpr));
+        const h = Math.max(1, Math.floor(canvas.clientHeight * dpr));
+        if (canvas.width !== w || canvas.height !== h) {
+          canvas.width = w;
+          canvas.height = h;
+          gl.viewport(0, 0, w, h);
+        }
+      }
+      resizeCanvas();
+      window.addEventListener("resize", resizeCanvas);
+
+      const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      let visible = false;
+      let rafId = null;
+      const startT = performance.now();
+
+      function renderFrame(now) {
+        rafId = null;
+        resizeCanvas();
+        gl.uniform2f(uRes, canvas.width, canvas.height);
+        gl.uniform1f(uTime, (now - startT) * 0.001);
+        gl.uniform2f(uMouse, mouseX, mouseY);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        if (visible && !prefersReducedMotion) {
+          rafId = requestAnimationFrame(renderFrame);
+        }
+      }
+
+      renderFrame(performance.now());
+
+      if ("IntersectionObserver" in window && band) {
+        const io = new IntersectionObserver((entries) => {
+          entries.forEach((entry) => {
+            visible = entry.isIntersecting;
+            if (visible && !prefersReducedMotion && !rafId) {
+              rafId = requestAnimationFrame(renderFrame);
+            }
+          });
+        }, { threshold: 0.05 });
+        io.observe(band);
+      }
+    })();
+
+    // -------------------------------------------------------------------------
+    // Interactive 3D-Extruded V E N E E R Letter Playground
+    // -------------------------------------------------------------------------
+    (function initVeneerLetterPlayground() {
+      const svg = document.getElementById("veneer-letter-svg");
+      const wrap = document.getElementById("veneer-playground-wrap");
+      const resetBtn = document.getElementById("veneer-playground-reset");
+      if (!svg || !wrap) return;
+
+      const SVG_NS = "http://www.w3.org/2000/svg";
+      const VIEW_W = 1280;
+      const VIEW_H = 500;
+      const EXTRUDE_DX = -14;
+      const EXTRUDE_DY = 12;
+
+      // Bold geometric block-letter contours in local coordinates [-42..42, -52..52]
+      const GLYPH_CONTOURS = {
+        V: {
+          loops: [
+            [
+              [-40, -50], [-14, -50], [0, 12], [14, -50], [40, -50],
+              [13, 50], [-13, 50]
+            ]
+          ]
+        },
+        E: {
+          loops: [
+            [
+              [-36, -50], [36, -50], [36, -28], [-10, -28], [-10, -11],
+              [28, -11], [28, 11], [-10, 11], [-10, 28], [36, 28],
+              [36, 50], [-36, 50]
+            ]
+          ]
+        },
+        N: {
+          loops: [
+            [
+              [-38, -50], [-13, -50], [14, 9], [14, -50], [38, -50],
+              [38, 50], [13, 50], [-14, -9], [-14, 50], [-38, 50]
+            ]
+          ]
+        },
+        R: {
+          loops: [
+            [
+              [-36, -50], [14, -50], [36, -34], [36, -8], [17, 6],
+              [38, 50], [10, 50], [-8, 8], [-12, 8], [-12, 50], [-36, 50]
+            ],
+            [
+              [-12, -29], [9, -29], [14, -23], [14, -15], [9, -9], [-12, -9]
+            ]
+          ]
+        }
+      };
+
+      const COLORS = {
+        heroDarkFront: "#353544",
+        heroDarkSide: "#B8BAB6",
+        heroMintFront: "#20E6A1",
+        heroMintSide: "#17B880",
+        pileGrayFront: "#D0D1CE",
+        pileGraySide: "#B6B8B3",
+        pileMintFront: "#20E6A1",
+        pileMintSide: "#18BA82"
+      };
+
+      function buildFrontPathData(loops) {
+        return loops
+          .map((pts) =>
+            `${pts.map((p, i) => `${i === 0 ? "M" : "L"}${p[0]},${p[1]}`).join(" ")} Z`
+          )
+          .join(" ");
+      }
+
+      const HERO_SPECS = [
+        { char: "V", x: 350, y: 205, angle: -16 * (Math.PI / 180), initialMint: false },
+        { char: "E", x: 472, y: 158, angle: -24 * (Math.PI / 180), initialMint: true },
+        { char: "N", x: 586, y: 170, angle: 18 * (Math.PI / 180), initialMint: false },
+        { char: "E", x: 698, y: 178, angle: 22 * (Math.PI / 180), initialMint: false },
+        { char: "E", x: 806, y: 172, angle: -20 * (Math.PI / 180), initialMint: true },
+        { char: "R", x: 922, y: 206, angle: 24 * (Math.PI / 180), initialMint: false }
+      ];
+
+      const PILE_SPECS = [
+        // Bottom row along floor (y ~ 432..458)
+        { char: "E", x: 78, y: 444, angle: -0.28, initialCluster: false },
+        { char: "V", x: 156, y: 448, angle: 0.34, initialCluster: false },
+        { char: "R", x: 238, y: 442, angle: -0.18, initialCluster: false },
+        { char: "N", x: 324, y: 446, angle: 0.22, initialCluster: false },
+        { char: "E", x: 412, y: 448, angle: -0.42, initialCluster: false },
+        { char: "V", x: 496, y: 444, angle: 0.19, initialCluster: false },
+        { char: "E", x: 582, y: 446, angle: -0.25, initialCluster: false },
+        { char: "R", x: 668, y: 444, angle: 0.31, initialCluster: true },
+        { char: "N", x: 752, y: 446, angle: -0.21, initialCluster: true },
+        { char: "E", x: 838, y: 442, angle: 0.38, initialCluster: true },
+        { char: "V", x: 924, y: 446, angle: -0.29, initialCluster: true },
+        { char: "R", x: 1012, y: 444, angle: 0.16, initialCluster: false },
+        { char: "E", x: 1102, y: 446, angle: -0.33, initialCluster: false },
+        { char: "N", x: 1192, y: 442, angle: 0.27, initialCluster: false },
+        // Second interlocking tier (y ~ 372..406)
+        { char: "N", x: 122, y: 392, angle: 0.48, initialCluster: false },
+        { char: "E", x: 214, y: 388, angle: -0.52, initialCluster: false },
+        { char: "E", x: 358, y: 392, angle: 0.36, initialCluster: false },
+        { char: "R", x: 458, y: 388, angle: -0.31, initialCluster: false },
+        { char: "V", x: 548, y: 394, angle: 0.44, initialCluster: false },
+        { char: "E", x: 636, y: 386, angle: -0.38, initialCluster: true },
+        { char: "E", x: 724, y: 382, angle: 0.29, initialCluster: true },
+        { char: "R", x: 812, y: 386, angle: -0.46, initialCluster: true },
+        { char: "N", x: 904, y: 390, angle: 0.33, initialCluster: false },
+        { char: "V", x: 996, y: 392, angle: -0.24, initialCluster: false },
+        { char: "E", x: 1084, y: 390, angle: 0.41, initialCluster: false },
+        { char: "R", x: 1164, y: 388, angle: -0.37, initialCluster: false }
+      ];
+
+      let bodies = [];
+      const pointer = { x: -9999, y: -9999, active: false, hasInteracted: false };
+      let draggedBody = null;
+      const dragGrabLocal = { x: 0, y: 0 };
+      const dragPrevWorld = { x: 0, y: 0 };
+      let sleepCounter = 0;
+      let isVisible = true;
+      let rafId = null;
+      const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+      function clientToSvgPoint(clientX, clientY) {
+        const rect = svg.getBoundingClientRect();
+        const sx = ((clientX - rect.left) / Math.max(1, rect.width)) * VIEW_W;
+        const sy = ((clientY - rect.top) / Math.max(1, rect.height)) * VIEW_H;
+        return { x: sx, y: sy };
+      }
+
+      function createLetterBody(spec, index, isHero, isMobile) {
+        const glyph = GLYPH_CONTOURS[spec.char];
+        const scale = isHero ? (isMobile ? 0.85 : 1.18) : 0.72;
+        const g = document.createElementNS(SVG_NS, "g");
+        g.setAttribute("class", "veneer-letter-node");
+        g.setAttribute("tabindex", "0");
+        g.setAttribute("role", "button");
+        g.setAttribute("aria-label", `Letter ${spec.char}`);
+
+        const sideGroup = document.createElementNS(SVG_NS, "g");
+        const sideQuads = [];
+
+        glyph.loops.forEach((loop) => {
+          for (let i = 0; i < loop.length; i++) {
+            const p1 = loop[i];
+            const p2 = loop[(i + 1) % loop.length];
+            const poly = document.createElementNS(SVG_NS, "polygon");
+            poly.setAttribute("class", "letter-side");
+            sideGroup.appendChild(poly);
+            sideQuads.push({ p1, p2, el: poly });
+          }
+        });
+
+        const frontPath = document.createElementNS(SVG_NS, "path");
+        frontPath.setAttribute("class", "letter-front");
+        frontPath.setAttribute("fill-rule", "evenodd");
+        frontPath.setAttribute("d", buildFrontPathData(glyph.loops));
+
+        g.appendChild(sideGroup);
+        g.appendChild(frontPath);
+        svg.appendChild(g);
+
+        const body = {
+          id: `${isHero ? "hero" : "pile"}-${index}`,
+          char: spec.char,
+          isHero,
+          pinned: isHero,
+          anchorX: spec.x,
+          anchorY: spec.y,
+          anchorAngle: spec.angle,
+          x: spec.x,
+          y: spec.y,
+          vx: 0,
+          vy: 0,
+          angle: spec.angle,
+          omega: 0,
+          scale,
+          radius: 43 * scale,
+          initialMint: Boolean(spec.initialMint),
+          initialCluster: Boolean(spec.initialCluster),
+          keyboardMint: false,
+          isMint: false,
+          el: g,
+          frontEl: frontPath,
+          sideQuads
+        };
+
+        g.addEventListener("pointerdown", (e) => {
+          e.stopPropagation();
+          const pt = clientToSvgPoint(e.clientX, e.clientY);
+          pointer.x = pt.x;
+          pointer.y = pt.y;
+          pointer.active = true;
+          pointer.hasInteracted = true;
+
+          // Bring grabbed letter to front of SVG within its layer
+          svg.appendChild(g);
+
+          body.pinned = false;
+          draggedBody = body;
+          svg.classList.add("is-dragging");
+
+          const dx = (pt.x - body.x) / body.scale;
+          const dy = (pt.y - body.y) / body.scale;
+          const cos = Math.cos(-body.angle);
+          const sin = Math.sin(-body.angle);
+          dragGrabLocal.x = dx * cos - dy * sin;
+          dragGrabLocal.y = dx * sin + dy * cos;
+          dragPrevWorld.x = pt.x;
+          dragPrevWorld.y = pt.y;
+
+          body.vx = 0;
+          body.vy = 0;
+          body.omega = 0;
+
+          if (g.setPointerCapture) {
+            try { g.setPointerCapture(e.pointerId); } catch (_) {}
+          }
+          wakePhysics();
+        });
+
+        g.addEventListener("keydown", (e) => {
+          const step = 14;
+          let handled = false;
+          if (e.key === "ArrowLeft") {
+            body.pinned = false;
+            body.vx -= step * 0.45;
+            body.vy -= 4;
+            body.omega -= 0.06;
+            handled = true;
+          } else if (e.key === "ArrowRight") {
+            body.pinned = false;
+            body.vx += step * 0.45;
+            body.vy -= 4;
+            body.omega += 0.06;
+            handled = true;
+          } else if (e.key === "ArrowUp" || e.key === " " || e.key === "Enter") {
+            body.pinned = false;
+            body.vy -= step * 0.7;
+            body.omega += (Math.random() - 0.5) * 0.1;
+            handled = true;
+          } else if (e.key === "ArrowDown") {
+            body.pinned = false;
+            body.vy += step * 0.45;
+            handled = true;
+          }
+          if (handled) {
+            e.preventDefault();
+            body.keyboardMint = true;
+            wakePhysics();
+          }
+        });
+
+        return body;
+      }
+
+      function updateBodyAppearance(body) {
+        let frontFill;
+        let sideFill;
+        if (body.isHero) {
+          const mint = body.initialMint || body.isMint || body.keyboardMint || draggedBody === body;
+          frontFill = mint ? COLORS.heroMintFront : COLORS.heroDarkFront;
+          sideFill = mint ? COLORS.heroMintSide : COLORS.heroDarkSide;
+        } else {
+          const showInitialCluster = !pointer.active && body.initialCluster;
+          const mint = showInitialCluster || body.isMint || body.keyboardMint || draggedBody === body;
+          frontFill = mint ? COLORS.pileMintFront : COLORS.pileGrayFront;
+          sideFill = mint ? COLORS.pileMintSide : COLORS.pileGraySide;
+        }
+
+        if (body.lastFrontFill !== frontFill) {
+          body.frontEl.setAttribute("fill", frontFill);
+          body.lastFrontFill = frontFill;
+        }
+        if (body.lastSideFill !== sideFill) {
+          for (let i = 0; i < body.sideQuads.length; i++) {
+            body.sideQuads[i].el.setAttribute("fill", sideFill);
+          }
+          body.lastSideFill = sideFill;
+        }
+      }
+
+      function syncBodyDom(body) {
+        const deg = (body.angle * 180) / Math.PI;
+        body.el.setAttribute(
+          "transform",
+          `translate(${body.x.toFixed(2)}, ${body.y.toFixed(2)}) rotate(${deg.toFixed(2)}) scale(${body.scale})`
+        );
+
+        // Project world extrusion vector (EXTRUDE_DX, EXTRUDE_DY) into the letter's local rotated frame
+        // so the 3D extrusion always points consistently down-left in screen space even as the letter rotates!
+        const cos = Math.cos(-body.angle);
+        const sin = Math.sin(-body.angle);
+        const ldx = ((EXTRUDE_DX * cos - EXTRUDE_DY * sin) / body.scale).toFixed(2);
+        const ldy = ((EXTRUDE_DX * sin + EXTRUDE_DY * cos) / body.scale).toFixed(2);
+        const ndx = Number(ldx);
+        const ndy = Number(ldy);
+
+        for (let i = 0; i < body.sideQuads.length; i++) {
+          const q = body.sideQuads[i];
+          const x1 = q.p1[0];
+          const y1 = q.p1[1];
+          const x2 = q.p2[0];
+          const y2 = q.p2[1];
+          q.el.setAttribute(
+            "points",
+            `${x1},${y1} ${x2},${y2} ${(x2 + ndx).toFixed(1)},${(y2 + ndy).toFixed(1)} ${(x1 + ndx).toFixed(1)},${(y1 + ndy).toFixed(1)}`
+          );
+        }
+
+        updateBodyAppearance(body);
+      }
+
+      function evaluateProximityCluster() {
+        for (let i = 0; i < bodies.length; i++) {
+          bodies[i].isMint = false;
+        }
+        if (!pointer.active) {
+          for (let i = 0; i < bodies.length; i++) {
+            updateBodyAppearance(bodies[i]);
+          }
+          return;
+        }
+
+        const directIndices = [];
+        for (let i = 0; i < bodies.length; i++) {
+          const b = bodies[i];
+          const d = Math.hypot(b.x - pointer.x, b.y - pointer.y);
+          if (d < 125) {
+            b.isMint = true;
+            directIndices.push(i);
+          }
+        }
+
+        // Neighbor cluster propagation within 155px of direct hits (up to 7 neighbors)
+        const candidates = [];
+        for (let i = 0; i < bodies.length; i++) {
+          const b = bodies[i];
+          if (b.isMint) continue;
+          let minDist = Infinity;
+          for (let j = 0; j < directIndices.length; j++) {
+            const src = bodies[directIndices[j]];
+            const nd = Math.hypot(b.x - src.x, b.y - src.y);
+            if (nd < minDist) minDist = nd;
+          }
+          if (minDist < 155) {
+            candidates.push({ body: b, dist: minDist });
+          }
+        }
+        candidates.sort((a, b) => a.dist - b.dist);
+        for (let i = 0; i < Math.min(6, candidates.length); i++) {
+          candidates[i].body.isMint = true;
+        }
+
+        for (let i = 0; i < bodies.length; i++) {
+          updateBodyAppearance(bodies[i]);
+        }
+      }
+
+      function stepPhysics() {
+        rafId = null;
+        if (prefersReducedMotion) {
+          evaluateProximityCluster();
+          for (let i = 0; i < bodies.length; i++) syncBodyDom(bodies[i]);
+          return;
+        }
+
+        const GRAVITY = 0.42;
+        const RESTITUTION = 0.22;
+        const MIN_X = 45;
+        const MAX_X = 1235;
+        const MIN_Y = 45;
+        const MAX_Y = 462;
+
+        let totalMotion = 0;
+
+        for (let i = 0; i < bodies.length; i++) {
+          const b = bodies[i];
+          if (b === draggedBody) {
+            // Off-center grab lever arm in world coordinates
+            const cos = Math.cos(b.angle);
+            const sin = Math.sin(b.angle);
+            const rx = (dragGrabLocal.x * cos - dragGrabLocal.y * sin) * b.scale;
+            const ry = (dragGrabLocal.x * sin + dragGrabLocal.y * cos) * b.scale;
+            const attachX = b.x + rx;
+            const attachY = b.y + ry;
+
+            const pullX = pointer.x - attachX;
+            const pullY = pointer.y - attachY;
+
+            b.vx = pullX * 0.38;
+            b.vy = pullY * 0.38;
+            b.x += b.vx;
+            b.y += b.vy;
+
+            // Cross product r x F gives natural off-center drag torque
+            const torque = (rx * pullY - ry * pullX) * 0.00055;
+            b.omega = b.omega * 0.72 + torque;
+            b.angle += b.omega;
+            totalMotion += 10;
+            continue;
+          }
+
+          if (b.pinned) {
+            const dx = b.anchorX - b.x;
+            const dy = b.anchorY - b.y;
+            const da = b.anchorAngle - b.angle;
+            b.vx = (b.vx + dx * 0.12) * 0.78;
+            b.vy = (b.vy + dy * 0.12) * 0.78;
+            b.omega = (b.omega + da * 0.12) * 0.78;
+            b.x += b.vx;
+            b.y += b.vy;
+            b.angle += b.omega;
+            totalMotion += Math.abs(b.vx) + Math.abs(b.vy) + Math.abs(b.omega);
+            continue;
+          }
+
+          b.vy += GRAVITY;
+          b.vx *= 0.985;
+          b.vy *= 0.985;
+          b.omega *= 0.94;
+
+          b.x += b.vx;
+          b.y += b.vy;
+          b.angle += b.omega;
+
+          // Keep strictly inside playground bounds
+          if (b.x - b.radius < MIN_X) {
+            b.x = MIN_X + b.radius;
+            b.vx = Math.abs(b.vx) * RESTITUTION;
+          } else if (b.x + b.radius > MAX_X) {
+            b.x = MAX_X - b.radius;
+            b.vx = -Math.abs(b.vx) * RESTITUTION;
+          }
+
+          if (b.y - b.radius < MIN_Y) {
+            b.y = MIN_Y + b.radius;
+            b.vy = Math.abs(b.vy) * RESTITUTION;
+          } else if (b.y + b.radius > MAX_Y) {
+            b.y = MAX_Y - b.radius;
+            b.vy = -Math.abs(b.vy) * RESTITUTION;
+            b.vx *= 0.82;
+            b.omega *= 0.85;
+          }
+        }
+
+        // Iterative rigid-body collision resolution
+        for (let iter = 0; iter < 3; iter++) {
+          for (let i = 0; i < bodies.length; i++) {
+            const a = bodies[i];
+            for (let j = i + 1; j < bodies.length; j++) {
+              const b = bodies[j];
+              if (a.pinned && b.pinned) continue;
+
+              const dx = b.x - a.x;
+              const dy = b.y - a.y;
+              const dist = Math.hypot(dx, dy) || 0.001;
+              const minDist = (a.radius + b.radius) * 0.84;
+
+              if (dist < minDist) {
+                const nx = dx / dist;
+                const ny = dy / dist;
+                const overlap = minDist - dist;
+
+                const aMovable = !a.pinned && a !== draggedBody;
+                const bMovable = !b.pinned && b !== draggedBody;
+
+                if (aMovable && bMovable) {
+                  a.x -= nx * overlap * 0.5;
+                  a.y -= ny * overlap * 0.5;
+                  b.x += nx * overlap * 0.5;
+                  b.y += ny * overlap * 0.5;
+                } else if (aMovable) {
+                  a.x -= nx * overlap;
+                  a.y -= ny * overlap;
+                } else if (bMovable) {
+                  b.x += nx * overlap;
+                  b.y += ny * overlap;
+                }
+
+                const rvx = b.vx - a.vx;
+                const rvy = b.vy - a.vy;
+                const velAlongNormal = rvx * nx + rvy * ny;
+
+                if (velAlongNormal < 0) {
+                  const jImpulse = -(1 + RESTITUTION) * velAlongNormal * 0.5;
+                  if (aMovable) {
+                    a.vx -= jImpulse * nx;
+                    a.vy -= jImpulse * ny;
+                    a.omega -= (nx * rvy - ny * rvx) * 0.0018;
+                  }
+                  if (bMovable) {
+                    b.vx += jImpulse * nx;
+                    b.vy += jImpulse * ny;
+                    b.omega += (nx * rvy - ny * rvx) * 0.0018;
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        // Re-clamp bounds after collision solver
+        for (let i = 0; i < bodies.length; i++) {
+          const b = bodies[i];
+          if (!b.pinned) {
+            b.x = Math.max(MIN_X + b.radius * 0.5, Math.min(MAX_X - b.radius * 0.5, b.x));
+            b.y = Math.max(MIN_Y + b.radius * 0.5, Math.min(MAX_Y - b.radius * 0.65, b.y));
+          }
+          totalMotion += Math.hypot(b.vx, b.vy) + Math.abs(b.omega) * 8;
+          syncBodyDom(b);
+        }
+
+        evaluateProximityCluster();
+
+        if (totalMotion < 0.08 && !draggedBody) {
+          sleepCounter++;
+        } else {
+          sleepCounter = 0;
+        }
+
+        if (isVisible && sleepCounter < 45) {
+          rafId = requestAnimationFrame(stepPhysics);
+        }
+      }
+
+      function wakePhysics() {
+        sleepCounter = 0;
+        if (prefersReducedMotion) {
+          evaluateProximityCluster();
+          return;
+        }
+        if (!rafId && isVisible) {
+          rafId = requestAnimationFrame(stepPhysics);
+        }
+      }
+
+      function buildScene() {
+        svg.innerHTML = "";
+        bodies = [];
+        const isMobile = window.innerWidth < 640;
+        const pileCount = isMobile ? 14 : PILE_SPECS.length;
+
+        for (let i = 0; i < pileCount; i++) {
+          const b = createLetterBody(PILE_SPECS[i], i, false, isMobile);
+          bodies.push(b);
+        }
+        for (let i = 0; i < HERO_SPECS.length; i++) {
+          const b = createLetterBody(HERO_SPECS[i], i, true, isMobile);
+          bodies.push(b);
+        }
+
+        evaluateProximityCluster();
+        for (let i = 0; i < bodies.length; i++) {
+          syncBodyDom(bodies[i]);
+        }
+        wakePhysics();
+      }
+
+      wrap.addEventListener("pointermove", (e) => {
+        const pt = clientToSvgPoint(e.clientX, e.clientY);
+        pointer.x = pt.x;
+        pointer.y = pt.y;
+        pointer.active = true;
+        pointer.hasInteracted = true;
+        if (draggedBody) {
+          dragPrevWorld.x = pt.x;
+          dragPrevWorld.y = pt.y;
+          wakePhysics();
+        } else {
+          evaluateProximityCluster();
+        }
+      });
+
+      wrap.addEventListener("pointerleave", () => {
+        pointer.active = false;
+        if (!draggedBody) {
+          evaluateProximityCluster();
+        }
+      });
+
+      window.addEventListener("pointerup", () => {
+        if (draggedBody) {
+          draggedBody.vx = Math.max(-18, Math.min(18, draggedBody.vx));
+          draggedBody.vy = Math.max(-18, Math.min(18, draggedBody.vy));
+          draggedBody = null;
+          svg.classList.remove("is-dragging");
+          wakePhysics();
+        }
+      });
+
+      if (resetBtn) {
+        resetBtn.addEventListener("click", () => {
+          pointer.active = false;
+          draggedBody = null;
+          svg.classList.remove("is-dragging");
+          buildScene();
+        });
+      }
+
+      if ("IntersectionObserver" in window) {
+        const io = new IntersectionObserver((entries) => {
+          entries.forEach((entry) => {
+            isVisible = entry.isIntersecting;
+            if (isVisible) wakePhysics();
+          });
+        }, { threshold: 0.05 });
+        io.observe(wrap);
+      }
+
+      buildScene();
+    })();
+  </script>
+</body>
+</html>

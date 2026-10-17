@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://veener.fariz.tech/sitemap.xml
+LLMs-Txt: https://veener.fariz.tech/llms.txt

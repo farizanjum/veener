@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="64" height="64" fill="none">
+  <defs>
+    <!-- Barely-there 2-3% luminance softness on the warm cream-stone IP body -->
+    <linearGradient id="ip-cream-soft" x1="160" y1="72" x2="480" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#F6F4F0" />
+      <stop offset="100%" stop-color="#F1EFEB" />
+    </linearGradient>
+    <clipPath id="logo-frame">
+      <rect x="0" y="0" width="512" height="512" rx="96" />
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#logo-frame)">
+    <!-- 1. Solid Background Color (#107A4D Muted Greptile Forest Green) -->
+    <rect x="0" y="0" width="512" height="512" fill="#107A4D" />
+
+    <!-- 2. IP Base Color 1 (#F1EFEB Warm Cream-Stone):
+         Ultra-simplified cute baby Chameleon emerging from the lower-right corner (88% canvas coverage).
+         Shape A: Thick curled spiral tail in lower-left/bottom.
+         Shape B: Unified chubby head, rounded casque crest, and lower-right body silhouette. -->
+    <path
+      d="M 276 520
+         H 142
+         C 66 520, 26 468, 26 396
+         C 26 326, 78 276, 146 276
+         C 202 276, 244 316, 244 368
+         C 244 410, 212 442, 170 442
+         C 138 442, 114 420, 114 390
+         C 114 366, 134 348, 158 348
+         C 174 348, 186 360, 186 376
+         C 186 386, 178 394, 168 394
+         C 160 394, 154 388, 154 380
+         C 142 380, 136 390, 142 400
+         C 148 410, 166 412, 178 402
+         C 192 390, 192 366, 174 354
+         C 152 340, 120 352, 112 378
+         C 102 410, 126 446, 166 450
+         C 220 456, 268 418, 276 520 Z"
+      fill="url(#ip-cream-soft)"
+    />
+
+    <!-- Thick outer spiral tail ring + unified chubby head/crest/body emerging from bottom-right -->
+    <path
+      d="M 528 528
+         L 128 528
+         C 56 528, 22 474, 22 402
+         C 22 332, 74 282, 142 282
+         C 198 282, 238 320, 238 370
+         C 238 410, 206 440, 166 440
+         C 134 440, 110 416, 110 386
+         C 110 364, 128 348, 150 348
+         C 168 348, 182 362, 182 378
+         C 182 394, 168 406, 152 402
+         C 168 412, 190 400, 190 378
+         C 190 352, 168 332, 140 332
+         C 104 332, 78 360, 78 396
+         C 78 442, 116 474, 172 474
+         L 216 474
+         C 196 436, 186 392, 186 344
+         C 186 244, 238 178, 302 154
+         C 316 100, 360 64, 414 64
+         C 468 64, 508 102, 518 158
+         L 528 196
+         Z"
+      fill="url(#ip-cream-soft)"
+    />
+
+    <!-- Inner cutout of the spiral tail in #107A4D so the curl is ultra-thick and readable at 32x32 -->
+    <circle cx="144" cy="390" r="64" fill="#107A4D" />
+    <circle cx="152" cy="388" r="32" fill="url(#ip-cream-soft)" />
+
+    <!-- 3. IP Base Color 2 (#141A17 Deep Forest Ink):
+         Soft rounded lower-right belly/chin patch, two big lovable rounded eyes, and happy curved mouth -->
+    <path
+      d="M 316 528
+         C 316 434, 376 376, 466 376
+         L 528 376
+         L 528 528
+         Z"
+      fill="#141A17"
+    />
+
+    <!-- Left Big Lovable Chameleon Eye (Turret Ring + Pupil + Catchlight) -->
+    <circle cx="272" cy="276" r="46" fill="#141A17" />
+    <circle cx="258" cy="262" r="16" fill="#F1EFEB" />
+
+    <!-- Right Big Lovable Chameleon Eye -->
+    <circle cx="412" cy="276" r="46" fill="#141A17" />
+    <circle cx="398" cy="262" r="16" fill="#F1EFEB" />
+
+    <!-- Cute Happy Curved Smile -->
+    <path
+      d="M 318 336 Q 342 358 366 336"
+      stroke="#141A17"
+      stroke-width="16"
+      stroke-linecap="round"
+      fill="none"
+    />
+  </g>
+</svg>

@@ -1,0 +1,191 @@
+# Veneer: Full Technical & Plain-English Reference for AI Agents
+
+> Notes that look like ordinary notes. Hide your real notes, titles, and images behind an everyday cover note in Obsidian. Type `;;` and your password on any line to reveal.
+
+---
+
+## 1. Plain-English Overview: How Veneer Works
+
+Most encryption tools announce themselves. A file named `passwords.md.enc`, a padlock icon in the sidebar, or a modal prompt asking `"Enter Master Password to Decrypt"` immediately tells anyone looking at your screen or syncing your folder that you are hiding something important.
+
+Veneer takes the opposite approach: **screen-level plausible deniability**.
+
+1. **Ordinary Markdown on Disk**: A protected note is stored as a normal `.md` file named after its decoy cover, for example `Grocery run (Saturday).md`. Its visible body is a mundane, believable note such as a shopping list, standup notes, or a recipe.
+2. **Hidden Frontmatter Envelope**: Your real note text, your real note title (such as `Q4 Acquisition Targets`), and any local images embedded in the note are encrypted using AES-256-GCM and stored inside an innocuous-looking YAML frontmatter property named `draft_cache`.
+3. **Zero UI Tells**: Obsidian's Reading view hides frontmatter properties or displays them as standard metadata. Obsidian's global search, quick switcher, backlinks, and graph view index only the decoy cover text and decoy filename.
+4. **Silent Inline Unlock (`;;`)**: There is no unlock button or password dialog. To reveal your real note, click at the start of any line in the editor and type `;;` followed by your password and Space or Enter. Your keystrokes are swallowed in memory so they never appear on screen. Within ~300ms, the editor swaps the cover title and cover body for your real title, real text, and decrypted images in RAM.
+5. **Automatic Snap-Back to Cover**: When you switch windows (`Alt+Tab`), switch tabs, lock your screen, press the panic shortcut (`Ctrl+Shift+X`), or leave the keyboard idle for 60 seconds, Veneer immediately swaps the decoy cover back into the editor, wipes the CodeMirror undo history, revokes temporary image `blob:` URLs, and clears any text you copied to the clipboard while unlocked.
+
+---
+
+## 2. Inline `;;` Unlock & Blind Capture State Machine
+
+Veneer intercepts password entry inside CodeMirror 6 using a highest-precedence `EditorState.transactionFilter` before any character reaches the document buffer, DOM, or Obsidian's disk auto-save pipeline.
+
+### How the Capture Filter Operates
+
+- **Trigger Prefix (`;;`)**: When the cursor is at column 0 of any line and the user types a first `;`, the filter allows it normally. When the second `;` is typed immediately after, the filter deletes the first `;` and transitions the editor session into `CAPTURING` mode.
+- **Blind Password Entry**: While in `CAPTURING` mode, every printable character typed by the user is appended to an in-memory byte buffer (`Uint8Array`) and dropped from the CodeMirror transaction. Nothing is rendered on screen, so someone watching over your shoulder sees no password dots or prompt.
+- **Backspace and Escape**: Pressing `Backspace` removes the last byte from the capture buffer (or exits capture mode if the buffer is empty). Pressing `Escape` or moving the cursor away aborts capture mode and zeros the buffer.
+- **Submission (`Space` or `Enter`)**: Pressing `Space` or `Enter` finalizes the buffer and passes the captured bytes to the Argon2id key derivation worker.
+- **Zero-Tell Failure Handling**: If the password does not authenticate the AES-256-GCM tag, Veneer does nothing visible. There is no error toast, no red border, and no shake animation. Failed attempts are rate-limited in memory using exponential backoff (`1s -> 2s -> 4s -> 8s -> 30s max`) to prevent automated keystroke brute-forcing.
+
+---
+
+## 3. Real Title + Image Encryption & Cryptographic Envelope
+
+Veneer uses envelope encryption with authenticated AEAD primitives so that password rotation is instant and ciphertext size does not leak the exact length of a short secret note.
+
+### Cryptographic Primitives
+
+- **Key Derivation (KEK)**: Argon2id (`memory: 64 MB`, `iterations: 3`, `parallelism: 1`, `hashLength: 32 bytes`, 16-byte random salt per note) derives a 256-bit Key Encryption Key (KEK) from the user's password.
+- **Data Encryption (DEK)**: Each protected note generates a random 256-bit Data Encryption Key (DEK) and 96-bit IV. The DEK is wrapped by the KEK using AES-256-GCM. Changing a note's password only re-wraps the 32-byte DEK without re-encrypting the entire note payload.
+- **4KB Block Padding**: Before encryption, the plaintext bundle (real Markdown body + real note title + binary image attachments) is padded to a multiple of 4,096 bytes.
+- **File-Size Matching**: To prevent an observer from noticing a 5-line grocery list that takes up 40KB on disk, Veneer pads the decoy text with proportional invisible whitespace and scales cover generation length to match the protected payload.
+
+### Real Title Swap
+
+- When a note is protected, Veneer extracts the cover's first heading (for example, `Grocery run (Saturday)`) and renames the file on disk to `Grocery run (Saturday).md` while encrypting the original title (`Q4 Acquisition Targets`) inside the payload.
+- While unlocked in RAM, Veneer patches Obsidian's inline title element and tab header to display the decrypted real title. Every edits-to-save cycle writes the encrypted real title and real body back into `draft_cache` while keeping the disk filename and visible disk body fixed as the decoy cover.
+- As soon as the note masks, the inline title and tab header revert to the cover title.
+
+### Automatic Vault Image Encryption & RAM `blob:` Rendering
+
+- When protecting or saving an unlocked note, Veneer scans the real Markdown for embedded local vault images (`![[diagram.png]]` or `![](assets/photo.jpg)`).
+- Each local image file is read as raw binary bytes, packed into the encrypted AES-256-GCM payload inside `draft_cache`, and **unlinked (deleted) from the vault folder on disk** so unencrypted image files never sit exposed in the filesystem.
+- While the note is unlocked, Veneer materializes decrypted image bytes into temporary in-memory `URL.createObjectURL(blob)` references and rewrites image `src` attributes in the live editor DOM.
+- When the note re-masks, every `blob:` URL is immediately revoked via `URL.revokeObjectURL` and the binary buffers are zeroed.
+- If the user permanently runs **Unprotect this note**, Veneer writes the original image files back to the vault folder and restores standard Markdown links.
+
+---
+
+## 4. Local Vulkan + WASM Decoy Generation
+
+Veneer generates realistic, human-sounding cover notes entirely on-device so your persona, interests, and note metadata never touch an external API.
+
+### Dual-Engine Local Inference
+
+1. **Native GPU Acceleration (`llama-server` Vulkan)**: On Windows systems with compatible GPUs, Veneer launches a bundled local `llama-server` Vulkan subprocess bound strictly to `127.0.0.1` on an ephemeral port. This delivers ~135.5 tokens/sec on an laptop RTX 4050, generating a 500-word multi-section decoy note in roughly 4 seconds.
+2. **Automatic WebAssembly Fallback (`wllama`)**: If no GPU binary is available or the user prefers pure in-process execution, Veneer falls back automatically to `@wllama/wllama` running single-threaded WebAssembly inside Electron.
+3. **12 Instant Built-In Templates**: Works with zero model download required. Includes realistic templates for grocery lists, meeting notes, code debugging logs, workout logs, reading lists, travel checklists, and weekend errands.
+
+### Supported Local Models & Download Engine
+
+- **Built-In Model Catalog**:
+  - `Qwen3 0.6B` (~378 MB, default ultra-fast model)
+  - `Qwen3 1.7B` (~1.1 GB, balanced prose quality)
+  - `Qwen3 4B` (~2.6 GB, rich multi-section technical and creative covers)
+  - `Phi-4 Mini` (high-density professional notes)
+- **Custom GGUF Support**: Users can paste any Hugging Face `.gguf` URL or import a local `.gguf` file from disk, with automatic SHA-256 checksum verification against the Hugging Face API.
+- **Resumable Downloads**: Chunked HTTP Range download engine with pause/resume across Obsidian restarts, live throughput calculation, and ETA display.
+
+### Anti-Slop Quality Scoring & Persona Matching
+
+- **16 Auto-Detected Professions**: Setting a cover persona (e.g., `"backend developer who plays cricket and cooks on weekends"`) steers Auto mode toward appropriate document genres (code snippets and incident logs for engineers, campaign copy for marketers, syllabus notes for students).
+- **Human Noise Injection**: Prompts instruct the local model to write like a real person jotting quick personal notes: using shorthand (`w/`, `re:`, `fyi`, `tbd`), mixing short fragments with longer lines, leaving thoughts slightly unfinished, and avoiding polished essay structure.
+- **Automated Quality Filter**: Every generated cover is scored locally before acceptance. Veneer rejects and regenerates outputs that contain AI cliches, em-dashes, PII patterns (emails, phone numbers, SSNs), unapproved proper names, low burstiness (uniform sentence lengths), or n-gram overlap with your real secret note.
+
+---
+
+## 5. Duress / Destruction PIN (`;;!`)
+
+For high-risk situations where a user needs to permanently destroy all hidden notes on demand without opening menus or dialogs:
+
+- **Separate Prefix (`;;!`)**: Configured in Settings > Veneer with a 4-8 digit numeric PIN. Because it requires the explicit `;;!` prefix at column 0 of any line, it cannot be triggered accidentally during normal `;;` password entry.
+- **RAM-First Crypto-Shredding**:
+  1. Immediately zeros all active in-memory DEKs, KEKs, capture buffers, and unlocked editor states.
+  2. Iterates through every protected note in the vault registry and strips the `draft_cache` YAML frontmatter property from each file on disk.
+  3. Overwrites each file on disk with pure, unpadded cover text so every note becomes an ordinary plaintext Markdown file containing only its decoy cover.
+  4. Purges the protected-note registry and duress PIN hash from plugin settings.
+- **Silent Execution**: On screen, triggering `;;!PIN` looks identical to typing into an ordinary note or a no-op failed unlock.
+
+---
+
+## 6. Threat Model & Forensic Limits
+
+Veneer is designed around honest, explicit security boundaries. **Veneer protects against people inspecting your screen or vault, not forensic analysts imaging your drive.**
+
+### What Veneer Defeats
+
+- **Shoulder-Surfers**: An observer looking at your monitor sees only `Grocery run (Saturday).md` when locked, and never sees a password prompt during `;;` entry.
+- **Casual Device Snooping**: A colleague, family member, or border official browsing your open Obsidian vault, searching notes, or inspecting the graph view sees only plausible everyday notes.
+- **Laptop Snatch / Physical Theft**: Auto-masking fires immediately on window blur, lid close / power suspend, or 60 seconds of idle time, wiping undo history and clipboard contents.
+- **Cloud Sync Inspection**: Dropbox, iCloud, OneDrive, Google Drive, and Obsidian Sync servers receive only the decoy Markdown text and the AES-256-GCM `draft_cache` frontmatter blob.
+- **Screen Recording & AI Recall**: Optional Electron `setContentProtection(true)` blocks screenshots, screen-sharing software, and Windows Recall from capturing the Obsidian window while any note is unlocked.
+
+### What Veneer Does NOT Defeat (And How to Mitigate)
+
+- **Disk-Level Forensics**: The presence of `.obsidian/plugins/deocy/` on disk proves that Veneer is installed, and YAML frontmatter containing `draft_cache` indicates which notes carry encrypted payloads.
+  - *Mitigation*: Run a portable installation of Obsidian inside a **VeraCrypt hidden volume** (a full step-by-step guide is built into Settings > Veneer).
+- **Cloud Version History of Previously Plaintext Notes**: If you write a secret note in plaintext while cloud sync is active and only protect it later, the cloud provider's version history still holds the original plaintext snapshot.
+  - *Mitigation*: Create a fresh note, protect it immediately with a cover before writing sensitive content, or purge cloud version history after deleting any old plaintext file.
+- **Obsidian Core File Recovery Plugin**: Obsidian's built-in File Recovery plugin periodically saves unencrypted editor snapshots to disk.
+  - *Mitigation*: Veneer's Hygiene Check enforces disabling Core File Recovery and **refuses to unlock protected notes** until File Recovery is turned off.
+- **Untrusted Community Plugins**: All Obsidian plugins share the same Electron renderer process and can inspect active CodeMirror editor buffers while a note is unlocked.
+  - *Mitigation*: Keep your community plugin list minimal and audited.
+- **OS Swap, Hibernation, and Crash Dumps**: The operating system may page Electron RAM to `pagefile.sys` or `hiberfil.sys`.
+  - *Mitigation*: Follow the in-app Hygiene Check to enable full-disk encryption (BitLocker / FileVault / LUKS), disable hibernation (`powercfg /h off`), and exclude your vault directory from OS search indexers.
+
+---
+
+## 7. CLI Build, Test & Installation Steps
+
+### Prerequisites
+
+- Node.js 18+ and npm
+- Obsidian v1.5.0 or newer (Desktop: Windows, macOS, Linux)
+
+### Build and Verify from Source
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/fariz/deocy-text-plugin-obsidian.git
+cd deocy-text-plugin-obsidian
+
+# 2. Install dependencies
+npm install
+
+# 3. Run strict TypeScript typechecking (zero suppressions)
+npm run typecheck
+
+# 4. Run the Vitest unit test suite
+npm test
+
+# 5. Build production bundle (outputs main.js and copies wllama WASM assets)
+npm run build
+```
+
+### Install into an Obsidian Vault
+
+1. Create the plugin directory inside your target vault:
+   ```bash
+   mkdir -p "<your-vault>/.obsidian/plugins/deocy"
+   ```
+2. Copy `main.js`, `manifest.json`, `styles.css`, and the `assets/` directory into `<your-vault>/.obsidian/plugins/deocy/`.
+3. Open Obsidian, navigate to **Settings -> Community plugins**, reload plugins, and enable **Veneer**.
+4. Navigate to **Settings -> Core plugins** and disable **File Recovery** (required by Veneer's safety gate before unlocking any note).
+5. Open **Settings -> Veneer** to configure your cover persona, review the OS Hygiene Check, and optionally download a local GGUF model or set a Destruction PIN.
+
+---
+
+## 8. Repository Architecture Summary
+
+```text
+src/
+  main.ts        Plugin lifecycle, command registration, MarkdownView hooks
+  settings.ts    Settings schema, GGUF model catalog, active model resolution
+  registry.ts    Protected-note metadata bookkeeping
+  crypto/        Argon2id KEK derivation, AES-256-GCM DEK wrapping, 4KB padding, image bundle packing
+  view/          Live MarkdownView title/body swap, save interception, RAM blob: image rendering
+  capture/       CodeMirror 6 transactionFilter for blind ;; and ;;! inline capture
+  lock/          60s idle timer, window blur, powerMonitor lock, clipboard wiper, setContentProtection
+  decoy/         12 built-in cover templates, protection wizard, password entropy checker
+  llm/           llama-server Vulkan runner, wllama WASM runtime, resumable downloader, quality scorer
+  shred/         Duress PIN verification, RAM-first shred orchestrator, OS hygiene checker
+  ui/            Settings tab, model download modal, live status bar indicator ((cover) vs (real))
+test/            Vitest unit tests covering crypto, capture filter, backoff, LLM validation, and shredder
+```
+
+## License
+
+MIT License. Free and open-source software.

@@ -1,0 +1,871 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Security Policy &amp; Cryptographic Specification | Veneer for Obsidian</title>
+  <meta name="description" content="Cryptographic specification for Veneer: AES-256-GCM, Argon2id (64 MiB / 3 iterations), 4 KB block padding, RAM blob: image isolation, ;;! Destruction PIN, and vulnerability disclosure." />
+  <meta name="theme-color" content="#F1EFEB" />
+  <link rel="canonical" href="https://veener.fariz.tech/security.html" />
+
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://veener.fariz.tech/security.html" />
+  <meta property="og:title" content="Security Policy &amp; Cryptographic Specification | Veneer for Obsidian" />
+  <meta property="og:description" content="Cryptographic specification for Veneer: AES-256-GCM, Argon2id (64 MiB / 3 iterations), 4 KB block padding, RAM blob: image isolation, ;;! Destruction PIN, and vulnerability disclosure." />
+  <meta property="og:image" content="/og-image.svg" />
+
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Security Policy &amp; Cryptographic Specification | Veneer for Obsidian" />
+  <meta name="twitter:description" content="AES-256-GCM, Argon2id 64 MiB KDF, 4 KB block padding, RAM blob: image isolation, and responsible disclosure." />
+  <meta name="twitter:image" content="/og-image.svg" />
+
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="alternate" type="text/plain" href="/llms.txt" title="LLM Context" />
+
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/geist@1.3.1/dist/fonts/geist-sans/style.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/geist@1.3.1/dist/fonts/geist-mono/style.css" />
+
+  <style>
+    :root {
+      --bg: #F1EFEB;
+      --surface: #F8F7F3;
+      --footer-bg: #EAE7DF;
+      --ink: #141413;
+      --muted: #5E5D58;
+      --rule: #CFCBC2;
+      --footer-rule: #D5D2C8;
+      --cross: #8C8980;
+      --green: #107A4D;
+      --green-soft: rgba(16, 122, 77, 0.1);
+      --danger: #B42318;
+      --font-sans: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html {
+      background: var(--bg);
+      color: var(--ink);
+      font-family: var(--font-sans);
+      -webkit-font-smoothing: antialiased;
+      scroll-behavior: smooth;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--ink);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    ::selection {
+      background: var(--green);
+      color: #FFFFFF;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    .swiss-band {
+      width: 100%;
+      border-bottom: 1px solid var(--rule);
+      position: relative;
+    }
+
+    .swiss-frame {
+      max-width: 1280px;
+      margin: 0 auto;
+      border-left: 1px solid var(--rule);
+      border-right: 1px solid var(--rule);
+      position: relative;
+    }
+
+    .grid-cross {
+      position: absolute;
+      width: 11px;
+      height: 11px;
+      pointer-events: none;
+      z-index: 20;
+    }
+    .grid-cross::before,
+    .grid-cross::after {
+      content: "";
+      position: absolute;
+      background: var(--cross);
+    }
+    .grid-cross::before {
+      top: 5px;
+      left: 0;
+      width: 11px;
+      height: 1px;
+    }
+    .grid-cross::after {
+      top: 0;
+      left: 5px;
+      width: 1px;
+      height: 11px;
+    }
+    .grid-cross.tl { top: -6px; left: -6px; }
+    .grid-cross.tr { top: -6px; right: -6px; }
+    .grid-cross.bl { bottom: -6px; left: -6px; }
+    .grid-cross.br { bottom: -6px; right: -6px; }
+
+    mark.hl, .hl {
+      background: rgba(16, 122, 77, 0.12);
+      color: var(--green);
+      padding: 2px 7px;
+      border-radius: 4px;
+      font-weight: 600;
+    }
+
+    .top-nav {
+      position: sticky;
+      top: 0;
+      z-index: 60;
+      background: rgba(241, 239, 235, 0.92);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--rule);
+    }
+
+    .nav-grid {
+      max-width: 1280px;
+      height: 62px;
+      margin: 0 auto;
+      border-left: 1px solid var(--rule);
+      border-right: 1px solid var(--rule);
+      display: grid;
+      grid-template-columns: 270px 1fr auto;
+      align-items: stretch;
+    }
+
+    .nav-cell {
+      padding: 0 20px;
+      border-right: 1px solid var(--rule);
+      display: flex;
+      align-items: center;
+    }
+
+    .nav-cell:last-child {
+      border-right: none;
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-family: var(--font-sans);
+      font-size: 17px;
+      font-weight: 600;
+      letter-spacing: -0.03em;
+      color: var(--ink);
+    }
+
+    .brand-pill {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--green);
+      background: var(--green-soft);
+      border: 1px solid rgba(16, 122, 77, 0.25);
+      padding: 2px 6px;
+      border-radius: 3px;
+      letter-spacing: 0.03em;
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      color: var(--muted);
+    }
+
+    .nav-links a {
+      transition: color 0.15s ease;
+    }
+
+    .nav-links a:hover,
+    .nav-links a.active {
+      color: var(--ink);
+      font-weight: 600;
+    }
+
+    .nav-btn-ghost {
+      height: 36px;
+      padding: 0 14px;
+      border-radius: 6px;
+      border: 1px solid var(--rule);
+      background: var(--surface);
+      color: var(--ink);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 500;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      transition: border-color 0.15s ease, background 0.15s ease;
+    }
+
+    .nav-btn-ghost:hover {
+      border-color: var(--ink);
+      background: #FFFFFF;
+    }
+
+    main {
+      flex: 1;
+    }
+
+    main .swiss-band {
+      border-top: 1px solid var(--rule);
+      border-bottom: 1px solid var(--rule);
+      margin-bottom: 72px;
+      background: var(--bg);
+    }
+
+    main .swiss-band:first-child {
+      border-top: none;
+    }
+
+    .doc-hero {
+      padding: 56px 48px;
+      border-bottom: 1px solid var(--rule);
+      background: rgba(248, 247, 243, 0.45);
+      position: relative;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 11px;
+      border-radius: 4px;
+      border: 1px solid var(--rule);
+      background: var(--surface);
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      color: var(--muted);
+      margin-bottom: 20px;
+    }
+
+    .pulse-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--green);
+    }
+
+    .doc-h1 {
+      font-family: var(--font-sans);
+      font-size: clamp(2.2rem, 4vw, 3.4rem);
+      font-weight: 600;
+      letter-spacing: -0.04em;
+      line-height: 1.06;
+      color: var(--ink);
+      margin-bottom: 16px;
+    }
+
+    .doc-lead {
+      font-family: var(--font-mono);
+      font-size: 14px;
+      line-height: 1.72;
+      color: var(--muted);
+      max-width: 740px;
+    }
+
+    .doc-grid {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      position: relative;
+    }
+
+    .doc-sidebar {
+      padding: 40px 32px;
+      border-right: 1px solid var(--rule);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--muted);
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .doc-meta-box {
+      padding: 16px;
+      border: 1px solid var(--rule);
+      border-radius: 6px;
+      background: var(--surface);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .doc-meta-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      border-bottom: 1px dashed var(--rule);
+      padding-bottom: 8px;
+    }
+
+    .doc-meta-row:last-child {
+      border-bottom: none;
+      padding-bottom: 0;
+    }
+
+    .doc-meta-key {
+      color: var(--green);
+      font-weight: 600;
+      text-transform: uppercase;
+      font-size: 11px;
+    }
+
+    .doc-meta-val {
+      color: var(--ink);
+      font-weight: 500;
+      text-align: right;
+    }
+
+    .doc-toc {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .doc-toc a {
+      display: block;
+      padding: 8px 10px;
+      border-radius: 4px;
+      border: 1px solid transparent;
+      color: var(--muted);
+      transition: all 0.15s ease;
+    }
+
+    .doc-toc a:hover {
+      background: var(--surface);
+      border-color: var(--rule);
+      color: var(--ink);
+    }
+
+    .doc-content {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .policy-section {
+      padding: 40px 48px;
+      border-bottom: 1px solid var(--rule);
+      position: relative;
+    }
+
+    .policy-section:last-child {
+      border-bottom: none;
+    }
+
+    .policy-num {
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      font-weight: 600;
+      color: var(--green);
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      margin-bottom: 10px;
+      display: block;
+    }
+
+    .policy-h2 {
+      font-family: var(--font-sans);
+      font-size: 22px;
+      font-weight: 600;
+      letter-spacing: -0.025em;
+      color: var(--ink);
+      margin-bottom: 14px;
+    }
+
+    .policy-p {
+      font-family: var(--font-mono);
+      font-size: 13.5px;
+      line-height: 1.75;
+      color: var(--muted);
+      margin-bottom: 14px;
+    }
+
+    .policy-p:last-child {
+      margin-bottom: 0;
+    }
+
+    .policy-p strong {
+      color: var(--ink);
+      font-weight: 600;
+    }
+
+    .policy-p code {
+      color: var(--ink);
+      background: rgba(20, 20, 19, 0.07);
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-size: 12.5px;
+    }
+
+    .policy-p a {
+      color: var(--green);
+      text-decoration: underline;
+      text-underline-offset: 3px;
+      font-weight: 500;
+    }
+
+    .spec-grid {
+      margin-top: 16px;
+      border: 1px solid var(--rule);
+      border-radius: 6px;
+      background: var(--surface);
+      overflow: hidden;
+    }
+
+    .spec-item {
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--rule);
+      display: grid;
+      grid-template-columns: 160px 1fr;
+      gap: 12px;
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      line-height: 1.6;
+    }
+
+    .spec-item:last-child {
+      border-bottom: none;
+    }
+
+    .spec-label {
+      color: var(--green);
+      font-weight: 600;
+      text-transform: uppercase;
+      font-size: 11px;
+    }
+
+    .spec-detail {
+      color: var(--ink);
+    }
+
+    .arch-footer {
+      background-color: #EFEFEA;
+      background-image: radial-gradient(#C8C9C2 1px, transparent 1px);
+      background-size: 18px 18px;
+      color: var(--ink);
+      border-top: 1px solid #D5D6D0;
+      position: relative;
+    }
+
+    .arch-footer .grid-cross::before,
+    .arch-footer .grid-cross::after {
+      background: #20E6A1;
+    }
+
+    .arch-footer-grid {
+      max-width: 1280px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: 1.45fr 1fr 1fr 1fr;
+      border-left: 1px solid #D5D6D0;
+      border-right: 1px solid #D5D6D0;
+      border-bottom: 1px solid #D5D6D0;
+      position: relative;
+    }
+
+    .arch-footer-col {
+      padding: 40px 28px;
+      border-right: 1px solid #D5D6D0;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      position: relative;
+    }
+
+    .arch-footer-col:last-child {
+      border-right: none;
+    }
+
+    .footer-wordmark {
+      display: inline-flex;
+      align-items: center;
+      gap: 14px;
+      font-family: var(--font-sans);
+      font-size: clamp(2rem, 3.6vw, 2.8rem);
+      font-weight: 700;
+      letter-spacing: -0.05em;
+      color: #23242E;
+      line-height: 0.95;
+      margin-bottom: 4px;
+    }
+
+    .footer-wordmark-icon {
+      width: 38px;
+      height: 38px;
+      flex-shrink: 0;
+      border-radius: 10px;
+    }
+
+    .footer-col-label {
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      color: #6B6D76;
+      margin-bottom: 6px;
+    }
+
+    .footer-desc {
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      line-height: 1.65;
+      color: #565860;
+      max-width: 340px;
+    }
+
+    .footer-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      align-self: flex-start;
+      padding: 4px 10px;
+      border-radius: 4px;
+      background: rgba(255, 255, 255, 0.72);
+      border: 1px solid #D5D6D0;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: #23242E;
+    }
+
+    .footer-links {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      color: #363842;
+    }
+
+    .footer-links a:hover {
+      color: #107A4D;
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+
+    .arch-footer-bottom-band {
+      border-top: 1px solid #D5D6D0;
+      border-bottom: 1px solid #D5D6D0;
+      background: rgba(239, 239, 234, 0.85);
+    }
+
+    .arch-footer-bottom {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 12px 28px;
+      border-left: 1px solid #D5D6D0;
+      border-right: 1px solid #D5D6D0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      letter-spacing: 0.04em;
+      color: #6B6D76;
+      position: relative;
+    }
+
+    @media (max-width: 960px) {
+      .nav-grid {
+        grid-template-columns: 1fr auto;
+      }
+      .nav-cell.hide-tablet {
+        display: none;
+      }
+      .doc-grid {
+        grid-template-columns: 1fr;
+      }
+      .doc-sidebar {
+        border-right: none;
+        border-bottom: 1px solid var(--rule);
+      }
+      .doc-hero,
+      .policy-section {
+        padding: 36px 28px;
+      }
+      .arch-footer-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+      .arch-footer-col {
+        border-bottom: 1px solid var(--footer-rule);
+      }
+      .arch-footer-col:nth-of-type(2n) {
+        border-right: none;
+      }
+    }
+
+    @media (max-width: 640px) {
+      .swiss-frame,
+      .nav-grid,
+      .arch-footer-grid,
+      .arch-footer-bottom {
+        border-left: none;
+        border-right: none;
+      }
+      .doc-hero,
+      .policy-section,
+      .doc-sidebar {
+        padding: 28px 18px;
+      }
+      .spec-item {
+        grid-template-columns: 1fr;
+        gap: 4px;
+      }
+      .arch-footer-grid {
+        grid-template-columns: 1fr;
+      }
+      .arch-footer-col {
+        border-right: none;
+        padding: 26px 18px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="top-nav">
+    <nav class="nav-grid" aria-label="Main navigation">
+      <div class="nav-cell">
+        <a href="/" class="brand">
+          <svg width="26" height="26" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+            <rect width="64" height="64" rx="14" fill="#107A4D" />
+            <path d="M64 64H16C7 64 2 57 2 48C2 39 9 33 17 33C24 33 29 38 29 45C29 50 25 53 20 53C16 53 13 50 13 46C13 43 16 41 19 41L25 55C23 50 22 45 22 39C22 28 29 20 38 18C40 11 45 7 52 7C58 7 63 12 64 19V64Z" fill="#F1EFEB" />
+            <circle cx="18" cy="46" r="7" fill="#107A4D" />
+            <circle cx="19" cy="46" r="3.5" fill="#F1EFEB" />
+            <path d="M39 64C39 51 46 45 57 45H64V64H39Z" fill="#141413" />
+            <circle cx="34" cy="34" r="5.8" fill="#141413" />
+            <circle cx="32" cy="32" r="2" fill="#F1EFEB" />
+            <circle cx="51" cy="34" r="5.8" fill="#141413" />
+            <circle cx="49" cy="32" r="2" fill="#F1EFEB" />
+          </svg>
+          <span>Veneer</span>
+          <span class="brand-pill">[ SECURITY ]</span>
+        </a>
+      </div>
+
+      <div class="nav-cell hide-tablet">
+        <div class="nav-links">
+          <a href="/privacy.html">Privacy Policy</a>
+          <a href="/terms.html">Terms &amp; Conditions</a>
+          <a href="/security.html" class="active">Security Policy</a>
+        </div>
+      </div>
+
+      <div class="nav-cell">
+        <a href="/" class="nav-btn-ghost">
+          <span>&larr; Back to Home</span>
+        </a>
+      </div>
+    </nav>
+  </header>
+
+  <main>
+    <section class="swiss-band" aria-label="Security Policy and Cryptographic Specification">
+      <div class="swiss-frame">
+        <span class="grid-cross tl" aria-hidden="true"></span>
+        <span class="grid-cross tr" aria-hidden="true"></span>
+        <span class="grid-cross bl" aria-hidden="true"></span>
+        <span class="grid-cross br" aria-hidden="true"></span>
+
+        <div class="doc-hero">
+          <span class="grid-cross bl" aria-hidden="true"></span>
+          <span class="grid-cross br" aria-hidden="true"></span>
+          <div class="status-pill">
+            <span class="pulse-dot" aria-hidden="true"></span>
+            <span>Cryptographic Envelope v1 &middot; AES-256-GCM + Argon2id</span>
+          </div>
+          <h1 class="doc-h1">Security <mark class="hl">Policy</mark></h1>
+          <p class="doc-lead">
+            Technical specification of Veneer's cryptographic envelope, memory isolation, 4 KB block padding, RAM image absorption, emergency destruction PIN, and responsible vulnerability disclosure process.
+          </p>
+        </div>
+
+        <div class="doc-grid">
+          <aside class="doc-sidebar" aria-label="Document metadata and sections">
+            <span class="grid-cross tr" aria-hidden="true"></span>
+            <span class="grid-cross br" aria-hidden="true"></span>
+            <div class="doc-meta-box">
+              <div class="doc-meta-row">
+                <span class="doc-meta-key">Cipher</span>
+                <span class="doc-meta-val">AES-256-GCM</span>
+              </div>
+              <div class="doc-meta-row">
+                <span class="doc-meta-key">KDF</span>
+                <span class="doc-meta-val">Argon2id (64 MiB)</span>
+              </div>
+              <div class="doc-meta-row">
+                <span class="doc-meta-key">Block Pad</span>
+                <span class="doc-meta-val">4096 Bytes (4 KB)</span>
+              </div>
+              <div class="doc-meta-row">
+                <span class="doc-meta-key">Duress Trigger</span>
+                <span class="doc-meta-val">;;! + PIN</span>
+              </div>
+            </div>
+
+            <ul class="doc-toc">
+              <li><a href="#crypto-spec">01. Cryptographic Specification</a></li>
+              <li><a href="#ram-isolation">02. RAM Image &amp; Editor Isolation</a></li>
+              <li><a href="#destruction-pin">03. Emergency Destruction PIN (;;!)</a></li>
+              <li><a href="#disclosure">04. Responsible Vulnerability Disclosure</a></li>
+            </ul>
+          </aside>
+
+          <div class="doc-content">
+            <article class="policy-section" id="crypto-spec">
+              <span class="policy-num">SECTION 01</span>
+              <h2 class="policy-h2">Cryptographic Specification</h2>
+              <p class="policy-p">
+                Every protected note stores its encrypted payload inside the YAML frontmatter property <code>draft_cache</code> while presenting an ordinary Markdown cover note on disk. Key derivation and authenticated encryption use Web Crypto primitives paired with <code>Argon2id</code> (<code>hash-wasm</code>).
+              </p>
+              <div class="spec-grid">
+                <div class="spec-item">
+                  <span class="spec-label">AEAD Cipher</span>
+                  <span class="spec-detail"><code>AES-256-GCM</code> with random 96-bit (12-byte) nonces generated via <code>crypto.getRandomValues</code> on every save and a 128-bit authentication tag.</span>
+                </div>
+                <div class="spec-item">
+                  <span class="spec-label">Key Derivation</span>
+                  <span class="spec-detail"><code>Argon2id</code> with <strong>64 MiB memory cost</strong> (<code>65536 KiB</code>), <strong>3 iterations</strong>, parallelism <code>1</code>, and a 128-bit random salt per note.</span>
+                </div>
+                <div class="spec-item">
+                  <span class="spec-label">DEK / KEK Wrapping</span>
+                  <span class="spec-detail">A random 256-bit Data Encryption Key (DEK) encrypts the note payload; the Argon2id Key Encryption Key (KEK) wraps the DEK so password changes do not require re-deriving historical blocks.</span>
+                </div>
+                <div class="spec-item">
+                  <span class="spec-label">4 KB Block Padding</span>
+                  <span class="spec-detail">Plaintext bundles (note body, real title, and absorbed images) are padded to <strong>4 KB (4096-byte) blocks</strong> prior to encryption so ciphertext size never leaks exact word count.</span>
+                </div>
+              </div>
+            </article>
+
+            <article class="policy-section" id="ram-isolation">
+              <span class="policy-num">SECTION 02</span>
+              <h2 class="policy-h2">RAM Image Isolation &amp; Save Interception</h2>
+              <p class="policy-p">
+                When you reference local vault images (such as <code>![[diagram.png]]</code>) inside an unlocked note, Veneer absorbs the binary image data into the <code>AES-256-GCM</code> encrypted payload and deletes the unencrypted file from your vault folder.
+              </p>
+              <p class="policy-p">
+                While unlocked, images are rendered inline using ephemeral in-memory <code>blob:</code> URLs. When the note masks (after 60 seconds of idle time, on tab switch, window blur, OS lock, or <code>Ctrl+Shift+X</code>), Veneer revokes all active <code>blob:</code> URLs, wipes the CodeMirror 6 undo history, zeroes key material in RAM, and ensures disk writes only ever serialize the cover note and encrypted <code>draft_cache</code> frontmatter.
+              </p>
+            </article>
+
+            <article class="policy-section" id="destruction-pin">
+              <span class="policy-num">SECTION 03</span>
+              <h2 class="policy-h2">Emergency Destruction PIN (<code>;;!</code>)</h2>
+              <p class="policy-p">
+                Typing <code>;;!</code> followed by your configured Destruction PIN at the start of any line triggers immediate RAM-first crypto-shredding across your vault. Active session keys are zeroed in memory and the encrypted <code>draft_cache</code> frontmatter is permanently stripped from all protected notes on disk, leaving behind only the harmless cover notes.
+              </p>
+            </article>
+
+            <article class="policy-section" id="disclosure">
+              <span class="policy-num">SECTION 04</span>
+              <h2 class="policy-h2">Responsible Vulnerability Disclosure</h2>
+              <p class="policy-p">
+                If you discover a cryptographic flaw, plaintext disk leak, bypass in the CodeMirror 6 capture filter, or any other security issue in Veneer, please report it privately before public disclosure.
+              </p>
+              <p class="policy-p">
+                Send vulnerability reports with reproduction steps to <strong>Fariz Anjum</strong> at <a href="mailto:farizanjum@veener.fariz.tech">farizanjum@veener.fariz.tech</a>. We acknowledge reports within 48 hours and coordinate fixes rapidly.
+              </p>
+            </article>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="arch-footer" aria-label="Site footer">
+    <div class="arch-footer-grid">
+      <span class="grid-cross tl" aria-hidden="true"></span>
+      <span class="grid-cross tr" aria-hidden="true"></span>
+      <span class="grid-cross bl" aria-hidden="true"></span>
+      <span class="grid-cross br" aria-hidden="true"></span>
+
+      <div class="arch-footer-col">
+        <span class="grid-cross tr" aria-hidden="true"></span>
+        <span class="grid-cross br" aria-hidden="true"></span>
+        <a href="/" class="footer-wordmark">
+          <svg class="footer-wordmark-icon" width="44" height="44" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+            <rect width="64" height="64" rx="14" fill="#107A4D" />
+            <path d="M64 64H16C7 64 2 57 2 48C2 39 9 33 17 33C24 33 29 38 29 45C29 50 25 53 20 53C16 53 13 50 13 46C13 43 16 41 19 41L25 55C23 50 22 45 22 39C22 28 29 20 38 18C40 11 45 7 52 7C58 7 63 12 64 19V64Z" fill="#F1EFEB" />
+            <circle cx="18" cy="46" r="7" fill="#107A4D" />
+            <circle cx="19" cy="46" r="3.5" fill="#F1EFEB" />
+            <path d="M39 64C39 51 46 45 57 45H64V64H39Z" fill="#141413" />
+            <circle cx="34" cy="34" r="5.8" fill="#141413" />
+            <circle cx="32" cy="32" r="2" fill="#F1EFEB" />
+            <circle cx="51" cy="34" r="5.8" fill="#141413" />
+            <circle cx="49" cy="32" r="2" fill="#F1EFEB" />
+          </svg>
+          <span>VENEER</span>
+        </a>
+        <p class="footer-desc">
+          Local-first Obsidian plugin that hides your real note, title, and images behind a believable everyday cover note.
+        </p>
+        <span class="footer-badge">MIT License</span>
+      </div>
+
+      <div class="arch-footer-col">
+        <span class="grid-cross tr" aria-hidden="true"></span>
+        <span class="grid-cross br" aria-hidden="true"></span>
+        <div class="footer-col-label">PRODUCT</div>
+        <ul class="footer-links">
+          <li><a href="/#live-demo">Overview</a></li>
+          <li><a href="/#how">How It Works</a></li>
+          <li><a href="/#install">Install</a></li>
+        </ul>
+      </div>
+
+      <div class="arch-footer-col">
+        <span class="grid-cross tr" aria-hidden="true"></span>
+        <span class="grid-cross br" aria-hidden="true"></span>
+        <div class="footer-col-label">RESOURCES</div>
+        <ul class="footer-links">
+          <li><a href="/privacy.html">Privacy Policy</a></li>
+          <li><a href="/terms.html">Terms &amp; Conditions</a></li>
+          <li><a href="/security.html">Security</a></li>
+          <li><a href="/llms.txt">llms.txt</a></li>
+        </ul>
+      </div>
+
+      <div class="arch-footer-col">
+        <div class="footer-col-label">ELSEWHERE</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/farizanjum/vener" target="_blank" rel="noopener">GitHub</a></li>
+          <li><a href="mailto:farizanjum@veener.fariz.tech">farizanjum@veener.fariz.tech</a></li>
+          <li><a href="/og-image.svg">Brand Kit</a></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="arch-footer-bottom-band">
+      <div class="arch-footer-bottom">
+        <span class="grid-cross tl" aria-hidden="true"></span>
+        <span class="grid-cross tr" aria-hidden="true"></span>
+        <span class="grid-cross bl" aria-hidden="true"></span>
+        <span class="grid-cross br" aria-hidden="true"></span>
+        <span>&copy; 2026 VENEER &middot; FARIZ ANJUM</span>
+        <span>100% LOCAL &middot; ZERO TELEMETRY</span>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

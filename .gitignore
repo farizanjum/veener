@@ -1,0 +1,9 @@
+node_modules/
+main.js
+*.js.map
+dist/
+.env
+.vercel/
+assets/wllama/
+assets/llama-vulkan/*.dll
+assets/llama-vulkan/*.exe
