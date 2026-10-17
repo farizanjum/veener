@@ -645,6 +645,7 @@
       font-size: 11.5px;
       color: var(--muted);
       margin-bottom: 22px;
+      white-space: nowrap;
     }
 
     .pulse-dot {
@@ -652,6 +653,7 @@
       height: 7px;
       border-radius: 50%;
       background: var(--green);
+      flex-shrink: 0;
       box-shadow: 0 0 0 0 rgba(16, 122, 77, 0.5);
       animation: pulse 2.2s infinite;
     }
@@ -2739,7 +2741,7 @@
             <div>
               <div class="status-pill">
                 <span class="pulse-dot" aria-hidden="true"></span>
-                <span>Local-first Obsidian plugin &middot; Zero cloud calls</span>
+                <span>Local-first &middot; 100% offline</span>
               </div>
 
               <h1 class="hero-h1">
@@ -3192,10 +3194,6 @@ cp -r main.js manifest.json styles.css assets/ &lt;vault&gt;/.obsidian/plugins/d
               <p class="step-desc">
                 Direct answers on <strong>blind inline unlocking</strong>, cover edits, <mark class="hl">encrypted image absorption</mark>, offline GPU covers, and the emergency destruction PIN.
               </p>
-            </div>
-            <div class="status-pill" style="margin-bottom: 0;">
-              <span class="pulse-dot" aria-hidden="true"></span>
-              <span>Test any feature in the simulator above</span>
             </div>
           </div>
 
