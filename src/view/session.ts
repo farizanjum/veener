@@ -152,14 +152,15 @@ export class SessionManager {
 	): void {
 		if (typeof URL === "undefined" || typeof URL.createObjectURL !== "function") return;
 		for (const [name, img] of Object.entries(images)) {
-			if (session.imageUrls.has(name)) continue;
+			const previousUrl = session.imageUrls.get(name);
+			if (previousUrl && typeof URL.revokeObjectURL === "function") {
+				URL.revokeObjectURL(previousUrl);
+			}
 			const blob = new Blob([img.data], { type: img.mime });
 			const url = URL.createObjectURL(blob);
 			session.imageUrls.set(name, url);
 			const basename = name.split("/").pop() ?? name;
-			if (!session.imageUrls.has(basename)) {
-				session.imageUrls.set(basename, url);
-			}
+			session.imageUrls.set(basename, url);
 		}
 	}
 
@@ -453,6 +454,7 @@ export class SessionManager {
 						session.realTitle = snapshotTitle;
 						session.pendingPayload = nextPayload;
 						this.refreshPreviewImageUrls(session, imageStage.staged);
+						(session.view as unknown as { requestSave?: () => void }).requestSave?.();
 					} catch (error) {
 						console.warn("Veneer: re-encryption skipped, keeping last good ciphertext", error);
 					}

@@ -21,6 +21,7 @@ function createMockEnv(
 	shouldFailModify = false,
 ) {
 	let editorText = initialEditorText;
+	let requestSaveCount = 0;
 	let metadataLookups = 0;
 	const deletedImages: string[] = [];
 	const modifiedFiles: Array<{ path: string; content: string }> = [];
@@ -49,6 +50,9 @@ function createMockEnv(
 		},
 		setViewData: (data: string) => {
 			editorText = data;
+		},
+		requestSave: () => {
+			requestSaveCount += 1;
 		},
 	} as unknown as MarkdownView;
 
@@ -96,6 +100,7 @@ function createMockEnv(
 		setEditorText: (next: string) => {
 			editorText = next;
 		},
+		getRequestSaveCount: () => requestSaveCount,
 		getMetadataLookups: () => metadataLookups,
 		deletedImages,
 		modifiedFiles,
@@ -142,6 +147,7 @@ describe("SessionManager.scheduleReencrypt (Issue #1)", () => {
 		expect(session.reencryptTimer).toBeNull();
 		expect(session.pendingPayload).not.toBeNull();
 		expect(session.pendingPayload).not.toBe(parsed.payload);
+		expect(env.getRequestSaveCount()).toBe(1);
 		expect(env.getMetadataLookups()).toBe(0);
 
 		const unlockedPending = await unlockPayload(session.pendingPayload!, PASSWORD);
