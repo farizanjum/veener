@@ -446,6 +446,10 @@ export default class VeneerPlugin extends Plugin {
 	private async changePasswordViaModal(): Promise<void> {
 		const file = this.app.workspace.getActiveFile();
 		if (!file) return;
+		const activeSession = this.sessions.getByPath(file.path);
+		if (activeSession && activeSession.state === "unlocked") {
+			await this.sessions.lock(activeSession, "change-password");
+		}
 		const content = await this.app.vault.read(file);
 		const parsed = parseFileContent(content);
 		if (!parsed) {
@@ -462,6 +466,13 @@ export default class VeneerPlugin extends Plugin {
 		}
 		try {
 			const rotated = await changePassword(parsed.payload, oldPassword, newPassword);
+			const openSession = this.sessions.getByPath(file.path);
+			if (openSession) {
+				openSession.originalPayload = rotated;
+				if (openSession.pendingPayload !== null) {
+					openSession.pendingPayload = rotated;
+				}
+			}
 			await this.app.vault.modify(file, serializeFile(parsed.decoyBody, rotated));
 			new Notice("Password changed.");
 		} catch {
@@ -472,6 +483,10 @@ export default class VeneerPlugin extends Plugin {
 	private async unprotectViaModal(): Promise<void> {
 		const file = this.app.workspace.getActiveFile();
 		if (!file) return;
+		const activeSession = this.sessions.getByPath(file.path);
+		if (activeSession && activeSession.state === "unlocked") {
+			await this.sessions.lock(activeSession, "unprotect");
+		}
 		const content = await this.app.vault.read(file);
 		const parsed = parseFileContent(content);
 		if (!parsed) {
@@ -485,8 +500,11 @@ export default class VeneerPlugin extends Plugin {
 			dek.fill(0);
 			await restoreVaultImages(this.app, file.parent?.path ?? "", images);
 			const session = this.sessions.getByPath(file.path);
-			if (session) this.sessions.detach(session.view);
+			if (session) this.sessions.discardAndDetach(session.view);
 			await this.app.vault.modify(file, `${realText}\n`);
+			if (session && session.view.file === file) {
+				session.view.setViewData(realText, true);
+			}
 			await this.registry.remove(file.path);
 			if (realTitle && realTitle.trim().length > 0) {
 				await this.retitleToFile(file, realTitle);
@@ -533,7 +551,7 @@ export default class VeneerPlugin extends Plugin {
 		const root = adapter.getBasePath?.() ?? "";
 		const base = path.join(root, this.app.vault.configDir, "plugins", "deocy");
 		const modelPath = path.join(base, "models", model.file);
-		
+
 		const wllama = new WllamaRuntime(
 			modelPath,
 			path.join(base, "assets", "wllama", "wasm", "wllama.wasm"),
