@@ -21,7 +21,6 @@ function createMockEnv(
 	shouldFailModify = false,
 ) {
 	let editorText = initialEditorText;
-	let requestSaveCount = 0;
 	let metadataLookups = 0;
 	const deletedImages: string[] = [];
 	const modifiedFiles: Array<{ path: string; content: string }> = [];
@@ -50,9 +49,6 @@ function createMockEnv(
 		},
 		setViewData: (data: string) => {
 			editorText = data;
-		},
-		requestSave: () => {
-			requestSaveCount += 1;
 		},
 	} as unknown as MarkdownView;
 
@@ -100,7 +96,6 @@ function createMockEnv(
 		setEditorText: (next: string) => {
 			editorText = next;
 		},
-		getRequestSaveCount: () => requestSaveCount,
 		getMetadataLookups: () => metadataLookups,
 		deletedImages,
 		modifiedFiles,
@@ -121,7 +116,7 @@ describe("SessionManager.scheduleReencrypt (Issue #1)", () => {
 		expect(REENCRYPT_DEBOUNCE_MS).toBe(600);
 	});
 
-	it("debounces rapid edits, updates session.pendingPayload with fresh ciphertext, and triggers requestSave", async () => {
+	it("debounces rapid edits and updates session.pendingPayload with fresh ciphertext", async () => {
 		const env = createMockEnv();
 		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY, undefined, undefined, "Roadmap");
 		const parsed = parseFileContent(fileContent)!;
@@ -147,7 +142,6 @@ describe("SessionManager.scheduleReencrypt (Issue #1)", () => {
 		expect(session.reencryptTimer).toBeNull();
 		expect(session.pendingPayload).not.toBeNull();
 		expect(session.pendingPayload).not.toBe(parsed.payload);
-		expect(env.getRequestSaveCount()).toBe(1);
 		expect(env.getMetadataLookups()).toBe(0);
 
 		const unlockedPending = await unlockPayload(session.pendingPayload!, PASSWORD);
@@ -157,7 +151,7 @@ describe("SessionManager.scheduleReencrypt (Issue #1)", () => {
 		await env.manager.lock(session, "test-cleanup");
 	});
 
-	it("absorbs newly pasted vault images during scheduleReencrypt and deletes source only after saving", async () => {
+	it("stages newly pasted vault images into pendingPayload during scheduleReencrypt and deletes source only when lock() saves to disk", async () => {
 		const env = createMockEnv();
 		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
 		const parsed = parseFileContent(fileContent)!;
@@ -171,9 +165,7 @@ describe("SessionManager.scheduleReencrypt (Issue #1)", () => {
 		await vi.advanceTimersByTimeAsync(REENCRYPT_DEBOUNCE_MS);
 		if (session.reencryptPromise) await session.reencryptPromise;
 
-		expect(env.modifiedFiles.length).toBeGreaterThanOrEqual(1);
-		expect(env.deletedImages).toEqual(["Pasted chart.png"]);
-		expect(session.originalPayload.images?.["Pasted chart.png"]).toBeDefined();
+		expect(env.deletedImages).toEqual([]);
 		expect(session.pendingPayload?.images?.["Pasted chart.png"]).toBeDefined();
 
 		const unlockedPending = await unlockPayload(session.pendingPayload!, PASSWORD);
@@ -184,6 +176,8 @@ describe("SessionManager.scheduleReencrypt (Issue #1)", () => {
 		unlockedPending.dek.fill(0);
 
 		await env.manager.lock(session, "test-cleanup");
+		expect(env.modifiedFiles.length).toBe(1);
+		expect(env.deletedImages).toEqual(["Pasted chart.png"]);
 	});
 
 	it("does not delete source image if user removes embed and locks while image read is in-flight", async () => {
@@ -265,76 +259,20 @@ describe("SessionManager.scheduleReencrypt (Issue #1)", () => {
 
 		await vi.advanceTimersByTimeAsync(REENCRYPT_DEBOUNCE_MS + 150);
 		expect(session.pendingPayload).toBeNull();
-		expect(env.getRequestSaveCount()).toBe(0);
 	});
 
-	it("keeps source image intact and rolls back pendingPayload if vault.modify throws during scheduleReencrypt", async () => {
+	it("keeps source image intact if vault.modify throws during lock()", async () => {
 		const env = createMockEnv(INITIAL_REAL, undefined, true);
 		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
 		const parsed = parseFileContent(fileContent)!;
 
 		const session = env.manager.attachFromLoad(env.mockView, env.fakeFile, parsed);
 		await env.manager.unlock(session, PASSWORD);
-		const initialPending = session.pendingPayload;
 
 		env.setEditorText(`${INITIAL_REAL}\n![[Pasted chart.png]]`);
-		env.manager.scheduleReencrypt(session);
-
-		await vi.advanceTimersByTimeAsync(REENCRYPT_DEBOUNCE_MS);
-		if (session.reencryptPromise) await session.reencryptPromise;
+		await expect(env.manager.lock(session, "lock-with-disk-error")).rejects.toThrow("disk full");
 
 		expect(env.deletedImages).toEqual([]);
-		expect(session.pendingPayload).toBe(initialPending);
-		expect(session.originalPayload).toBe(parsed.payload);
-	});
-
-	it("does not lock or overwrite real text with decoy if attachFromLoad receives the session's own saved payload", async () => {
-		const env = createMockEnv();
-		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
-		const parsed = parseFileContent(fileContent)!;
-
-		const session = env.manager.attachFromLoad(env.mockView, env.fakeFile, parsed);
-		await env.manager.unlock(session, PASSWORD);
-
-		env.setEditorText("Updated secret text while unlocked");
-		env.manager.scheduleReencrypt(session);
-
-		await vi.advanceTimersByTimeAsync(REENCRYPT_DEBOUNCE_MS);
-		if (session.reencryptPromise) await session.reencryptPromise;
-
-		const savedDiskContent = env.modifiedFiles[env.modifiedFiles.length - 1]!.content;
-		const reparsed = parseFileContent(savedDiskContent)!;
-
-		env.manager.attachFromLoad(env.mockView, env.fakeFile, reparsed);
-
-		expect(session.state).toBe("unlocked");
-		expect(env.mockView.editor.getValue()).toBe("Updated secret text while unlocked");
-
-		await env.manager.lock(session, "test-cleanup");
-		const finalSaved = parseFileContent(env.modifiedFiles[env.modifiedFiles.length - 1]!.content)!;
-		const unlocked = await unlockPayload(finalSaved.payload, PASSWORD);
-		expect(unlocked.realText).toBe("Updated secret text while unlocked");
-		unlocked.dek.fill(0);
-	});
-
-	it("masks in memory without encrypting decoy over disk when an external reload delivers a different payload", async () => {
-		const env = createMockEnv();
-		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
-		const parsed = parseFileContent(fileContent)!;
-
-		const session = env.manager.attachFromLoad(env.mockView, env.fakeFile, parsed);
-		await env.manager.unlock(session, PASSWORD);
-
-		const external = await createFile("External update from another device", PASSWORD, DECOY);
-		const externalParsed = parseFileContent(external.fileContent)!;
-
-		env.setEditorText(DECOY);
-		env.manager.attachFromLoad(env.mockView, env.fakeFile, externalParsed);
-
 		expect(session.state).toBe("locked");
-		expect(env.modifiedFiles).toEqual([]);
-		const unlocked = await unlockPayload(session.originalPayload, PASSWORD);
-		expect(unlocked.realText).toBe("External update from another device");
-		unlocked.dek.fill(0);
 	});
 });

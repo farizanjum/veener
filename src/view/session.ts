@@ -76,18 +76,25 @@ export class SessionManager {
 		const existing = this.byView.get(view);
 		if (existing) {
 			if (existing.file === file) {
-				const isOwnPayload =
-					parsed.payload.cipher.nonce === existing.originalPayload.cipher.nonce ||
-					parsed.payload.cipher.nonce === existing.pendingPayload?.cipher.nonce;
 				existing.decoyBody = parsed.decoyBody;
 				existing.originalPayload = parsed.payload;
-				if (existing.state === "unlocked" && !isOwnPayload) {
-					this.resetUnlockedToLocked(existing);
-				}
+				if (existing.state === "unlocked") void this.lock(existing, "reload");
 				return existing;
 			}
 			if (existing.state === "unlocked") {
-				this.resetUnlockedToLocked(existing);
+				existing.reencryptSeq += 1;
+				existing.dek?.fill(0);
+				existing.dek = null;
+				this.revokeImageUrls(existing);
+				existing.state = "locked";
+				existing.pendingPayload = null;
+				existing.realTitle = null;
+				existing.capture.cancel();
+				if (existing.reencryptTimer !== null) {
+					clearTimeout(existing.reencryptTimer);
+					existing.reencryptTimer = null;
+				}
+				this.hooks.onLocked(existing);
 			}
 			if (this.byPath.get(existing.file.path) === existing) {
 				this.byPath.delete(existing.file.path);
@@ -114,26 +121,6 @@ export class SessionManager {
 		this.byView.set(view, session);
 		this.byPath.set(file.path, session);
 		return session;
-	}
-
-	/**
-	 * Synchronously transitions an unlocked session to locked in memory without writing to disk.
-	 */
-	private resetUnlockedToLocked(session: ViewSession): void {
-		session.reencryptSeq += 1;
-		session.dek?.fill(0);
-		session.dek = null;
-		this.revokeImageUrls(session);
-		session.state = "locked";
-		session.pendingPayload = null;
-		session.realTitle = null;
-		session.capture.cancel();
-		if (session.reencryptTimer !== null) {
-			clearTimeout(session.reencryptTimer);
-			session.reencryptTimer = null;
-		}
-		this.applyDisplayedTitle(session, session.file.basename);
-		this.hooks.onLocked(session);
 	}
 
 	renamePath(oldPath: string, newPath: string): void {
@@ -165,11 +152,14 @@ export class SessionManager {
 	): void {
 		if (typeof URL === "undefined" || typeof URL.createObjectURL !== "function") return;
 		for (const [name, img] of Object.entries(images)) {
+			if (session.imageUrls.has(name)) continue;
 			const blob = new Blob([img.data], { type: img.mime });
 			const url = URL.createObjectURL(blob);
 			session.imageUrls.set(name, url);
 			const basename = name.split("/").pop() ?? name;
-			session.imageUrls.set(basename, url);
+			if (!session.imageUrls.has(basename)) {
+				session.imageUrls.set(basename, url);
+			}
 		}
 	}
 
@@ -204,7 +194,8 @@ export class SessionManager {
 	}
 
 	/**
-	 * Reads and encrypts any newly linked vault images without deleting source files yet.
+	 * Reads and encrypts any linked vault images referenced in `text` without deleting
+	 * their source files from disk until the encrypted note payload is durably saved.
 	 */
 	private async stageEditorImages(
 		session: ViewSession,
@@ -244,52 +235,20 @@ export class SessionManager {
 	}
 
 	/**
-	 * Deletes staged source image files and refreshes in-memory blob: URLs after disk save.
+	 * Updates in-memory blob: preview URLs for newly staged images without deleting disk files.
 	 */
-	private async finalizeStagedImages(
+	private refreshPreviewImageUrls(
 		session: ViewSession,
 		staged: StagedVaultImages,
-	): Promise<void> {
-		if (Object.keys(staged.absorbed).length === 0) return;
-		await deleteStagedVaultImages(this.app, staged.filesToDelete);
-		if (session.state === "unlocked") {
-			this.populateImageUrls(session, staged.absorbed);
-			const cm = (
-				session.view.editor as unknown as {
-					cm?: { dispatch: (tr: Record<string, never>) => void };
-				}
-			).cm;
-			cm?.dispatch({});
-		}
-	}
-
-	/**
-	 * Persists `payload` through the view's own `save()` path when available so Obsidian
-	 * treats the write as an internal view save rather than an external file reload.
-	 */
-	private async persistSessionPayload(session: ViewSession, payload: PayloadV1): Promise<void> {
-		const serialized = serializeFile(session.decoyBody, payload);
-		(session.view as unknown as { data?: string }).data = serialized;
-		const viewWithSave = session.view as unknown as { save?: () => Promise<void> };
-		if (typeof viewWithSave.save === "function") {
-			await viewWithSave.save();
-			return;
-		}
-		await this.app.vault.modify(session.file, serialized);
-	}
-
-	/**
-	 * Waits for all in-flight re-encryption and lock tasks across sessions to settle.
-	 */
-	async waitForIdle(): Promise<void> {
-		for (const session of this.all()) {
-			if (session.reencryptPromise) {
-				await session.reencryptPromise;
+	): void {
+		if (session.state !== "unlocked" || Object.keys(staged.absorbed).length === 0) return;
+		this.populateImageUrls(session, staged.absorbed);
+		const cm = (
+			session.view.editor as unknown as {
+				cm?: { dispatch: (tr: Record<string, never>) => void };
 			}
-			if (session.lockingPromise) {
-				await session.lockingPromise;
-			}
-		}
+		).cm;
+		cm?.dispatch({});
 	}
 
 	async absorbNewEditorImages(session: ViewSession): Promise<void> {
@@ -305,16 +264,14 @@ export class SessionManager {
 			this.readEditedInlineTitle(session),
 		);
 		if (session.state !== "unlocked" || !session.dek) return;
-		const prevPending = session.pendingPayload;
-		session.pendingPayload = nextPayload;
-		try {
-			await this.persistSessionPayload(session, nextPayload);
-		} catch (saveError) {
-			session.pendingPayload = prevPending;
-			throw saveError;
-		}
+		await this.app.vault.modify(
+			session.file,
+			serializeFile(session.decoyBody, nextPayload),
+		);
 		session.originalPayload = nextPayload;
-		await this.finalizeStagedImages(session, result.staged);
+		session.pendingPayload = nextPayload;
+		this.refreshPreviewImageUrls(session, result.staged);
+		await deleteStagedVaultImages(this.app, result.staged.filesToDelete);
 	}
 
 	async unlock(session: ViewSession, password: string): Promise<UnlockOutcome> {
@@ -372,17 +329,19 @@ export class SessionManager {
 					const imageStage = await this.stageEditorImages(session, current);
 					const mergedImages = imageStage?.mergedImages ?? session.originalPayload.images;
 					session.realTitle = currentTitle;
-					session.pendingPayload = await reencryptRealText(
+					const lockedPayload = await reencryptRealText(
 						session.originalPayload,
 						session.dek,
 						current,
 						mergedImages,
 						session.realTitle,
 					);
-					const serialized = serializeFile(session.decoyBody, session.pendingPayload);
-					(session.view as unknown as { data?: string }).data = serialized;
-					await this.app.vault.modify(session.file, serialized);
-					session.originalPayload = session.pendingPayload;
+					session.pendingPayload = lockedPayload;
+					await this.app.vault.modify(
+						session.file,
+						serializeFile(session.decoyBody, lockedPayload),
+					);
+					session.originalPayload = lockedPayload;
 					if (imageStage && imageStage.staged.filesToDelete.length > 0) {
 						await deleteStagedVaultImages(this.app, imageStage.staged.filesToDelete);
 					}
@@ -446,7 +405,7 @@ export class SessionManager {
 
 	/** Debounced ciphertext refresh so the synchronous save path never sees plaintext. */
 	scheduleReencrypt(session: ViewSession): void {
-		if (session.state !== "unlocked" || !session.dek) return;
+		if (session.state !== "unlocked" || !session.dek || session.lockingPromise !== null) return;
 		const seq = ++session.reencryptSeq;
 		if (session.reencryptTimer !== null) clearTimeout(session.reencryptTimer);
 		session.reencryptTimer = setTimeout(() => {
@@ -455,7 +414,12 @@ export class SessionManager {
 			const next = prev
 				.catch(() => undefined)
 				.then(async () => {
-					if (session.state !== "unlocked" || !session.dek || session.reencryptSeq !== seq) {
+					if (
+						session.state !== "unlocked" ||
+						!session.dek ||
+						session.lockingPromise !== null ||
+						session.reencryptSeq !== seq
+					) {
 						return;
 					}
 					try {
@@ -466,6 +430,7 @@ export class SessionManager {
 							!imageStage ||
 							session.state !== "unlocked" ||
 							!session.dek ||
+							session.lockingPromise !== null ||
 							session.reencryptSeq !== seq
 						) {
 							return;
@@ -480,27 +445,14 @@ export class SessionManager {
 						if (
 							session.state !== "unlocked" ||
 							!session.dek ||
-							session.reencryptSeq !== seq ||
-							session.view.file !== session.file
+							session.lockingPromise !== null ||
+							session.reencryptSeq !== seq
 						) {
 							return;
 						}
-						const prevPending = session.pendingPayload;
-						const prevTitle = session.realTitle;
 						session.realTitle = snapshotTitle;
 						session.pendingPayload = nextPayload;
-						try {
-							await this.persistSessionPayload(session, nextPayload);
-						} catch (saveError) {
-							session.pendingPayload = prevPending;
-							session.realTitle = prevTitle;
-							throw saveError;
-						}
-						session.originalPayload = nextPayload;
-						await this.finalizeStagedImages(session, imageStage.staged);
-						if (session.state === "unlocked" && session.reencryptSeq === seq) {
-							(session.view as unknown as { requestSave?: () => void }).requestSave?.();
-						}
+						this.refreshPreviewImageUrls(session, imageStage.staged);
 					} catch (error) {
 						console.warn("Veneer: re-encryption skipped, keeping last good ciphertext", error);
 					}

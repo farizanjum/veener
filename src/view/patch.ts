@@ -26,16 +26,6 @@ export function installViewPatches(
 		const parsed = parseFileContent(data);
 		if (parsed) {
 			if (this.file) {
-				const existing = sessions.get(this);
-				if (existing && existing.file === this.file && existing.state === "unlocked") {
-					const isOwnPayload =
-						parsed.payload.cipher.nonce === existing.originalPayload.cipher.nonce ||
-						parsed.payload.cipher.nonce === existing.pendingPayload?.cipher.nonce;
-					if (isOwnPayload) {
-						existing.decoyBody = parsed.decoyBody;
-						return;
-					}
-				}
 				sessions.attachFromLoad(this, this.file, parsed);
 			}
 			originalSetViewData.call(this, parsed.decoyBody, clear);

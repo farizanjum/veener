@@ -195,7 +195,6 @@ export default class VeneerPlugin extends Plugin {
 		const report = await executeShred(targets, {
 			zeroSessions: () => this.sessions.hardKillAll(),
 			rewritePortable: async (path) => {
-				await this.sessions.waitForIdle();
 				const file = this.app.vault.getAbstractFileByPath(path);
 				if (!(file instanceof TFile)) return;
 				const content = await this.app.vault.read(file);
@@ -203,7 +202,6 @@ export default class VeneerPlugin extends Plugin {
 				if (parsed) await this.app.vault.modify(file, `${parsed.decoyBody}\n`);
 			},
 			deleteStealth: async (path) => {
-				await this.sessions.waitForIdle();
 				await this.app.vault.adapter.remove(path);
 			},
 			clearRegistry: () => this.registry.clear(),
