@@ -287,4 +287,54 @@ describe("SessionManager.scheduleReencrypt (Issue #1)", () => {
 		expect(session.pendingPayload).toBe(initialPending);
 		expect(session.originalPayload).toBe(parsed.payload);
 	});
+
+	it("does not lock or overwrite real text with decoy if attachFromLoad receives the session's own saved payload", async () => {
+		const env = createMockEnv();
+		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+		const parsed = parseFileContent(fileContent)!;
+
+		const session = env.manager.attachFromLoad(env.mockView, env.fakeFile, parsed);
+		await env.manager.unlock(session, PASSWORD);
+
+		env.setEditorText("Updated secret text while unlocked");
+		env.manager.scheduleReencrypt(session);
+
+		await vi.advanceTimersByTimeAsync(REENCRYPT_DEBOUNCE_MS);
+		if (session.reencryptPromise) await session.reencryptPromise;
+
+		const savedDiskContent = env.modifiedFiles[env.modifiedFiles.length - 1]!.content;
+		const reparsed = parseFileContent(savedDiskContent)!;
+
+		env.manager.attachFromLoad(env.mockView, env.fakeFile, reparsed);
+
+		expect(session.state).toBe("unlocked");
+		expect(env.mockView.editor.getValue()).toBe("Updated secret text while unlocked");
+
+		await env.manager.lock(session, "test-cleanup");
+		const finalSaved = parseFileContent(env.modifiedFiles[env.modifiedFiles.length - 1]!.content)!;
+		const unlocked = await unlockPayload(finalSaved.payload, PASSWORD);
+		expect(unlocked.realText).toBe("Updated secret text while unlocked");
+		unlocked.dek.fill(0);
+	});
+
+	it("masks in memory without encrypting decoy over disk when an external reload delivers a different payload", async () => {
+		const env = createMockEnv();
+		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+		const parsed = parseFileContent(fileContent)!;
+
+		const session = env.manager.attachFromLoad(env.mockView, env.fakeFile, parsed);
+		await env.manager.unlock(session, PASSWORD);
+
+		const external = await createFile("External update from another device", PASSWORD, DECOY);
+		const externalParsed = parseFileContent(external.fileContent)!;
+
+		env.setEditorText(DECOY);
+		env.manager.attachFromLoad(env.mockView, env.fakeFile, externalParsed);
+
+		expect(session.state).toBe("locked");
+		expect(env.modifiedFiles).toEqual([]);
+		const unlocked = await unlockPayload(session.originalPayload, PASSWORD);
+		expect(unlocked.realText).toBe("External update from another device");
+		unlocked.dek.fill(0);
+	});
 });

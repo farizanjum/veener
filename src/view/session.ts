@@ -76,25 +76,18 @@ export class SessionManager {
 		const existing = this.byView.get(view);
 		if (existing) {
 			if (existing.file === file) {
+				const isOwnPayload =
+					parsed.payload.cipher.nonce === existing.originalPayload.cipher.nonce ||
+					parsed.payload.cipher.nonce === existing.pendingPayload?.cipher.nonce;
 				existing.decoyBody = parsed.decoyBody;
 				existing.originalPayload = parsed.payload;
-				if (existing.state === "unlocked") void this.lock(existing, "reload");
+				if (existing.state === "unlocked" && !isOwnPayload) {
+					this.resetUnlockedToLocked(existing);
+				}
 				return existing;
 			}
 			if (existing.state === "unlocked") {
-				existing.reencryptSeq += 1;
-				existing.dek?.fill(0);
-				existing.dek = null;
-				this.revokeImageUrls(existing);
-				existing.state = "locked";
-				existing.pendingPayload = null;
-				existing.realTitle = null;
-				existing.capture.cancel();
-				if (existing.reencryptTimer !== null) {
-					clearTimeout(existing.reencryptTimer);
-					existing.reencryptTimer = null;
-				}
-				this.hooks.onLocked(existing);
+				this.resetUnlockedToLocked(existing);
 			}
 			if (this.byPath.get(existing.file.path) === existing) {
 				this.byPath.delete(existing.file.path);
@@ -121,6 +114,26 @@ export class SessionManager {
 		this.byView.set(view, session);
 		this.byPath.set(file.path, session);
 		return session;
+	}
+
+	/**
+	 * Synchronously transitions an unlocked session to locked in memory without writing to disk.
+	 */
+	private resetUnlockedToLocked(session: ViewSession): void {
+		session.reencryptSeq += 1;
+		session.dek?.fill(0);
+		session.dek = null;
+		this.revokeImageUrls(session);
+		session.state = "locked";
+		session.pendingPayload = null;
+		session.realTitle = null;
+		session.capture.cancel();
+		if (session.reencryptTimer !== null) {
+			clearTimeout(session.reencryptTimer);
+			session.reencryptTimer = null;
+		}
+		this.applyDisplayedTitle(session, session.file.basename);
+		this.hooks.onLocked(session);
 	}
 
 	renamePath(oldPath: string, newPath: string): void {
@@ -250,6 +263,35 @@ export class SessionManager {
 		}
 	}
 
+	/**
+	 * Persists `payload` through the view's own `save()` path when available so Obsidian
+	 * treats the write as an internal view save rather than an external file reload.
+	 */
+	private async persistSessionPayload(session: ViewSession, payload: PayloadV1): Promise<void> {
+		const serialized = serializeFile(session.decoyBody, payload);
+		(session.view as unknown as { data?: string }).data = serialized;
+		const viewWithSave = session.view as unknown as { save?: () => Promise<void> };
+		if (typeof viewWithSave.save === "function") {
+			await viewWithSave.save();
+			return;
+		}
+		await this.app.vault.modify(session.file, serialized);
+	}
+
+	/**
+	 * Waits for all in-flight re-encryption and lock tasks across sessions to settle.
+	 */
+	async waitForIdle(): Promise<void> {
+		for (const session of this.all()) {
+			if (session.reencryptPromise) {
+				await session.reencryptPromise;
+			}
+			if (session.lockingPromise) {
+				await session.lockingPromise;
+			}
+		}
+	}
+
 	async absorbNewEditorImages(session: ViewSession): Promise<void> {
 		if (session.state !== "unlocked" || !session.dek) return;
 		const text = session.view.editor.getValue();
@@ -263,11 +305,15 @@ export class SessionManager {
 			this.readEditedInlineTitle(session),
 		);
 		if (session.state !== "unlocked" || !session.dek) return;
-		const serialized = serializeFile(session.decoyBody, nextPayload);
-		(session.view as unknown as { data?: string }).data = serialized;
-		await this.app.vault.modify(session.file, serialized);
-		session.originalPayload = nextPayload;
+		const prevPending = session.pendingPayload;
 		session.pendingPayload = nextPayload;
+		try {
+			await this.persistSessionPayload(session, nextPayload);
+		} catch (saveError) {
+			session.pendingPayload = prevPending;
+			throw saveError;
+		}
+		session.originalPayload = nextPayload;
 		await this.finalizeStagedImages(session, result.staged);
 	}
 
@@ -443,10 +489,8 @@ export class SessionManager {
 						const prevTitle = session.realTitle;
 						session.realTitle = snapshotTitle;
 						session.pendingPayload = nextPayload;
-						const serialized = serializeFile(session.decoyBody, nextPayload);
-						(session.view as unknown as { data?: string }).data = serialized;
 						try {
-							await this.app.vault.modify(session.file, serialized);
+							await this.persistSessionPayload(session, nextPayload);
 						} catch (saveError) {
 							session.pendingPayload = prevPending;
 							session.realTitle = prevTitle;

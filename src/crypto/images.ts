@@ -50,6 +50,8 @@ export interface StagedVaultImages {
 	filesToDelete: TFile[];
 }
 
+const stagedFileSnapshots = new WeakMap<TFile, { mtime: number | undefined; size: number | undefined }>();
+
 /**
  * Reads local vault images referenced in `markdown` without deleting their source files.
  */
@@ -70,6 +72,9 @@ export async function readLinkedVaultImages(
 		if (!isTFile(resolved)) continue;
 
 		try {
+			const statBefore = (resolved as unknown as { stat?: { mtime?: number; size?: number } }).stat;
+			const mtimeBefore = statBefore?.mtime;
+			const sizeBefore = statBefore?.size;
 			const binary = await app.vault.readBinary(resolved);
 			const data = new Uint8Array(binary);
 			const mime = mimeForPath(resolved.name);
@@ -79,6 +84,10 @@ export async function readLinkedVaultImages(
 			}
 			if (!seenPaths.has(resolved.path)) {
 				seenPaths.add(resolved.path);
+				stagedFileSnapshots.set(resolved, {
+					mtime: mtimeBefore,
+					size: sizeBefore ?? data.byteLength,
+				});
 				filesToDelete.push(resolved);
 			}
 		} catch (error) {
@@ -90,7 +99,8 @@ export async function readLinkedVaultImages(
 }
 
 /**
- * Deletes staged vault image files after their encrypted payload has been persisted to disk.
+ * Deletes staged vault image files after their encrypted payload has been persisted to disk,
+ * skipping any file whose stat metadata changed since it was staged.
  */
 export async function deleteStagedVaultImages(
 	app: App,
@@ -98,6 +108,19 @@ export async function deleteStagedVaultImages(
 ): Promise<void> {
 	for (const file of filesToDelete) {
 		try {
+			const snapshot = stagedFileSnapshots.get(file);
+			const currentStat = (file as unknown as { stat?: { mtime?: number; size?: number } }).stat;
+			if (
+				snapshot &&
+				((snapshot.mtime !== undefined &&
+					currentStat?.mtime !== undefined &&
+					currentStat.mtime !== snapshot.mtime) ||
+					(snapshot.size !== undefined &&
+						currentStat?.size !== undefined &&
+						currentStat.size !== snapshot.size))
+			) {
+				continue;
+			}
 			await app.vault.delete(file, true);
 		} catch (error) {
 			console.warn(`Veneer: failed to delete absorbed image ${file.path}`, error);
