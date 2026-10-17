@@ -368,6 +368,7 @@ export class SessionManager {
 						session.file,
 						serializeFile(session.decoyBody, session.pendingPayload),
 					);
+					if (session.lockingPromise !== lockingPromise) return;
 					session.originalPayload = session.pendingPayload;
 					for (const peer of this.getAllByPath(session.file.path)) {
 						peer.originalPayload = session.pendingPayload;

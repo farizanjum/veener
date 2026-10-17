@@ -404,12 +404,23 @@ export default class VeneerPlugin extends Plugin {
 		const { title: rawTitle, body: decoyBody } = splitTitleFromBody(result.text.trim());
 		const finalBody = decoyBody.length > 0 ? decoyBody : result.text.trim();
 		for (const session of this.sessions.getAllByPath(file.path)) {
+			if (session.state === "unlocked") {
+				await this.sessions.lock(session, "refresh-decoy");
+			}
+		}
+		const latest = parseFileContent(await this.app.vault.read(file));
+		if (!latest) {
+			new Notice("Not a protected note.");
+			return;
+		}
+		for (const session of this.sessions.getAllByPath(file.path)) {
 			session.decoyBody = finalBody;
+			session.originalPayload = latest.payload;
 			if (session.view.file === file) {
 				session.view.setViewData(finalBody, true);
 			}
 		}
-		await this.app.vault.modify(file, serializeFile(finalBody, parsed.payload));
+		await this.app.vault.modify(file, serializeFile(finalBody, latest.payload));
 		await this.retitleToFile(file, rawTitle);
 		new Notice(`Cover refreshed (${result.source}).`);
 	}
@@ -469,14 +480,20 @@ export default class VeneerPlugin extends Plugin {
 			return;
 		}
 		try {
-			const rotated = await changePassword(parsed.payload, oldPassword, newPassword);
+			for (const activeSession of this.sessions.getAllByPath(file.path)) {
+				if (activeSession.state === "unlocked") {
+					await this.sessions.lock(activeSession, "change-password");
+				}
+			}
+			const latestParsed = parseFileContent(await this.app.vault.read(file)) ?? parsed;
+			const rotated = await changePassword(latestParsed.payload, oldPassword, newPassword);
 			for (const openSession of this.sessions.getAllByPath(file.path)) {
 				openSession.originalPayload = rotated;
 				if (openSession.pendingPayload !== null) {
 					openSession.pendingPayload = rotated;
 				}
 			}
-			await this.app.vault.modify(file, serializeFile(parsed.decoyBody, rotated));
+			await this.app.vault.modify(file, serializeFile(latestParsed.decoyBody, rotated));
 			new Notice("Password changed.");
 		} catch {
 			new Notice("Password change failed.");
@@ -500,7 +517,13 @@ export default class VeneerPlugin extends Plugin {
 		const password = await new PasswordModal(this.app, "Unprotect permanently").ask();
 		if (password === null) return;
 		try {
-			const { realText, dek, images, realTitle } = await unlockPayload(parsed.payload, password);
+			for (const activeSession of this.sessions.getAllByPath(file.path)) {
+				if (activeSession.state === "unlocked") {
+					await this.sessions.lock(activeSession, "unprotect");
+				}
+			}
+			const latestParsed = parseFileContent(await this.app.vault.read(file)) ?? parsed;
+			const { realText, dek, images, realTitle } = await unlockPayload(latestParsed.payload, password);
 			dek.fill(0);
 			await restoreVaultImages(this.app, file.parent?.path ?? "", images);
 			const openSessions = this.sessions.getAllByPath(file.path);
