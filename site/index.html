@@ -4,20 +4,24 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Veneer | Notes that look like ordinary notes for Obsidian</title>
-  <meta name="description" content="Someone looks over your shoulder? They see a boring grocery list. Type ;; and your password on any line? Your real note, real title, and hidden images appear." />
+  <meta name="description" content="Hide private Obsidian notes, titles, and images behind everyday cover notes. Type ;; to reveal." />
   <meta name="theme-color" content="#F1EFEB" />
   <link rel="canonical" href="https://veener.fariz.tech/" />
 
+  <meta property="og:site_name" content="Veneer" />
   <meta property="og:type" content="website" />
   <meta property="og:url" content="https://veener.fariz.tech/" />
   <meta property="og:title" content="Veneer | Notes that look like ordinary notes for Obsidian" />
-  <meta property="og:description" content="Someone looks over your shoulder? They see a boring grocery list. Type ;; and your password on any line? Your real note, real title, and hidden images appear." />
-  <meta property="og:image" content="/og-image.svg" />
+  <meta property="og:description" content="Hide private Obsidian notes, titles, and images behind everyday cover notes. Type ;; to reveal." />
+  <meta property="og:image" content="https://veener.fariz.tech/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="Veneer - Notes that look like ordinary notes for Obsidian" />
 
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="Veneer | Notes that look like ordinary notes for Obsidian" />
-  <meta name="twitter:description" content="Local-first Obsidian plugin that hides your real note, title, and images behind a believable everyday cover note." />
-  <meta name="twitter:image" content="/og-image.svg" />
+  <meta name="twitter:description" content="Hide private Obsidian notes, titles, and images behind everyday cover notes. Type ;; to reveal." />
+  <meta name="twitter:image" content="https://veener.fariz.tech/og-image.png" />
 
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <link rel="manifest" href="/manifest.webmanifest" />
@@ -129,24 +133,19 @@
       padding: 0;
     }
 
-    * {
-      scrollbar-width: thin;
-      scrollbar-color: rgba(20, 20, 19, 0.2) transparent;
-    }
-    .sim-window * {
-      scrollbar-width: thin;
-      scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
-    }
     ::-webkit-scrollbar {
-      width: 5px;
-      height: 5px;
+      width: 6px;
+      height: 6px;
     }
     ::-webkit-scrollbar-track {
-      background: transparent;
+      background: #EAE7DF;
     }
     ::-webkit-scrollbar-thumb {
-      background: rgba(20, 20, 19, 0.18);
+      background: #B8B4A9;
       border-radius: 999px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #107A4D;
     }
     ::-webkit-scrollbar-button {
       display: none;
@@ -157,12 +156,15 @@
       width: 5px;
       height: 5px;
     }
+    .sim-window ::-webkit-scrollbar-track {
+      background: transparent;
+    }
     .sim-window ::-webkit-scrollbar-thumb {
-      background: rgba(255, 255, 255, 0.14);
+      background: rgba(255, 255, 255, 0.16);
       border-radius: 999px;
     }
     .sim-window ::-webkit-scrollbar-thumb:hover {
-      background: rgba(255, 255, 255, 0.28);
+      background: rgba(40, 233, 159, 0.45);
     }
     .sim-window ::-webkit-scrollbar-button {
       display: none;
@@ -172,7 +174,7 @@
 
     html, body {
       max-width: 100%;
-      overflow-x: hidden;
+      overflow-x: clip;
     }
 
     html {
@@ -216,12 +218,44 @@
       position: relative;
     }
 
+    .swiss-frame,
+    .announcement-inner,
+    .nav-grid,
+    .arch-footer-grid,
+    .veneer-playground-wrap,
+    .arch-footer-bottom {
+      width: min(1120px, calc(100% - 112px));
+      max-width: min(1120px, calc(100% - 112px));
+    }
+
     .swiss-frame {
-      max-width: 1280px;
       margin: 0 auto;
       border-left: 1px solid var(--rule);
       border-right: 1px solid var(--rule);
       position: relative;
+    }
+
+    .swiss-frame,
+    .hero-swiss-grid > *,
+    .swiss-section-intro > *,
+    .compare-swiss-grid > *,
+    .steps-swiss-grid > *,
+    .install-swiss-grid > *,
+    .faq-swiss-grid > *,
+    .pre-footer-grid > *,
+    .arch-footer-grid > *,
+    .sim-window,
+    .sim-titlebar,
+    .sim-titlebar-left,
+    .sim-tabs-bar,
+    .sim-body,
+    .sim-workspace,
+    .sim-editor-pane,
+    .sim-editor-scroll,
+    .terminal-card,
+    .terminal-pre {
+      min-width: 0;
+      max-width: 100%;
     }
 
     .grid-cross {
@@ -260,6 +294,14 @@
       padding: 2px 7px;
       border-radius: 4px;
       font-weight: 600;
+      box-decoration-break: clone;
+      -webkit-box-decoration-break: clone;
+    }
+
+    .sim-pill-btn[hidden],
+    .sim-image-card[hidden],
+    .sim-trigger-bar[hidden] {
+      display: none;
     }
 
     .hero-sub strong,
@@ -295,24 +337,38 @@
     }
 
     .announcement-inner {
-      max-width: 1280px;
       margin: 0 auto;
       min-height: 36px;
-      padding: 6px 20px;
+      padding: 4px 20px;
       border-left: 1px solid #2A2D2A;
       border-right: 1px solid #2A2D2A;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 12px;
-      flex-wrap: wrap;
+      gap: 10px;
+      flex-wrap: nowrap;
     }
 
     .announcement-left {
       display: flex;
       align-items: center;
-      gap: 10px;
-      flex-wrap: wrap;
+      gap: 9px;
+      flex-wrap: nowrap;
+      min-width: 0;
+      overflow: hidden;
+    }
+
+    .announcement-text-full {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .announcement-text-short {
+      display: none;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
     .announcement-badge {
@@ -326,6 +382,7 @@
       font-weight: 600;
       letter-spacing: 0.05em;
       text-transform: uppercase;
+      flex-shrink: 0;
     }
 
     .announcement-link {
@@ -333,6 +390,7 @@
       text-decoration: underline;
       text-underline-offset: 3px;
       white-space: nowrap;
+      flex-shrink: 0;
     }
 
     .top-nav {
@@ -406,25 +464,65 @@
       color: var(--ink);
     }
 
-    .nav-btn-ghost {
+    .gh-star-btn {
       height: 36px;
-      padding: 0 13px;
       border-radius: 6px;
       border: 1px solid var(--rule);
       background: var(--surface);
       color: var(--ink);
-      font-family: var(--font-mono);
-      font-size: 12px;
-      font-weight: 500;
+      display: inline-flex;
+      align-items: stretch;
+      overflow: hidden;
+      transition: border-color 0.15s ease, background 0.15s ease, transform 0.12s ease;
+    }
+
+    .gh-star-btn:hover {
+      border-color: var(--green);
+      background: #FFFFFF;
+    }
+
+    .gh-star-btn:active {
+      transform: scale(0.98);
+    }
+
+    .gh-star-left {
+      padding: 0 11px;
       display: inline-flex;
       align-items: center;
       gap: 7px;
-      transition: border-color 0.15s ease, background 0.15s ease;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--ink);
     }
 
-    .nav-btn-ghost:hover {
-      border-color: var(--ink);
-      background: #FFFFFF;
+    .gh-star-right {
+      padding: 0 10px;
+      border-left: 1px solid var(--rule);
+      background: rgba(16, 122, 77, 0.07);
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      font-weight: 600;
+      color: var(--green);
+      transition: background 0.15s ease, border-color 0.15s ease;
+    }
+
+    .gh-star-btn:hover .gh-star-right {
+      border-left-color: rgba(16, 122, 77, 0.35);
+      background: rgba(16, 122, 77, 0.14);
+    }
+
+    .gh-star-icon {
+      color: var(--green);
+      flex-shrink: 0;
+      transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+
+    .gh-star-btn:hover .gh-star-icon {
+      transform: scale(1.16) rotate(12deg);
     }
 
     .nav-btn-solid {
@@ -505,7 +603,7 @@
 
     .hero-swiss-grid {
       display: grid;
-      grid-template-columns: 1fr;
+      grid-template-columns: minmax(0, 1fr);
       position: relative;
     }
 
@@ -2204,6 +2302,15 @@
     }
 
     @media (max-width: 960px) {
+      .swiss-frame,
+      .announcement-inner,
+      .nav-grid,
+      .arch-footer-grid,
+      .veneer-playground-wrap,
+      .arch-footer-bottom {
+        width: calc(100% - 48px);
+        max-width: calc(100% - 48px);
+      }
       .nav-grid {
         grid-template-columns: 1fr auto;
       }
@@ -2219,7 +2326,7 @@
       .install-swiss-grid,
       .faq-swiss-grid,
       .pre-footer-grid {
-        grid-template-columns: 1fr;
+        grid-template-columns: minmax(0, 1fr);
       }
       .hero-copy-cell {
         padding: 48px 32px 0;
@@ -2253,7 +2360,7 @@
         border-bottom: none;
       }
       .steps-swiss-grid {
-        grid-template-columns: repeat(2, 1fr);
+        grid-template-columns: repeat(2, minmax(0, 1fr));
       }
       .step-cell:nth-child(2) {
         border-right: none;
@@ -2263,7 +2370,7 @@
         border-bottom: 1px solid var(--rule);
       }
       .arch-footer-grid {
-        grid-template-columns: repeat(2, 1fr);
+        grid-template-columns: repeat(2, minmax(0, 1fr));
       }
       .arch-footer-col {
         border-bottom: 1px solid var(--footer-rule);
@@ -2277,13 +2384,15 @@
         bottom: 0;
         left: 38px;
         width: 215px;
-        box-shadow: 14px 0 32px rgba(0, 0, 0, 0.55);
-      }
-      .sim-sidebar.collapsed {
         transform: translateX(-110%);
-        width: 215px;
         opacity: 0;
         pointer-events: none;
+        box-shadow: 14px 0 32px rgba(0, 0, 0, 0.55);
+      }
+      .sim-sidebar.mobile-open {
+        transform: translateX(0);
+        opacity: 1;
+        pointer-events: auto;
       }
     }
 
@@ -2297,8 +2406,22 @@
       .arch-footer-grid,
       .veneer-playground-wrap,
       .arch-footer-bottom {
-        border-left: none;
-        border-right: none;
+        width: calc(100% - 24px);
+        max-width: calc(100% - 24px);
+      }
+      .announcement-inner {
+        flex-wrap: nowrap;
+        gap: 8px;
+        min-height: 34px;
+        height: 34px;
+        padding: 0 12px;
+        font-size: 11px;
+      }
+      .announcement-text-full {
+        display: none;
+      }
+      .announcement-text-short {
+        display: inline;
       }
       .hero-copy-cell {
         padding: 32px 18px 0;
@@ -2325,18 +2448,26 @@
       .faq-left-cell,
       .pre-footer-left,
       .pre-footer-right {
-        padding: 28px 18px;
+        padding: 20px 14px;
+      }
+      .mac-dots {
+        display: none;
       }
       .sim-titlebar {
         height: auto;
         min-height: 42px;
         flex-wrap: wrap;
-        padding: 6px 10px;
+        padding: 6px 8px;
         gap: 6px;
       }
       .sim-titlebar-left {
         width: 100%;
         overflow-x: auto;
+      }
+      .obs-tab {
+        max-width: 148px;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
       .sim-view-switch {
         width: 100%;
@@ -2346,11 +2477,41 @@
         flex: 1;
         text-align: center;
       }
+      .sim-action-strip {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 6px;
+        padding: 8px;
+      }
+      .sim-actions-left {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        width: 100%;
+        gap: 6px;
+      }
+      .sim-actions-right {
+        display: flex;
+        width: 100%;
+        gap: 6px;
+      }
+      .sim-pill-btn {
+        width: 100%;
+        justify-content: center;
+        min-height: 36px;
+        padding: 0 8px;
+        font-size: 11px;
+      }
+      .sim-select-group {
+        grid-column: 1 / -1;
+        width: 100%;
+        justify-content: center;
+        min-height: 34px;
+      }
       .sim-body,
       .sim-workspace,
       .sim-editor-scroll {
-        height: 380px;
-        min-height: 380px;
+        height: 350px;
+        min-height: 350px;
       }
       .sim-statusbar {
         height: auto;
@@ -2359,9 +2520,14 @@
         flex-wrap: wrap;
         gap: 6px;
       }
+      .terminal-pre {
+        font-size: 11px;
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
       .spec-row {
         padding: 16px 18px;
-        grid-template-columns: 1fr;
+        grid-template-columns: minmax(0, 1fr);
         gap: 6px;
       }
       summary.faq-q {
@@ -2425,7 +2591,7 @@
         justify-content: flex-end;
       }
       .micro-facts {
-        grid-template-columns: 1fr;
+        grid-template-columns: minmax(0, 1fr);
         margin: 28px -18px 0;
       }
       .micro-fact {
@@ -2437,7 +2603,7 @@
       }
       .steps-swiss-grid,
       .arch-footer-grid {
-        grid-template-columns: 1fr;
+        grid-template-columns: minmax(0, 1fr);
       }
       .step-cell {
         border-right: none;
@@ -2473,9 +2639,10 @@
     <div class="announcement-inner">
       <div class="announcement-left">
         <span class="announcement-badge">NEW</span>
-        <span>Veneer v1.0: Local GPU AI covers (135 tok/s) + automatic encrypted image hiding</span>
+        <span class="announcement-text-full">Veneer v1.0: Local GPU AI covers (135 tok/s) + automatic encrypted image hiding</span>
+        <span class="announcement-text-short">Veneer v1.0: Local GPU covers</span>
       </div>
-      <a href="#live-demo" class="announcement-link">Try the multi-tab simulator &rarr;</a>
+      <a href="#live-demo" class="announcement-link">Try demo &rarr;</a>
     </div>
   </div>
 
@@ -2510,9 +2677,15 @@
       </div>
 
       <div class="nav-cell hide-tablet">
-        <a href="https://github.com/farizanjum/vener" class="nav-btn-ghost" target="_blank" rel="noopener">
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path fill="none" d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5c.08-1.25-.27-2.48-1-3.5c.28-1.15.28-2.35 0-3.5c0 0-1 0-3 1.5c-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.4 5.4 0 0 0 4 9c0 3.5 3 5.5 6 5.5c-.39.49-.68 1.05-.85 1.65S8.93 17.38 9 18v4"/><path fill="none" d="M9 18c-4.51 2-5-2-7-2"/></svg>
-          <span>GitHub</span>
+        <a href="https://github.com/farizanjum/veener" class="gh-star-btn" target="_blank" rel="noopener" aria-label="Star Veneer on GitHub">
+          <span class="gh-star-left">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 0.3C5.4 0.3 0 5.7 0 12.3c0 5.3 3.4 9.8 8.2 11.4c0.6 0.1 0.8-0.3 0.8-0.6v-2.2c-3.3 0.7-4-1.4-4-1.4c-0.5-1.4-1.3-1.8-1.3-1.8c-1.1-0.7 0.1-0.7 0.1-0.7c1.2 0.1 1.8 1.2 1.8 1.2c1.1 1.8 2.8 1.3 3.5 1c0.1-0.8 0.4-1.3 0.8-1.6c-2.7-0.3-5.5-1.3-5.5-6c0-1.3 0.5-2.4 1.2-3.2c-0.1-0.3-0.5-1.5 0.1-3.2c0 0 1-0.3 3.3 1.2c1-0.3 2-0.4 3-0.4s2 0.1 3 0.4c2.3-1.5 3.3-1.2 3.3-1.2c0.6 1.7 0.2 2.9 0.1 3.2c0.8 0.8 1.2 1.9 1.2 3.2c0 4.6-2.8 5.6-5.5 5.9c0.4 0.4 0.8 1.1 0.8 2.2v3.3c0 0.3 0.2 0.7 0.8 0.6c4.8-1.6 8.2-6.1 8.2-11.4C24 5.7 18.6 0.3 12 0.3z"/></svg>
+            <span>GitHub</span>
+          </span>
+          <span class="gh-star-right">
+            <svg class="gh-star-icon" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+            <span id="gh-star-count">1</span>
+          </span>
         </a>
       </div>
 
@@ -2536,7 +2709,16 @@
       <a href="#install" class="mobile-nav-link"><span>[ 04 ] Install Guide</span><span>&rarr;</span></a>
       <a href="#faq" class="mobile-nav-link"><span>[ 05 ] FAQ</span><span>&rarr;</span></a>
       <div class="mobile-drawer-ctas">
-        <a href="https://github.com/farizanjum/vener" class="btn-secondary" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/farizanjum/veener" class="gh-star-btn" style="justify-content: space-between; height: 42px;" target="_blank" rel="noopener">
+          <span class="gh-star-left">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 0.3C5.4 0.3 0 5.7 0 12.3c0 5.3 3.4 9.8 8.2 11.4c0.6 0.1 0.8-0.3 0.8-0.6v-2.2c-3.3 0.7-4-1.4-4-1.4c-0.5-1.4-1.3-1.8-1.3-1.8c-1.1-0.7 0.1-0.7 0.1-0.7c1.2 0.1 1.8 1.2 1.8 1.2c1.1 1.8 2.8 1.3 3.5 1c0.1-0.8 0.4-1.3 0.8-1.6c-2.7-0.3-5.5-1.3-5.5-6c0-1.3 0.5-2.4 1.2-3.2c-0.1-0.3-0.5-1.5 0.1-3.2c0 0 1-0.3 3.3 1.2c1-0.3 2-0.4 3-0.4s2 0.1 3 0.4c2.3-1.5 3.3-1.2 3.3-1.2c0.6 1.7 0.2 2.9 0.1 3.2c0.8 0.8 1.2 1.9 1.2 3.2c0 4.6-2.8 5.6-5.5 5.9c0.4 0.4 0.8 1.1 0.8 2.2v3.3c0 0.3 0.2 0.7 0.8 0.6c4.8-1.6 8.2-6.1 8.2-11.4C24 5.7 18.6 0.3 12 0.3z"/></svg>
+            <span>GitHub</span>
+          </span>
+          <span class="gh-star-right">
+            <svg class="gh-star-icon" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+            <span data-gh-stars>1</span>
+          </span>
+        </a>
         <a href="#install" class="btn-primary mobile-nav-link">Download Plugin</a>
       </div>
     </div>
@@ -2965,8 +3147,8 @@
                   <span id="copy-install-label">Copy</span>
                 </button>
               </div>
-              <pre class="terminal-pre" id="install-code">git clone https://github.com/farizanjum/vener.git
-cd vener
+              <pre class="terminal-pre" id="install-code">git clone https://github.com/farizanjum/veener.git
+cd veener
 npm install &amp;&amp; npm run build
 cp -r main.js manifest.json styles.css assets/ &lt;vault&gt;/.obsidian/plugins/deocy/</pre>
             </div>
@@ -3213,7 +3395,7 @@ cp -r main.js manifest.json styles.css assets/ &lt;vault&gt;/.obsidian/plugins/d
       <div class="arch-footer-col">
         <div class="footer-col-label">ELSEWHERE</div>
         <ul class="footer-links">
-          <li><a href="https://github.com/farizanjum/vener" target="_blank" rel="noopener">GitHub</a></li>
+          <li><a href="https://github.com/farizanjum/veener" target="_blank" rel="noopener">GitHub</a></li>
           <li><a href="mailto:farizanjum@veener.fariz.tech">farizanjum@veener.fariz.tech</a></li>
           <li><a href="/og-image.svg">Brand Kit</a></li>
         </ul>
@@ -3443,7 +3625,7 @@ cp -r main.js manifest.json styles.css assets/ &lt;vault&gt;/.obsidian/plugins/d
         fileBtn.addEventListener("click", () => {
           switchToNote(note.id);
           if (window.innerWidth <= 960) {
-            sidebarEl.classList.add("collapsed");
+            sidebarEl.classList.remove("mobile-open");
             sidebarToggleBtn.classList.remove("active");
           }
         });
@@ -3724,9 +3906,25 @@ cp -r main.js manifest.json styles.css assets/ &lt;vault&gt;/.obsidian/plugins/d
     });
 
     sidebarToggleBtn.addEventListener("click", () => {
-      const collapsed = sidebarEl.classList.toggle("collapsed");
-      sidebarToggleBtn.classList.toggle("active", !collapsed);
+      if (window.innerWidth <= 960) {
+        const isOpen = sidebarEl.classList.toggle("mobile-open");
+        sidebarToggleBtn.classList.toggle("active", isOpen);
+      } else {
+        const collapsed = sidebarEl.classList.toggle("collapsed");
+        sidebarToggleBtn.classList.toggle("active", !collapsed);
+      }
     });
+
+    function syncSidebarResponsiveState() {
+      if (window.innerWidth <= 960) {
+        sidebarEl.classList.remove("mobile-open");
+        sidebarToggleBtn.classList.remove("active");
+      } else {
+        sidebarToggleBtn.classList.toggle("active", !sidebarEl.classList.contains("collapsed"));
+      }
+    }
+    window.addEventListener("resize", syncSidebarResponsiveState);
+    syncSidebarResponsiveState();
 
     document.getElementById("btn-sim-palette").addEventListener("click", () => togglePalette(true));
     document.getElementById("ribbon-palette-btn").addEventListener("click", () => togglePalette(true));
@@ -3847,6 +4045,20 @@ cp -r main.js manifest.json styles.css assets/ &lt;vault&gt;/.obsidian/plugins/d
         label.textContent = "Copy";
       }, 1600);
     });
+
+    fetch("https://api.github.com/repos/farizanjum/veener")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data && typeof data.stargazers_count === "number") {
+          const count = Math.max(1, data.stargazers_count).toLocaleString();
+          const desktopCount = document.getElementById("gh-star-count");
+          if (desktopCount) desktopCount.textContent = count;
+          document.querySelectorAll("[data-gh-stars]").forEach((el) => {
+            el.textContent = count;
+          });
+        }
+      })
+      .catch(() => {});
 
     renderSimulator(false);
 

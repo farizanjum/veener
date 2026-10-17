@@ -20,4 +20,4 @@ Veneer is an open-source, desktop-only Obsidian plugin that hides sensitive note
 - [Security Policy](https://veener.fariz.tech/security.html): Cryptographic specification (`AES-256-GCM`, `Argon2id` 64 MiB / 3 iterations, 4 KB block padding, RAM `blob:` image isolation, `;;!` Destruction PIN) and responsible vulnerability disclosure (`farizanjum@veener.fariz.tech`).
 - [Full LLM Reference Documentation](https://veener.fariz.tech/llms-full.txt): Complete plain-English and technical specification covering how Veneer works, cryptographic envelope format, inline capture state machine, local Vulkan + WASM decoy generation, duress PIN `;;!`, threat model, and CLI build/install steps.
 - [OpenGraph Social Card](https://veener.fariz.tech/og-image.svg): Visual overview of how `Grocery run (Saturday).md` transforms via `;;` into `Q4 Acquisition Targets.md`.
-- [GitHub Repository](https://github.com/farizanjum/vener): MIT-licensed TypeScript source code and architecture documentation.
+- [GitHub Repository](https://github.com/farizanjum/veener): MIT-licensed TypeScript source code and architecture documentation.

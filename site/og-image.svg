@@ -1,166 +1,187 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630" fill="none">
   <defs>
-    <!-- Greptile Warm Stone Dotted Grid Pattern -->
-    <pattern id="greptile-dots" width="20" height="20" patternUnits="userSpaceOnUse">
-      <circle cx="2" cy="2" r="1.15" fill="#DFDDD6" />
+    <!-- Subtle 20px Swiss Dotted Grid -->
+    <pattern id="swiss-dots" width="20" height="20" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1" fill="#D5D3CA" />
     </pattern>
-    <!-- Subtle luminance shift for the ip-as-logo Chameleon mark -->
-    <linearGradient id="chameleon-cream" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#F6F4F0" />
-      <stop offset="100%" stop-color="#F1EFEB" />
-    </linearGradient>
-    <clipPath id="chameleon-badge-clip">
-      <rect x="0" y="0" width="56" height="56" rx="11" />
-    </clipPath>
+
+    <!-- Mint #20E6A1 + Registration Cross -->
+    <g id="reg-cross">
+      <line x1="-6" y1="0" x2="6" y2="0" stroke="#20E6A1" stroke-width="1.5" />
+      <line x1="0" y1="-6" x2="0" y2="6" stroke="#20E6A1" stroke-width="1.5" />
+    </g>
   </defs>
 
-  <!-- 1. Greptile Warm-Stone (#F1EFEB) Background + Subtle Dotted Grid -->
-  <rect width="1200" height="630" fill="#F1EFEB" />
-  <rect width="1200" height="630" fill="url(#greptile-dots)" />
+  <!-- Warm Stone Canvas (#EFEFEA) + 20px Dot Grid -->
+  <rect width="1200" height="630" fill="#EFEFEA" />
+  <rect width="1200" height="630" fill="url(#swiss-dots)" />
 
-  <!-- Outer Architectural Border (#DFDDD6) -->
-  <rect x="16.5" y="16.5" width="1167" height="597" fill="none" stroke="#DFDDD6" stroke-width="1.5" />
-  <rect x="0.5" y="0.5" width="1199" height="629" fill="none" stroke="#DFDDD6" stroke-width="1" />
+  <!-- Outer Swiss Frame (x=36, y=36, width=1128, height=558) -->
+  <rect x="36" y="36" width="1128" height="558" fill="#F1EFEB" fill-opacity="0.72" stroke="#CFCBC2" stroke-width="1" />
 
-  <!-- Top Header Strip -->
-  <rect x="17" y="17" width="1166" height="46" fill="#F7F5F0" />
-  <line x1="16" y1="63.5" x2="1184" y2="63.5" stroke="#DFDDD6" stroke-width="1.5" />
-  <line x1="572.5" y1="63" x2="572.5" y2="568" stroke="#DFDDD6" stroke-width="1.5" />
-  <line x1="16" y1="568.5" x2="1184" y2="568.5" stroke="#DFDDD6" stroke-width="1.5" />
+  <!-- Top Bar (height: 76px -> y=36..112, border-bottom: 1px solid #CFCBC2) -->
+  <rect x="36.5" y="36.5" width="1127" height="75.5" fill="#F8F7F3" />
+  <line x1="36" y1="112" x2="1164" y2="112" stroke="#CFCBC2" stroke-width="1" />
 
-  <!-- Top Strip Left: Brand Tag -->
-  <rect x="38" y="35" width="10" height="10" fill="#107A4D" />
-  <text x="58" y="45" fill="#18181B" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="700" letter-spacing="0.06em">[ VENEER · OBSIDIAN DENIABLE ENCRYPTION ]</text>
+  <!-- Subtle Horizontal Swiss Divider before 3D Isometric Footer Playground -->
+  <line x1="36" y1="384" x2="1164" y2="384" stroke="#CFCBC2" stroke-width="1" />
 
-  <!-- Top Strip Right: Telemetry Status -->
-  <text x="790" y="45" fill="#6A6A6A" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" font-weight="700" letter-spacing="0.04em">[ AES-256-GCM · ARGON2ID · LOCAL VULKAN LLM ]</text>
+  <!-- Mint #20E6A1 + Registration Crosses at Frame Corners & Grid Intersections -->
+  <use href="#reg-cross" x="36" y="36" />
+  <use href="#reg-cross" x="1164" y="36" />
+  <use href="#reg-cross" x="36" y="594" />
+  <use href="#reg-cross" x="1164" y="594" />
+  <use href="#reg-cross" x="36" y="112" />
+  <use href="#reg-cross" x="1164" y="112" />
+  <use href="#reg-cross" x="36" y="384" />
+  <use href="#reg-cross" x="1164" y="384" />
 
-  <!-- ================= LEFT COLUMN: EDITORIAL HERO (x: 16 -> 572) ================= -->
-  <g transform="translate(48, 96)">
-    <!-- Cute ip-as-logo Chameleon Mascot Mark on Top-Left -->
-    <g transform="translate(0, 0)">
-      <g clip-path="url(#chameleon-badge-clip)">
-        <rect x="0" y="0" width="56" height="56" fill="#107A4D" />
-        <!-- Chameleon emerging from lower-right corner -->
-        <path d="M 58 58 L 14 58 C 6 58, 2 52, 2 44 C 2 36, 8 31, 15 31 C 21 31, 26 35, 26 41 C 26 45, 22 48, 18 48 C 14 48, 12 45, 12 42 C 12 39, 14 37, 17 37 C 19 37, 20 39, 20 41 C 20 43, 18 44, 16 44 L 22 50 C 20 46, 20 41, 20 36 C 20 26, 26 19, 33 17 C 35 11, 39 7, 45 7 C 51 7, 55 11, 57 18 L 58 22 Z" fill="url(#chameleon-cream)" />
-        <circle cx="16" cy="42" r="6.5" fill="#107A4D" />
-        <circle cx="17" cy="42" r="3.2" fill="url(#chameleon-cream)" />
-        <!-- Belly/cheek patch in #141A17 -->
-        <path d="M 35 58 C 35 47, 41 41, 50 41 L 58 41 L 58 58 Z" fill="#141A17" />
-        <!-- Two lovable eyes + catchlights -->
-        <circle cx="30" cy="30" r="5" fill="#141A17" />
-        <circle cx="28.5" cy="28.5" r="1.8" fill="#F1EFEB" />
-        <circle cx="45" cy="30" r="5" fill="#141A17" />
-        <circle cx="43.5" cy="28.5" r="1.8" fill="#F1EFEB" />
-        <!-- Tiny happy smile -->
-        <path d="M 35 36.5 Q 37.5 39 40 36.5" stroke="#141A17" stroke-width="2" stroke-linecap="round" fill="none" />
-      </g>
-      <rect x="0.5" y="0.5" width="55" height="55" rx="10.5" stroke="#18181B" stroke-opacity="0.16" stroke-width="1" />
+  <!-- Top Bar Left: Chameleon Icon Mark (42x42) + VENEER (24px bold #141413) -->
+  <g transform="translate(68, 53)">
+    <svg width="42" height="42" viewBox="0 0 64 64" fill="none">
+      <rect width="64" height="64" rx="14" fill="#107A4D" />
+      <path d="M64 64H16C7 64 2 57 2 48C2 39 9 33 17 33C24 33 29 38 29 45C29 50 25 53 20 53C16 53 13 50 13 46C13 43 16 41 19 41L25 55C23 50 22 45 22 39C22 28 29 20 38 18C40 11 45 7 52 7C58 7 63 12 64 19V64Z" fill="#F1EFEB" />
+      <circle cx="18" cy="46" r="7" fill="#107A4D" />
+      <circle cx="19" cy="46" r="3.5" fill="#F1EFEB" />
+      <path d="M39 64C39 51 46 45 57 45H64V64H39Z" fill="#141413" />
+      <circle cx="34" cy="34" r="5.8" fill="#141413" />
+      <circle cx="32" cy="32" r="2" fill="#F1EFEB" />
+      <circle cx="51" cy="34" r="5.8" fill="#141413" />
+      <circle cx="49" cy="32" r="2" fill="#F1EFEB" />
+    </svg>
+    <text x="58" y="30" fill="#141413" font-family="'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="24" font-weight="700" letter-spacing="-0.04em">VENEER</text>
+  </g>
 
-      <text x="72" y="24" fill="#107A4D" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="12" font-weight="700" letter-spacing="0.06em">VENEER FOR OBSIDIAN</text>
-      <text x="72" y="45" fill="#52525B" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="12">Zero lock screens. Zero modals. Zero plaintext on disk.</text>
-    </g>
+  <!-- Top Bar Right: veener.fariz.tech (16px monospace, #107A4D) -->
+  <text x="1132" y="80" text-anchor="end" fill="#107A4D" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16" font-weight="600" letter-spacing="0.02em">veener.fariz.tech</text>
 
-    <!-- Bold Headline: "Notes that look like ordinary notes." -->
-    <text x="0" y="126" fill="#18181B" font-family="'Space Grotesk', 'Syne', system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="54" font-weight="700" letter-spacing="-0.04em">Notes that look</text>
-    <text x="0" y="186" fill="#18181B" font-family="'Space Grotesk', 'Syne', system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="54" font-weight="700" letter-spacing="-0.04em">like <tspan fill="#107A4D">ordinary notes.</tspan></text>
+  <!-- Main Body Upper/Left Area: Huge Crisp Headline + Monospace Subtitle -->
+  <g transform="translate(68, 198)">
+    <text x="0" y="0" fill="#141413" font-family="'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="68" font-weight="700" letter-spacing="-0.04em">Notes that look like</text>
+    <text x="0" y="76" fill="#107A4D" font-family="'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="68" font-weight="700" letter-spacing="-0.04em"><tspan fill="#107A4D">ordinary notes.</tspan></text>
 
-    <!-- Conversational Subtitle -->
-    <text x="0" y="232" fill="#2A2A2A" font-family="'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="16" font-weight="500">
-      <tspan x="0" dy="0">Hide your real notes, titles, and images behind an</tspan>
-      <tspan x="0" dy="25">everyday cover note in Obsidian. Type </tspan>
-      <tspan fill="#107A4D" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-weight="700">;;</tspan>
-      <tspan> and your</tspan>
-      <tspan x="0" dy="25">password on any line to reveal.</tspan>
+    <text x="0" y="134" fill="#565860" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="21" font-weight="500" letter-spacing="-0.01em">
+      Hide real notes, titles &amp; images in Obsidian. Type <tspan fill="#107A4D" font-weight="700">;;</tspan> to reveal.
     </text>
+  </g>
 
-    <!-- Architectural Feature Pills -->
-    <g transform="translate(0, 314)">
-      <g transform="translate(0, 0)">
-        <rect width="236" height="54" fill="#F7F5F0" stroke="#DFDDD6" stroke-width="1.5" />
-        <rect x="0" y="0" width="4" height="54" fill="#107A4D" />
-        <text x="16" y="22" fill="#107A4D" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="10.5" font-weight="700" letter-spacing="0.05em">[ INLINE UNLOCK ]</text>
-        <text x="16" y="41" fill="#18181B" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="12" font-weight="700">;;•••• Blind Capture</text>
+  <!-- Bottom/Right Area: 6 Shallow 3D-Extruded V E N E E R Isometric Block Letters -->
+  <g stroke="#FFFFFF" stroke-width="1.5" stroke-linejoin="round">
+    <!-- 1. Letter V (#353544 charcoal front, #B8BAB6 3D side extrusion, -16 deg) -->
+    <g transform="translate(390, 492) rotate(-16) scale(1.12)">
+      <g fill="#B8BAB6">
+        <polygon points="-40,-50 -14,-50 -28.6,-43.3 -54.6,-43.3" />
+        <polygon points="-14,-50 0,12 -14.6,18.7 -28.6,-43.3" />
+        <polygon points="0,12 14,-50 -0.6,-43.3 -14.6,18.7" />
+        <polygon points="14,-50 40,-50 25.4,-43.3 -0.6,-43.3" />
+        <polygon points="40,-50 13,50 -1.6,56.7 25.4,-43.3" />
+        <polygon points="13,50 -13,50 -27.6,56.7 -1.6,56.7" />
+        <polygon points="-13,50 -40,-50 -54.6,-43.3 -27.6,56.7" />
       </g>
+      <path fill="#353544" d="M-40,-50 L-14,-50 L0,12 L14,-50 L40,-50 L13,50 L-13,50 Z" />
+    </g>
 
-      <g transform="translate(250, 0)">
-        <rect width="242" height="54" fill="#F7F5F0" stroke="#DFDDD6" stroke-width="1.5" />
-        <rect x="0" y="0" width="4" height="54" fill="#18181B" />
-        <text x="16" y="22" fill="#18181B" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="10.5" font-weight="700" letter-spacing="0.05em">[ TITLE + IMAGES ]</text>
-        <text x="16" y="41" fill="#18181B" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="12" font-weight="700">RAM Swap + Blob URLs</text>
+    <!-- 2. Letter E (#20E6A1 mint front, #16B87F 3D side extrusion, -24 deg) -->
+    <g transform="translate(524, 466) rotate(-24) scale(1.12)">
+      <g fill="#16B87F">
+        <polygon points="-36,-50 36,-50 20.6,-45.4 -51.4,-45.4" />
+        <polygon points="36,-50 36,-28 20.6,-23.4 20.6,-45.4" />
+        <polygon points="36,-28 -10,-28 -25.4,-23.4 20.6,-23.4" />
+        <polygon points="-10,-28 -10,-11 -25.4,-6.4 -25.4,-23.4" />
+        <polygon points="-10,-11 28,-11 12.6,-6.4 -25.4,-6.4" />
+        <polygon points="28,-11 28,11 12.6,15.6 12.6,-6.4" />
+        <polygon points="28,11 -10,11 -25.4,15.6 12.6,15.6" />
+        <polygon points="-10,11 -10,28 -25.4,32.6 -25.4,15.6" />
+        <polygon points="-10,28 36,28 20.6,32.6 -25.4,32.6" />
+        <polygon points="36,28 36,50 20.6,54.6 20.6,32.6" />
+        <polygon points="36,50 -36,50 -51.4,54.6 20.6,54.6" />
+        <polygon points="-36,50 -36,-50 -51.4,-45.4 -51.4,54.6" />
       </g>
+      <path fill="#20E6A1" d="M-36,-50 L36,-50 L36,-28 L-10,-28 L-10,-11 L28,-11 L28,11 L-10,11 L-10,28 L36,28 L36,50 L-36,50 Z" />
+    </g>
 
-      <g transform="translate(0, 66)">
-        <rect width="236" height="54" fill="#F7F5F0" stroke="#DFDDD6" stroke-width="1.5" />
-        <rect x="0" y="0" width="4" height="54" fill="#CC9100" />
-        <text x="16" y="22" fill="#CC9100" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="10.5" font-weight="700" letter-spacing="0.05em">[ LOCAL AI COVERS ]</text>
-        <text x="16" y="41" fill="#18181B" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="12" font-weight="700">Vulkan GPU + WASM</text>
+    <!-- 3. Letter N (#353544 charcoal front, #B8BAB6 3D side extrusion, +18 deg) -->
+    <g transform="translate(658, 480) rotate(18) scale(1.12)">
+      <g fill="#B8BAB6">
+        <polygon points="-38,-50 -13,-50 -21.4,-36.3 -46.4,-36.3" />
+        <polygon points="-13,-50 14,9 5.6,22.7 -21.4,-36.3" />
+        <polygon points="14,9 14,-50 5.6,-36.3 5.6,22.7" />
+        <polygon points="14,-50 38,-50 29.6,-36.3 5.6,-36.3" />
+        <polygon points="38,-50 38,50 29.6,63.7 29.6,-36.3" />
+        <polygon points="38,50 13,50 4.6,63.7 29.6,63.7" />
+        <polygon points="13,50 -14,-9 -22.4,4.7 4.6,63.7" />
+        <polygon points="-14,-9 -14,50 -22.4,63.7 -22.4,4.7" />
+        <polygon points="-14,50 -38,50 -46.4,63.7 -22.4,63.7" />
+        <polygon points="-38,50 -38,-50 -46.4,-36.3 -46.4,63.7" />
       </g>
+      <path fill="#353544" d="M-38,-50 L-13,-50 L14,9 L14,-50 L38,-50 L38,50 L13,50 L-14,-9 L-14,50 L-38,50 Z" />
+    </g>
 
-      <g transform="translate(250, 66)">
-        <rect width="242" height="54" fill="#F7F5F0" stroke="#DFDDD6" stroke-width="1.5" />
-        <rect x="0" y="0" width="4" height="54" fill="#F24E1E" />
-        <text x="16" y="22" fill="#F24E1E" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="10.5" font-weight="700" letter-spacing="0.05em">[ DURESS PIN ]</text>
-        <text x="16" y="41" fill="#18181B" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="12" font-weight="700">;;! Instant Crypto-Shred</text>
+    <!-- 4. Letter E (#353544 charcoal front, #B8BAB6 3D side extrusion, +22 deg) -->
+    <g transform="translate(792, 490) rotate(22) scale(1.12)">
+      <g fill="#B8BAB6">
+        <polygon points="-36,-50 36,-50 28.6,-35.8 -43.4,-35.8" />
+        <polygon points="36,-50 36,-28 28.6,-13.8 28.6,-35.8" />
+        <polygon points="36,-28 -10,-28 -17.4,-13.8 28.6,-13.8" />
+        <polygon points="-10,-28 -10,-11 -17.4,3.2 -17.4,-13.8" />
+        <polygon points="-10,-11 28,-11 20.6,3.2 -17.4,3.2" />
+        <polygon points="28,-11 28,11 20.6,25.2 20.6,3.2" />
+        <polygon points="28,11 -10,11 -17.4,25.2 20.6,25.2" />
+        <polygon points="-10,11 -10,28 -17.4,42.2 -17.4,25.2" />
+        <polygon points="-10,28 36,28 28.6,42.2 -17.4,42.2" />
+        <polygon points="36,28 36,50 28.6,64.2 28.6,42.2" />
+        <polygon points="36,50 -36,50 -43.4,64.2 28.6,64.2" />
+        <polygon points="-36,50 -36,-50 -43.4,-35.8 -43.4,64.2" />
       </g>
+      <path fill="#353544" d="M-36,-50 L36,-50 L36,-28 L-10,-28 L-10,-11 L28,-11 L28,11 L-10,11 L-10,28 L36,28 L36,50 L-36,50 Z" />
+    </g>
+
+    <!-- 5. Letter E (#20E6A1 mint front, #16B87F 3D side extrusion, -20 deg) -->
+    <g transform="translate(924, 474) rotate(-20) scale(1.12)">
+      <g fill="#16B87F">
+        <polygon points="-36,-50 36,-50 21.0,-44.4 -51.0,-44.4" />
+        <polygon points="36,-50 36,-28 21.0,-22.4 21.0,-44.4" />
+        <polygon points="36,-28 -10,-28 -25.0,-22.4 21.0,-22.4" />
+        <polygon points="-10,-28 -10,-11 -25.0,-5.4 -25.0,-22.4" />
+        <polygon points="-10,-11 28,-11 13.0,-5.4 -25.0,-5.4" />
+        <polygon points="28,-11 28,11 13.0,16.6 13.0,-5.4" />
+        <polygon points="28,11 -10,11 -25.0,16.6 13.0,16.6" />
+        <polygon points="-10,11 -10,28 -25.0,33.6 -25.0,16.6" />
+        <polygon points="-10,28 36,28 21.0,33.6 -25.0,33.6" />
+        <polygon points="36,28 36,50 21.0,55.6 21.0,33.6" />
+        <polygon points="36,50 -36,50 -51.0,55.6 21.0,55.6" />
+        <polygon points="-36,50 -36,-50 -51.0,-44.4 -51.0,55.6" />
+      </g>
+      <path fill="#20E6A1" d="M-36,-50 L36,-50 L36,-28 L-10,-28 L-10,-11 L28,-11 L28,11 L-10,11 L-10,28 L36,28 L36,50 L-36,50 Z" />
+    </g>
+
+    <!-- 6. Letter R (#353544 charcoal front, #B8BAB6 3D side extrusion, +24 deg) -->
+    <g transform="translate(1058, 496) rotate(24) scale(1.12)">
+      <g fill="#B8BAB6">
+        <polygon points="-36,-50 14,-50 7.1,-35.5 -42.9,-35.5" />
+        <polygon points="14,-50 36,-34 29.1,-19.5 7.1,-35.5" />
+        <polygon points="36,-34 36,-8 29.1,6.5 29.1,-19.5" />
+        <polygon points="36,-8 17,6 10.1,20.5 29.1,6.5" />
+        <polygon points="17,6 38,50 31.1,64.5 10.1,20.5" />
+        <polygon points="38,50 10,50 3.1,64.5 31.1,64.5" />
+        <polygon points="10,50 -8,8 -14.9,22.5 3.1,64.5" />
+        <polygon points="-8,8 -12,8 -18.9,22.5 -14.9,22.5" />
+        <polygon points="-12,8 -12,50 -18.9,64.5 -18.9,22.5" />
+        <polygon points="-12,50 -36,50 -42.9,64.5 -18.9,64.5" />
+        <polygon points="-36,50 -36,-50 -42.9,-35.5 -42.9,64.5" />
+        <polygon points="-12,-29 9,-29 2.1,-14.5 -18.9,-14.5" />
+        <polygon points="9,-29 14,-23 7.1,-8.5 2.1,-14.5" />
+        <polygon points="14,-23 14,-15 7.1,-0.5 7.1,-8.5" />
+        <polygon points="14,-15 9,-9 2.1,5.5 7.1,-0.5" />
+        <polygon points="9,-9 -12,-9 -18.9,5.5 2.1,5.5" />
+        <polygon points="-12,-9 -12,-29 -18.9,-14.5 -18.9,5.5" />
+      </g>
+      <path fill="#353544" fill-rule="evenodd" d="M-36,-50 L14,-50 L36,-34 L36,-8 L17,6 L38,50 L10,50 L-8,8 L-12,8 L-12,50 L-36,50 Z M-12,-29 L9,-29 L14,-23 L14,-15 L9,-9 L-12,-9 Z" />
     </g>
   </g>
 
-  <!-- ================= RIGHT COLUMN: SLEEK DARK (#141514) VISUAL CARD (x: 598 -> 1160) ================= -->
-  <g transform="translate(598, 86)">
-    <!-- Outer Dark Visual Card (#141514) -->
-    <rect width="560" height="460" rx="8" fill="#141514" stroke="#272A27" stroke-width="1.5" />
-
-    <!-- Editor Window Header Bar -->
-    <rect x="1" y="1" width="558" height="38" rx="7" fill="#191B19" />
-    <line x1="0" y1="39" x2="560" y2="39" stroke="#2A2D2A" stroke-width="1" />
-    <circle cx="20" cy="20" r="5" fill="#F24E1E" />
-    <circle cx="36" cy="20" r="5" fill="#CC9100" />
-    <circle cx="52" cy="20" r="5" fill="#107A4D" />
-    <text x="72" y="24" fill="#D4D4D8" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="11.5" font-weight="700">OBSIDIAN · LIVE EDITOR TRANSFORMATION</text>
-
-    <!-- Top State: Cover Note on Disk (Grocery run (Saturday).md) -->
-    <g transform="translate(20, 54)">
-      <rect width="520" height="148" rx="6" fill="#1B1D1B" stroke="#2E322E" stroke-width="1" />
-      <rect x="0" y="0" width="520" height="30" rx="6" fill="#231B1A" />
-      <line x1="0" y1="30" x2="520" y2="30" stroke="#2E322E" stroke-width="1" />
-      <text x="14" y="20" fill="#F24E1E" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="11" font-weight="700">COVER ON DISK</text>
-      <text x="304" y="20" fill="#E4E4E7" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="11" font-weight="700">Grocery run (Saturday).md</text>
-
-      <text x="16" y="56" fill="#F1EFEB" font-family="'Space Grotesk', system-ui, sans-serif" font-size="16" font-weight="700">Grocery run (Saturday)</text>
-      <text x="16" y="82" fill="#A1A1AA" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="12">- 2x oat milk (barista blend), sourdough loaf, salted butter</text>
-      <text x="16" y="103" fill="#A1A1AA" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="12">- cherry tomatoes, fresh garlic, 5kg basmati rice</text>
-      <text x="16" y="124" fill="#71717A" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="11">frontmatter: draft_cache (AES-256-GCM + absorbed images)</text>
-    </g>
-
-    <!-- Middle Transformation Bridge: ;;•••• Inline Trigger -->
-    <g transform="translate(20, 214)">
-      <line x1="260" y1="-10" x2="260" y2="46" stroke="#107A4D" stroke-width="1.5" stroke-dasharray="3 3" />
-      <rect x="116" y="2" width="288" height="32" rx="16" fill="#0F291E" stroke="#107A4D" stroke-width="1.5" />
-      <text x="138" y="22" fill="#34D399" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="12.5" font-weight="700">;;••••</text>
-      <text x="196" y="22" fill="#A7F3D0" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="11" font-weight="700">INLINE UNLOCK IN RAM -&gt;</text>
-    </g>
-
-    <!-- Bottom State: Real Note Revealed in RAM (Q4 Acquisition Targets.md) -->
-    <g transform="translate(20, 260)">
-      <rect width="520" height="180" rx="6" fill="#111D17" stroke="#107A4D" stroke-width="1.5" />
-      <rect x="0" y="0" width="520" height="30" rx="6" fill="#0D281C" />
-      <line x1="0" y1="30" x2="520" y2="30" stroke="#107A4D" stroke-width="1" />
-      <text x="14" y="20" fill="#34D399" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="11" font-weight="700">REVEALED IN RAM</text>
-      <text x="304" y="20" fill="#ECFDF5" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="11" font-weight="700">Q4 Acquisition Targets.md</text>
-
-      <text x="16" y="56" fill="#ECFDF5" font-family="'Space Grotesk', system-ui, sans-serif" font-size="16" font-weight="700">Q4 Acquisition Targets.md</text>
-      <text x="16" y="82" fill="#D1FAE5" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="12">+ Target A (Project Atlas): $42M all-cash LOI signed</text>
-      <text x="16" y="103" fill="#D1FAE5" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="12">+ Escrow Shard #2 (Zurich HSM): fp 9F8A-441C-09B2</text>
-
-      <rect x="16" y="118" width="488" height="46" rx="4" fill="#0B1611" stroke="#107A4D" stroke-dasharray="4 3" stroke-width="1" />
-      <text x="28" y="138" fill="#34D399" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="11" font-weight="700">![[deal-topology.png]] · RENDERED FROM RAM BLOB</text>
-      <text x="28" y="154" fill="#6EE7B7" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="10.5">Auto-masks to Grocery run (Saturday).md on 60s idle or blur</text>
-    </g>
-  </g>
-
-  <!-- Bottom Architectural Bar -->
-  <rect x="17" y="569" width="1166" height="44" fill="#F7F5F0" />
-  <text x="48" y="595" fill="#18181B" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="11.5" font-weight="700">Grocery run (Saturday).md   -&gt;   ;;••••   -&gt;   Q4 Acquisition Targets.md</text>
-  <text x="965" y="595" fill="#107A4D" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="11.5" font-weight="700">[ MIT · 121 UNIT TESTS ]</text>
+  <!-- Subtle Lower-Left Swiss Label in the Isometric Band -->
+  <text x="68" y="424" fill="#6B6D76" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" font-weight="600" letter-spacing="0.06em">AES-256-GCM + ARGON2ID</text>
+  <text x="68" y="448" fill="#565860" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13">135 tok/s local GPU covers</text>
+  <text x="68" y="556" fill="#107A4D" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" font-weight="600">[ LOCAL-FIRST OBSIDIAN PLUGIN ]</text>
 </svg>

@@ -54,8 +54,8 @@ Stop typing for 60 seconds, switch tabs, `Alt+Tab` to another window, lock your 
 ### Build & Install from Source
 
 ```bash
-git clone https://github.com/farizanjum/vener.git
-cd vener
+git clone https://github.com/farizanjum/veener.git
+cd veener
 npm install
 npm run build
 

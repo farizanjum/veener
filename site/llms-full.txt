@@ -139,8 +139,8 @@ Veneer is designed around honest, explicit security boundaries. **Veneer protect
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/fariz/deocy-text-plugin-obsidian.git
-cd deocy-text-plugin-obsidian
+git clone https://github.com/farizanjum/veener.git
+cd veener
 
 # 2. Install dependencies
 npm install

@@ -1,188 +1,185 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" fill="none">
   <defs>
-    <!-- Greptile Warm Stone Dotted Grid Pattern -->
-    <pattern id="greptile-dots" width="20" height="20" patternUnits="userSpaceOnUse">
-      <circle cx="2" cy="2" r="1.15" fill="#D6D6D6" />
+    <!-- Subtle 20px Swiss Dotted Grid -->
+    <pattern id="swiss-dots-banner" width="20" height="20" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1" fill="#D5D3CA" />
     </pattern>
-    <!-- Subtle 2-3% luminance shift for the ip-as-logo Chameleon mark -->
-    <linearGradient id="chameleon-cream" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#F6F4F0" />
-      <stop offset="100%" stop-color="#F1EFEB" />
-    </linearGradient>
-    <clipPath id="chameleon-badge-clip">
-      <rect x="0" y="0" width="56" height="56" rx="10" />
-    </clipPath>
+
+    <!-- Subtle Shadow for Sleek Obsidian Window -->
+    <filter id="obs-shadow" x="-6%" y="-6%" width="112%" height="116%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#141413" flood-opacity="0.16" />
+    </filter>
+
+    <!-- Mint #20E6A1 + Registration Cross -->
+    <g id="reg-cross-banner">
+      <line x1="-6" y1="0" x2="6" y2="0" stroke="#20E6A1" stroke-width="1.5" />
+      <line x1="0" y1="-6" x2="0" y2="6" stroke="#20E6A1" stroke-width="1.5" />
+    </g>
   </defs>
 
-  <!-- 1. Warm Stone Canvas (#F1EFEB) + Subtle Dotted Grid -->
-  <rect width="1280" height="640" fill="#F1EFEB" />
-  <rect width="1280" height="640" fill="url(#greptile-dots)" />
+  <!-- Warm Stone Canvas (#EFEFEA) + 20px Dot Grid -->
+  <rect width="1280" height="640" fill="#EFEFEA" />
+  <rect width="1280" height="640" fill="url(#swiss-dots-banner)" />
 
-  <!-- Outer 1px Solid #CCCCCC Architectural Frame -->
-  <rect x="0.5" y="0.5" width="1279" height="639" stroke="#CCCCCC" stroke-width="1" />
+  <!-- Outer Swiss Frame (x=32, y=32, width=1216, height=576 -> x=32..1248, y=32..608) -->
+  <rect x="32" y="32" width="1216" height="576" fill="#F1EFEB" fill-opacity="0.72" stroke="#CFCBC2" stroke-width="1" />
 
-  <!-- Top Announcement Strip (y: 0 -> 48) -->
-  <rect x="1" y="1" width="1278" height="47" fill="#F7F5F0" />
-  <line x1="0" y1="48.5" x2="1280" y2="48.5" stroke="#CCCCCC" stroke-width="1" />
-  <line x1="600.5" y1="48" x2="600.5" y2="592" stroke="#CCCCCC" stroke-width="1" />
-  <line x1="0" y1="592.5" x2="1280" y2="592.5" stroke="#CCCCCC" stroke-width="1" />
+  <!-- Right Column Subtle Warm Surface -->
+  <rect x="660" y="32.5" width="587.5" height="575" fill="#EAE7DF" fill-opacity="0.45" />
 
-  <!-- Top Strip Left: Bracketed Tag -->
-  <rect x="24" y="14" width="10" height="10" fill="#107A4D" />
-  <text x="44" y="29" fill="#18181B" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="700" letter-spacing="0.06em">[ VENEER v0.1 · ON-DEVICE PLAUSIBLE DENIABILITY FOR OBSIDIAN ]</text>
+  <!-- Bottom 3 Swiss Cells Background in Left Column (y=536..608) -->
+  <rect x="32.5" y="536" width="627.5" height="71.5" fill="#F8F7F3" />
 
-  <!-- Top Strip Right: Telemetry Status -->
-  <text x="842" y="29" fill="#6A6A6A" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" font-weight="700" letter-spacing="0.04em">[ AES-256-GCM · ARGON2ID · 135.5 TOK/S VULKAN ]</text>
+  <!-- Structural 1px solid #CFCBC2 Swiss Grid Lines -->
+  <!-- Center Vertical Divider (x=660) -->
+  <line x1="660" y1="32" x2="660" y2="608" stroke="#CFCBC2" stroke-width="1" />
+  <!-- Left Column Bottom Cells Top Divider (y=536) -->
+  <line x1="32" y1="536" x2="660" y2="536" stroke="#CFCBC2" stroke-width="1" />
+  <!-- Left Column Bottom 3 Cells Vertical Dividers (x=241, x=451) -->
+  <line x1="241" y1="536" x2="241" y2="608" stroke="#CFCBC2" stroke-width="1" />
+  <line x1="451" y1="536" x2="451" y2="608" stroke="#CFCBC2" stroke-width="1" />
 
-  <!-- ================= LEFT COLUMN: GREPTILE EDITORIAL HERO (x: 0 -> 600) ================= -->
-  <g transform="translate(44, 84)">
-    <!-- Cute ip-as-logo Chameleon Mascot Badge + Eyebrow Label -->
-    <g transform="translate(0, 0)">
-      <g clip-path="url(#chameleon-badge-clip)">
-        <rect x="0" y="0" width="56" height="56" fill="#107A4D" />
-        <!-- Chameleon emerging from lower-right corner -->
-        <path d="M 58 58 L 14 58 C 6 58, 2 52, 2 44 C 2 36, 8 31, 15 31 C 21 31, 26 35, 26 41 C 26 45, 22 48, 18 48 C 14 48, 12 45, 12 42 C 12 39, 14 37, 17 37 C 19 37, 20 39, 20 41 C 20 43, 18 44, 16 44 L 22 50 C 20 46, 20 41, 20 36 C 20 26, 26 19, 33 17 C 35 11, 39 7, 45 7 C 51 7, 55 11, 57 18 L 58 22 Z" fill="url(#chameleon-cream)" />
-        <circle cx="16" cy="42" r="6.5" fill="#107A4D" />
-        <circle cx="17" cy="42" r="3.2" fill="url(#chameleon-cream)" />
-        <!-- Belly/cheek patch in #141A17 -->
-        <path d="M 35 58 C 35 47, 41 41, 50 41 L 58 41 L 58 58 Z" fill="#141A17" />
-        <!-- Two lovable eyes + catchlights -->
-        <circle cx="30" cy="30" r="5" fill="#141A17" />
-        <circle cx="28.5" cy="28.5" r="1.8" fill="#F1EFEB" />
-        <circle cx="45" cy="30" r="5" fill="#141A17" />
-        <circle cx="43.5" cy="28.5" r="1.8" fill="#F1EFEB" />
-        <!-- Tiny happy smile -->
-        <path d="M 35 36.5 Q 37.5 39 40 36.5" stroke="#141A17" stroke-width="2" stroke-linecap="round" fill="none" />
-      </g>
-      <rect x="0.5" y="0.5" width="55" height="55" rx="9.5" stroke="#18181B" stroke-opacity="0.18" stroke-width="1" />
+  <!-- Mint #20E6A1 + Registration Crosses at All Intersections -->
+  <use href="#reg-cross-banner" x="32" y="32" />
+  <use href="#reg-cross-banner" x="660" y="32" />
+  <use href="#reg-cross-banner" x="1248" y="32" />
+  <use href="#reg-cross-banner" x="32" y="536" />
+  <use href="#reg-cross-banner" x="241" y="536" />
+  <use href="#reg-cross-banner" x="451" y="536" />
+  <use href="#reg-cross-banner" x="660" y="536" />
+  <use href="#reg-cross-banner" x="32" y="608" />
+  <use href="#reg-cross-banner" x="241" y="608" />
+  <use href="#reg-cross-banner" x="451" y="608" />
+  <use href="#reg-cross-banner" x="660" y="608" />
+  <use href="#reg-cross-banner" x="1248" y="608" />
 
-      <text x="72" y="24" fill="#107A4D" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="700" letter-spacing="0.06em">[ CHAMELEON IP · DENIABLE VAULT LAYER ]</text>
-      <text x="72" y="45" fill="#6A6A6A" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12">Zero lock screens. Zero modals. Zero plaintext on disk.</text>
-    </g>
-
-    <!-- Massive Tightly-Tracked Display Headline (-0.04em) -->
-    <text x="0" y="128" fill="#18181B" font-family="'Space Grotesk', 'Syne', system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="60" font-weight="700" letter-spacing="-0.04em">Notes that look</text>
-    <text x="0" y="190" fill="#18181B" font-family="'Space Grotesk', 'Syne', system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="60" font-weight="700" letter-spacing="-0.04em">like <tspan fill="#107A4D">ordinary notes.</tspan></text>
-
-    <!-- Monospace Subcopy ("Prose that reads like code") -->
-    <text x="0" y="236" fill="#2A2A2A" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13.5">
-      <tspan x="0" dy="0">Hide sensitive Markdown, note titles, and vault images</tspan>
-      <tspan x="0" dy="22">behind AI-generated cover notes. Type </tspan>
-      <tspan fill="#107A4D" font-weight="700">;;passphrase</tspan>
-      <tspan> at any</tspan>
-      <tspan x="0" dy="22">line start to swap both title and body in RAM.</tspan>
-    </text>
-
-    <!-- 4 Architectural Category Pills in Greptile Signature Palette -->
-    <g transform="translate(0, 308)">
-      <!-- Pill 1: Forest Green (#107A4D) -->
-      <g transform="translate(0, 0)">
-        <rect width="248" height="58" fill="#F7F5F0" stroke="#CCCCCC" stroke-width="1" />
-        <rect x="0" y="0" width="5" height="58" fill="#107A4D" />
-        <text x="16" y="23" fill="#107A4D" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="10.5" font-weight="700" letter-spacing="0.06em">[ 01 · INLINE UNLOCK ]</text>
-        <text x="16" y="43" fill="#18181B" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="12.5" font-weight="700">;; Blind Capture Filter</text>
-      </g>
-
-      <!-- Pill 2: Ink (#18181B) -->
-      <g transform="translate(260, 0)">
-        <rect width="252" height="58" fill="#F7F5F0" stroke="#CCCCCC" stroke-width="1" />
-        <rect x="0" y="0" width="5" height="58" fill="#18181B" />
-        <text x="16" y="23" fill="#18181B" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="10.5" font-weight="700" letter-spacing="0.06em">[ 02 · ENVELOPE CRYPTO ]</text>
-        <text x="16" y="43" fill="#18181B" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="12.5" font-weight="700">Argon2id + AES-256-GCM</text>
-      </g>
-
-      <!-- Pill 3: Gold (#CC9100) -->
-      <g transform="translate(0, 70)">
-        <rect width="248" height="58" fill="#F7F5F0" stroke="#CCCCCC" stroke-width="1" />
-        <rect x="0" y="0" width="5" height="58" fill="#CC9100" />
-        <text x="16" y="23" fill="#CC9100" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="10.5" font-weight="700" letter-spacing="0.06em">[ 03 · LOCAL VULKAN LLM ]</text>
-        <text x="16" y="43" fill="#18181B" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="12.5" font-weight="700">135.5 tok/s AI Decoys</text>
-      </g>
-
-      <!-- Pill 4: Red-Orange (#F24E1E) -->
-      <g transform="translate(260, 70)">
-        <rect width="252" height="58" fill="#F7F5F0" stroke="#CCCCCC" stroke-width="1" />
-        <rect x="0" y="0" width="5" height="58" fill="#F24E1E" />
-        <text x="16" y="23" fill="#F24E1E" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="10.5" font-weight="700" letter-spacing="0.06em">[ 04 · DURESS SHRED ]</text>
-        <text x="16" y="43" fill="#18181B" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="12.5" font-weight="700">;;!PIN + Image Absorption</text>
-      </g>
-    </g>
+  <!-- ================= LEFT COLUMN (x=32..660, Generous Whitespace) ================= -->
+  <!-- Brand Lockup: Chameleon Icon Mark (48x48) + VENEER (28px bold #141413) -->
+  <g transform="translate(80, 92)">
+    <svg width="48" height="48" viewBox="0 0 64 64" fill="none">
+      <rect width="64" height="64" rx="14" fill="#107A4D" />
+      <path d="M64 64H16C7 64 2 57 2 48C2 39 9 33 17 33C24 33 29 38 29 45C29 50 25 53 20 53C16 53 13 50 13 46C13 43 16 41 19 41L25 55C23 50 22 45 22 39C22 28 29 20 38 18C40 11 45 7 52 7C58 7 63 12 64 19V64Z" fill="#F1EFEB" />
+      <circle cx="18" cy="46" r="7" fill="#107A4D" />
+      <circle cx="19" cy="46" r="3.5" fill="#F1EFEB" />
+      <path d="M39 64C39 51 46 45 57 45H64V64H39Z" fill="#141413" />
+      <circle cx="34" cy="34" r="5.8" fill="#141413" />
+      <circle cx="32" cy="32" r="2" fill="#F1EFEB" />
+      <circle cx="51" cy="34" r="5.8" fill="#141413" />
+      <circle cx="49" cy="32" r="2" fill="#F1EFEB" />
+    </svg>
+    <text x="64" y="34" fill="#141413" font-family="'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="28" font-weight="700" letter-spacing="-0.04em">VENEER</text>
   </g>
 
-  <!-- ================= RIGHT COLUMN: DARK #1E201E TERMINAL / EDITOR DIFF CARD (x: 600 -> 1280) ================= -->
-  <g transform="translate(636, 76)">
-    <!-- Outer Dark Terminal Card -->
-    <rect width="608" height="488" fill="#1E201E" stroke="#18181B" stroke-width="1.5" />
-
-    <!-- Terminal Titlebar -->
-    <rect x="1" y="1" width="606" height="40" fill="#141614" />
-    <line x1="0" y1="41" x2="608" y2="41" stroke="#333633" stroke-width="1" />
-    <rect x="16" y="15" width="10" height="10" fill="#F24E1E" />
-    <rect x="32" y="15" width="10" height="10" fill="#CC9100" />
-    <rect x="48" y="15" width="10" height="10" fill="#107A4D" />
-    <text x="72" y="25" fill="#F1EFEB" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="11.5" font-weight="700">[ OBSIDIAN DIFF · DISK COVER VS RAM UNLOCK ]</text>
-
-    <!-- Live SMIL-Pulsing ;;•••••• Status Indicator in Header -->
-    <rect x="438" y="9" width="156" height="24" fill="#10281E" stroke="#107A4D" stroke-width="1" />
-    <text x="448" y="25" fill="#34D399" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="11" font-weight="700">;;••••••</text>
-    <rect x="506" y="14" width="2" height="13" fill="#34D399">
-      <animate attributeName="opacity" values="1;0.15;1" dur="1.1s" repeatCount="indefinite" />
-    </rect>
-    <text x="516" y="25" fill="#A7F3D0" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="10">[SWALLOWED]</text>
-
-    <!-- SECTION A: 01 - LOCKED (DISK & SCREEN) -->
-    <g transform="translate(20, 56)">
-      <rect width="568" height="176" fill="#181A18" stroke="#333633" stroke-width="1" />
-      <rect x="0" y="0" width="568" height="32" fill="#261917" />
-      <line x1="0" y1="32" x2="568" y2="32" stroke="#333633" stroke-width="1" />
-      <text x="14" y="21" fill="#F24E1E" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="11.5" font-weight="700">01 - LOCKED (DISK &amp; SCREEN)</text>
-      <text x="348" y="21" fill="#A1A1AA" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="11">FILE: Grocery run (Saturday).md</text>
-
-      <!-- Decoy Note Title + Body -->
-      <text x="16" y="58" fill="#F1EFEB" font-family="'Space Grotesk', system-ui, sans-serif" font-size="17" font-weight="700">Grocery run (Saturday)</text>
-      <rect x="412" y="43" width="140" height="20" fill="#27272A" />
-      <text x="422" y="57" fill="#A1A1AA" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="10">[ COVER TITLE ON DISK ]</text>
-
-      <text x="16" y="84" fill="#A1A1AA" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="12">- 2x oat milk (barista blend), sourdough loaf, salted butter</text>
-      <text x="16" y="106" fill="#A1A1AA" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="12">- cherry tomatoes, fresh garlic, 5kg basmati rice</text>
-      <text x="16" y="128" fill="#A1A1AA" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="12">- check hardware store for m4 screws before 5pm</text>
-
-      <rect x="16" y="142" width="536" height="22" fill="#141614" stroke="#2D312D" stroke-width="1" />
-      <text x="26" y="157" fill="#71717A" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="10.5">frontmatter: draft_cache (4096B padded AES-256-GCM + absorbed images)</text>
-    </g>
-
-    <!-- SECTION B: 01 + UNLOCKED (RAM ONLY VIA ;;) -->
-    <g transform="translate(20, 248)">
-      <rect width="568" height="220" fill="#141F1A" stroke="#107A4D" stroke-width="1.5" />
-      <rect x="0" y="0" width="568" height="32" fill="#0F2E20" />
-      <line x1="0" y1="32" x2="568" y2="32" stroke="#107A4D" stroke-width="1" />
-      <text x="14" y="21" fill="#34D399" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="11.5" font-weight="700">01 + UNLOCKED (RAM ONLY VIA ;;)</text>
-      <text x="332" y="21" fill="#A7F3D0" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="11">ACTIVE: Q4 Acquisition Targets.md</text>
-
-      <!-- Swapped Real Title + Badge -->
-      <text x="16" y="58" fill="#ECFDF5" font-family="'Space Grotesk', system-ui, sans-serif" font-size="17" font-weight="700">Q4 Acquisition Targets (Confidential)</text>
-      <rect x="380" y="43" width="172" height="20" fill="#107A4D" />
-      <text x="389" y="57" fill="#F1EFEB" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="10" font-weight="700">[ REAL TITLE DECRYPTED ]</text>
-
-      <!-- Swapped Real Body -->
-      <text x="16" y="84" fill="#D1FAE5" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="12">+ Target A (Project Atlas): $42M all-cash LOI signed; diligence open</text>
-      <text x="16" y="106" fill="#D1FAE5" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="12">+ Escrow Shard #2 (Zurich HSM): fp 9F8A-441C-09B2  |  duress ;;!9911</text>
-
-      <!-- Encrypted Inline Image Badge -->
-      <rect x="16" y="122" width="536" height="58" fill="#0B1913" stroke="#107A4D" stroke-dasharray="4 3" stroke-width="1" />
-      <rect x="28" y="132" width="84" height="38" fill="#10281E" stroke="#107A4D" stroke-width="1" />
-      <text x="40" y="155" fill="#34D399" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="10" font-weight="700">BLOB:RAM</text>
-      <text x="126" y="146" fill="#ECFDF5" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="11.5" font-weight="700">![[zero-knowledge-topology.png]] · DECRYPTED IN MEMORY</text>
-      <text x="126" y="166" fill="#6EE7B7" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="10.5">Raw .png unlinked from vault folder; rendered via RAM blob: URL</text>
-
-      <!-- Footer bar inside Unlocked Card -->
-      <text x="16" y="203" fill="#6EE7B7" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="10.5">[ AUTO-MASK: 60S IDLE / ALT+TAB BLUR / CTRL+SHIFT+X ]</text>
-      <text x="436" y="203" fill="#34D399" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="10.5" font-weight="700">STATE: (real)</text>
-    </g>
+  <!-- Headline (58px bold, -0.04em tracking, #141413 & #107A4D) -->
+  <g transform="translate(80, 244)">
+    <text x="0" y="0" fill="#141413" font-family="'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="58" font-weight="700" letter-spacing="-0.04em">Notes that look like</text>
+    <text x="0" y="66" fill="#107A4D" font-family="'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="58" font-weight="700" letter-spacing="-0.04em">ordinary notes.</text>
   </g>
 
-  <!-- Bottom Architectural Bar (y: 592 -> 640) -->
-  <rect x="1" y="593" width="1278" height="46" fill="#F7F5F0" />
-  <text x="44" y="620" fill="#18181B" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="11.5" font-weight="700">STEP 01: TYPE ;;DEMO INLINE   -&gt;   STEP 02: SWAPS TITLE &amp; BODY IN RAM   -&gt;   STEP 03: BLUR OR CTRL+SHIFT+X SNAPS BACK TO COVER</text>
-  <text x="1088" y="620" fill="#107A4D" font-family="'Space Mono', 'JetBrains Mono', ui-monospace, monospace" font-size="11.5" font-weight="700">[ MIT · 121 TESTS ]</text>
+  <!-- Subtitle (18px monospace, #565860) -->
+  <g transform="translate(80, 376)">
+    <text x="0" y="0" fill="#565860" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="18" font-weight="500">Real notes, titles, and images encrypted in RAM.</text>
+    <text x="0" y="32" fill="#565860" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="18" font-weight="500">Boring cover text on disk.</text>
+  </g>
+
+  <!-- Bottom of Left Column: 3 Clean Swiss Cells -->
+  <g font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" font-weight="600" fill="#141413">
+    <!-- Cell 1 (x=32..241) -->
+    <circle cx="52" cy="572" r="3.5" fill="#107A4D" />
+    <text x="64" y="576">AES-256-GCM + Argon2id</text>
+
+    <!-- Cell 2 (x=241..451) -->
+    <circle cx="265" cy="572" r="3.5" fill="#107A4D" />
+    <text x="277" y="576">;; Blind Unlock</text>
+
+    <!-- Cell 3 (x=451..660) -->
+    <circle cx="473" cy="572" r="3.5" fill="#107A4D" />
+    <text x="485" y="576">135 tok/s Local GPU</text>
+  </g>
+
+  <!-- ================= RIGHT COLUMN (x=660..1248, Sleek Dark #141514 Obsidian Window) ================= -->
+  <g transform="translate(698, 76)">
+    <!-- Outer Sleek Dark #141514 Obsidian Window (512x488, rx=10) -->
+    <rect width="512" height="488" rx="10" fill="#141514" stroke="#2A2D2A" stroke-width="1" filter="url(#obs-shadow)" />
+
+    <!-- Top Tab Bar (height: 44px) -->
+    <path d="M 1 10 Q 1 1 10 1 L 502 1 Q 511 1 511 10 L 511 44 L 1 44 Z" fill="#101210" />
+    <line x1="0" y1="44" x2="512" y2="44" stroke="#2A2D2A" stroke-width="1" />
+
+    <!-- Window Dots -->
+    <circle cx="20" cy="23" r="4.5" fill="#E5534B" fill-opacity="0.8" />
+    <circle cx="34" cy="23" r="4.5" fill="#D29922" fill-opacity="0.8" />
+    <circle cx="48" cy="23" r="4.5" fill="#2EA043" fill-opacity="0.8" />
+
+    <!-- Tab 1 (Muted): Grocery run (Saturday).md -->
+    <g transform="translate(68, 10)">
+      <path d="M 0 34 L 0 7 Q 0 0 7 0 L 188 0 Q 195 0 195 7 L 195 34 Z" fill="#171917" />
+      <circle cx="14" cy="17" r="3" fill="#5E5D58" />
+      <text x="24" y="21" fill="#8E8D86" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11">Grocery run (Saturday).md</text>
+    </g>
+
+    <!-- Tab 2 (Active): Q4 Acquisition Targets.md with #20E6A1 green dot -->
+    <g transform="translate(268, 10)">
+      <path d="M 0 34 L 0 7 Q 0 0 7 0 L 210 0 Q 217 0 217 7 L 217 34 Z" fill="#141514" stroke="#2A2D2A" stroke-width="1" />
+      <line x1="1" y1="34" x2="216" y2="34" stroke="#141514" stroke-width="2" />
+      <circle cx="14" cy="17" r="3.5" fill="#20E6A1" />
+      <text x="25" y="21" fill="#ECEAE4" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="600">Q4 Acquisition Targets.md</text>
+    </g>
+
+    <!-- Note Header: Title + Subtle Green Unlocked in RAM Pill -->
+    <g transform="translate(28, 78)">
+      <text x="0" y="18" fill="#ECEAE4" font-family="'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="22" font-weight="600" letter-spacing="-0.03em">Q4 Acquisition Targets</text>
+
+      <rect x="336" y="0" width="120" height="24" rx="12" fill="#107A4D" fill-opacity="0.2" stroke="#107A4D" stroke-opacity="0.6" stroke-width="1" />
+      <circle cx="349" cy="12" r="3" fill="#20E6A1" />
+      <text x="358" y="16" fill="#6CE9A6" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10.5" font-weight="600">Unlocked in RAM</text>
+    </g>
+
+    <!-- 4 Clean Lines of Decrypted Note Text -->
+    <g transform="translate(28, 134)" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" fill="#D2D0C8">
+      <text x="0" y="0" fill="#ECEAE4" font-weight="600">Target A: Horizon Labs ($14.2M cash + retention pool)</text>
+      <text x="0" y="28">- term sheet signed by both co-founders on Friday</text>
+      <text x="0" y="56">- key risk: soc2 renewal pending before nov 18 close</text>
+      <text x="0" y="84">- keep legal counsel on separate signal thread</text>
+    </g>
+
+    <!-- Sleek Inline system-topology.png (RAM blob:) Card -->
+    <g transform="translate(28, 250)">
+      <rect width="456" height="156" rx="8" fill="#181B18" stroke="#107A4D" stroke-opacity="0.45" stroke-width="1" />
+
+      <!-- Card Top Meta Row -->
+      <text x="16" y="24" fill="#6CE9A6" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="600">system-topology.png (RAM blob:)</text>
+      <text x="440" y="24" text-anchor="end" fill="#8E8D86" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10.5">blob:obsidian.md/7c9e-ram</text>
+      <line x1="0" y1="36" x2="456" y2="36" stroke="#262A26" stroke-width="1" />
+
+      <!-- Minimal 3-Node Topology Schematic Inside Image Card -->
+      <g transform="translate(16, 52)">
+        <rect x="0" y="0" width="128" height="72" rx="6" fill="#141614" stroke="#107A4D" stroke-width="1" />
+        <text x="12" y="30" fill="#ECEAE4" font-family="'Geist Mono', ui-monospace, monospace" font-size="10.5" font-weight="600">RAM Blob URL</text>
+        <text x="12" y="48" fill="#20E6A1" font-family="'Geist Mono', ui-monospace, monospace" font-size="10">Zero disk file</text>
+
+        <line x1="128" y1="36" x2="148" y2="36" stroke="#5E5D58" stroke-width="1.5" />
+
+        <rect x="148" y="0" width="128" height="72" rx="6" fill="#141614" stroke="#2A2D2A" stroke-width="1" />
+        <text x="160" y="30" fill="#ECEAE4" font-family="'Geist Mono', ui-monospace, monospace" font-size="10.5" font-weight="600">AES-256-GCM</text>
+        <text x="160" y="48" fill="#8E8D86" font-family="'Geist Mono', ui-monospace, monospace" font-size="10">4 KB padded</text>
+
+        <line x1="276" y1="36" x2="296" y2="36" stroke="#5E5D58" stroke-width="1.5" />
+
+        <rect x="296" y="0" width="128" height="72" rx="6" fill="#141614" stroke="#2A2D2A" stroke-width="1" />
+        <text x="308" y="30" fill="#ECEAE4" font-family="'Geist Mono', ui-monospace, monospace" font-size="10.5" font-weight="600">draft_cache</text>
+        <text x="308" y="48" fill="#8E8D86" font-family="'Geist Mono', ui-monospace, monospace" font-size="10">YAML envelope</text>
+      </g>
+    </g>
+
+    <!-- Bottom Status Bar (height: 36px, y=452..488) -->
+    <path d="M 1 452 L 511 452 L 511 478 Q 511 487 502 487 L 10 487 Q 1 487 1 478 Z" fill="#101210" />
+    <line x1="0" y1="452" x2="512" y2="452" stroke="#2A2D2A" stroke-width="1" />
+
+    <circle cx="20" cy="470" r="3.5" fill="#20E6A1" />
+    <text x="30" y="474" fill="#ECEAE4" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="500">Veneer: Real (RAM only)</text>
+
+    <text x="348" y="474" fill="#20E6A1" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="700" letter-spacing="0.12em">&#x2022;&#x2022;&#x2022;&#x2022;</text>
+    <text x="492" y="474" text-anchor="end" fill="#8E8D86" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11">34 words | 6 lines</text>
+  </g>
 </svg>
