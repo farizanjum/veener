@@ -169,6 +169,10 @@ export class SessionManager {
 		this.removeFromPath(session.file.path, session);
 	}
 
+	/**
+	 * Immediately zeroes keys, cancels timers/in-flight locks, and detaches a session
+	 * without re-encrypting or writing decoy content back to disk (used when unprotecting).
+	 */
 	discardAndDetach(view: MarkdownView): void {
 		const session = this.byView.get(view);
 		if (!session) return;
@@ -298,6 +302,10 @@ export class SessionManager {
 		}
 	}
 
+	/**
+	 * Coalesces concurrent mask triggers, snapshots the DEK and editor state,
+	 * re-encrypts the latest plaintext to disk, zeroes key material, and restores the decoy cover.
+	 */
 	lock(session: ViewSession, reason: string): Promise<void> {
 		if (session.lockingPromise !== null) return session.lockingPromise;
 		if (session.state !== "unlocked") return Promise.resolve();
@@ -310,15 +318,22 @@ export class SessionManager {
 		let currentText = sameFile ? session.view.editor.getValue() : "";
 		let currentTitle = sameFile ? this.readEditedInlineTitle(session) : session.realTitle;
 		const dek = session.dek ? new Uint8Array(session.dek) : null;
-		const run = (async (): Promise<void> => {
+		let resolveLock!: () => void;
+		const lockingPromise = new Promise<void>((resolve) => {
+			resolveLock = resolve;
+		});
+		session.lockingPromise = lockingPromise;
+		void (async (): Promise<void> => {
 			try {
-				if (dek && sameFile) {
+				if (dek && sameFile && session.lockingPromise === lockingPromise) {
 					await this.absorbNewEditorImages(session, currentText, dek);
+					if (session.lockingPromise !== lockingPromise) return;
 					if (session.view.file === session.file && session.state === "unlocked") {
 						const postAbsorbText = session.view.editor.getValue();
 						if (postAbsorbText !== currentText && postAbsorbText !== session.decoyBody) {
 							currentText = postAbsorbText;
 							await this.absorbNewEditorImages(session, currentText, dek);
+							if (session.lockingPromise !== lockingPromise) return;
 						}
 						currentTitle = this.readEditedInlineTitle(session);
 					}
@@ -330,11 +345,13 @@ export class SessionManager {
 						session.originalPayload.images,
 						session.realTitle,
 					);
+					if (session.lockingPromise !== lockingPromise) return;
 					if (session.view.file === session.file && session.state === "unlocked") {
 						const latestText = session.view.editor.getValue();
 						if (latestText !== currentText && latestText !== session.decoyBody) {
 							currentText = latestText;
 							await this.absorbNewEditorImages(session, currentText, dek);
+							if (session.lockingPromise !== lockingPromise) return;
 							currentTitle = this.readEditedInlineTitle(session);
 							session.realTitle = currentTitle;
 							session.pendingPayload = await reencryptRealText(
@@ -344,6 +361,7 @@ export class SessionManager {
 								session.originalPayload.images,
 								session.realTitle,
 							);
+							if (session.lockingPromise !== lockingPromise) return;
 						}
 					}
 					await this.app.vault.modify(
@@ -357,27 +375,29 @@ export class SessionManager {
 				}
 			} finally {
 				dek?.fill(0);
-				session.dek?.fill(0);
-				session.dek = null;
-				this.revokeImageUrls(session);
-				session.state = "locked";
-				session.lockingPromise = null;
-				session.pendingPayload = null;
-				session.capture.cancel();
-				if (session.reencryptTimer !== null) {
-					clearTimeout(session.reencryptTimer);
-					session.reencryptTimer = null;
+				if (session.lockingPromise === lockingPromise) {
+					session.dek?.fill(0);
+					session.dek = null;
+					this.revokeImageUrls(session);
+					session.state = "locked";
+					session.lockingPromise = null;
+					session.pendingPayload = null;
+					session.capture.cancel();
+					if (session.reencryptTimer !== null) {
+						clearTimeout(session.reencryptTimer);
+						session.reencryptTimer = null;
+					}
+					if (sameFile && session.view.file === session.file) {
+						session.view.setViewData(session.decoyBody, true);
+						this.applyDisplayedTitle(session, session.file.basename);
+					}
+					session.realTitle = null;
+					this.hooks.onLocked(session);
 				}
-				if (sameFile && session.view.file === session.file) {
-					session.view.setViewData(session.decoyBody, true);
-					this.applyDisplayedTitle(session, session.file.basename);
-				}
-				session.realTitle = null;
-				this.hooks.onLocked(session);
+				resolveLock();
 			}
 		})();
-		session.lockingPromise = run;
-		return run;
+		return lockingPromise;
 	}
 
 	async lockAll(reason: string): Promise<void> {

@@ -378,4 +378,33 @@ describe("SessionManager race conditions (Issue #2)", () => {
 		expect(sessions.get(harness.view)).toBeNull();
 		expect(sessions.get(secondPane.view)).toBeNull();
 	});
+
+	it("aborts in-flight lock() disk write if discardAndDetach or hardKillAll runs mid-lock", async () => {
+		// Given: an unlocked session whose lock() is awaiting image absorption
+		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+		const parsed = parseFileContent(fileContent);
+		if (!parsed) throw new Error("Expected parsed payload");
+
+		const harness = createFakeHarness(DECOY);
+		const sessions = new SessionManager(
+			harness.app,
+			harness.hooks,
+			() => ";;",
+			() => null,
+		);
+		const session = sessions.attachFromLoad(harness.view, harness.file, parsed);
+		await sessions.unlock(session, PASSWORD);
+		harness.setEditorText(`${EDITED_REAL}\n![[Pasted image.png]]`);
+
+		// When: discardAndDetach runs while lock() is awaiting readBinary
+		harness.setImageLookupDelay(20, () => {
+			sessions.discardAndDetach(harness.view);
+		});
+		await sessions.lock(session, "detach-race");
+
+		// Then: the in-flight lock() aborted before calling vault.modify
+		expect(harness.modifyCalls).toHaveLength(0);
+		expect(session.lockingPromise).toBeNull();
+		expect(session.dek).toBeNull();
+	});
 });
