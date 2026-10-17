@@ -50,6 +50,9 @@ export interface StagedVaultImages {
 	filesToDelete: TFile[];
 }
 
+/**
+ * Reads local vault images referenced in `markdown` without deleting their source files.
+ */
 export async function readLinkedVaultImages(
 	app: App,
 	sourcePath: string,
@@ -86,6 +89,9 @@ export async function readLinkedVaultImages(
 	return { absorbed, filesToDelete };
 }
 
+/**
+ * Deletes staged vault image files after their encrypted payload has been persisted to disk.
+ */
 export async function deleteStagedVaultImages(
 	app: App,
 	filesToDelete: readonly TFile[],
@@ -99,6 +105,9 @@ export async function deleteStagedVaultImages(
 	}
 }
 
+/**
+ * Reads and immediately deletes local vault images referenced in `markdown`.
+ */
 export async function absorbVaultImages(
 	app: App,
 	sourcePath: string,

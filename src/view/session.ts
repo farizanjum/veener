@@ -38,6 +38,7 @@ export interface ViewSession {
 	reencryptTimer: ReturnType<typeof setTimeout> | null;
 	reencryptSeq: number;
 	reencryptPromise: Promise<void> | null;
+	lockingPromise: Promise<void> | null;
 }
 
 export interface SessionHooks {
@@ -115,6 +116,7 @@ export class SessionManager {
 			reencryptTimer: null,
 			reencryptSeq: 0,
 			reencryptPromise: null,
+			lockingPromise: null,
 		};
 		this.byView.set(view, session);
 		this.byPath.set(file.path, session);
@@ -188,6 +190,9 @@ export class SessionManager {
 		return inlineEl?.textContent?.trim() || session.realTitle;
 	}
 
+	/**
+	 * Reads and encrypts any newly linked vault images without deleting source files yet.
+	 */
 	private async stageEditorImages(
 		session: ViewSession,
 		text: string,
@@ -225,6 +230,9 @@ export class SessionManager {
 		};
 	}
 
+	/**
+	 * Deletes staged source image files and refreshes in-memory blob: URLs after disk save.
+	 */
 	private async finalizeStagedImages(
 		session: ViewSession,
 		staged: StagedVaultImages,
@@ -247,12 +255,19 @@ export class SessionManager {
 		const text = session.view.editor.getValue();
 		const result = await this.stageEditorImages(session, text);
 		if (!result || Object.keys(result.staged.absorbed).length === 0) return;
-		if (result.mergedImages !== undefined) {
-			session.originalPayload = {
-				...session.originalPayload,
-				images: result.mergedImages,
-			};
-		}
+		const nextPayload = await reencryptRealText(
+			session.originalPayload,
+			session.dek,
+			text,
+			result.mergedImages,
+			this.readEditedInlineTitle(session),
+		);
+		if (session.state !== "unlocked" || !session.dek) return;
+		const serialized = serializeFile(session.decoyBody, nextPayload);
+		(session.view as unknown as { data?: string }).data = serialized;
+		await this.app.vault.modify(session.file, serialized);
+		session.originalPayload = nextPayload;
+		session.pendingPayload = nextPayload;
 		await this.finalizeStagedImages(session, result.staged);
 	}
 
@@ -290,59 +305,67 @@ export class SessionManager {
 	}
 
 	async lock(session: ViewSession, reason: string): Promise<void> {
+		if (session.lockingPromise) return session.lockingPromise;
 		if (session.state !== "unlocked") return;
-		console.debug(`Veneer: masking note (${reason})`);
-		session.reencryptSeq += 1;
-		if (session.reencryptTimer !== null) {
-			clearTimeout(session.reencryptTimer);
-			session.reencryptTimer = null;
-		}
-		if (session.reencryptPromise !== null) {
-			await session.reencryptPromise;
-		}
-		if (session.state !== "unlocked") return;
-		const sameFile = session.view.file === session.file;
-		try {
-			if (session.dek && sameFile) {
-				const current = session.view.editor.getValue();
-				const currentTitle = this.readEditedInlineTitle(session);
-				const imageStage = await this.stageEditorImages(session, current);
-				const mergedImages = imageStage?.mergedImages ?? session.originalPayload.images;
-				session.realTitle = currentTitle;
-				session.pendingPayload = await reencryptRealText(
-					session.originalPayload,
-					session.dek,
-					current,
-					mergedImages,
-					session.realTitle,
-				);
-				await this.app.vault.modify(
-					session.file,
-					serializeFile(session.decoyBody, session.pendingPayload),
-				);
-				session.originalPayload = session.pendingPayload;
-				if (imageStage && imageStage.staged.filesToDelete.length > 0) {
-					await deleteStagedVaultImages(this.app, imageStage.staged.filesToDelete);
-				}
-			}
-		} finally {
-			session.dek?.fill(0);
-			session.dek = null;
-			this.revokeImageUrls(session);
-			session.state = "locked";
-			session.pendingPayload = null;
-			session.capture.cancel();
+		const runLock = (async () => {
+			console.debug(`Veneer: masking note (${reason})`);
+			session.reencryptSeq += 1;
 			if (session.reencryptTimer !== null) {
 				clearTimeout(session.reencryptTimer);
 				session.reencryptTimer = null;
 			}
-			if (sameFile) {
-				session.view.setViewData(session.decoyBody, true);
-				this.applyDisplayedTitle(session, session.file.basename);
+			if (session.reencryptPromise !== null) {
+				await session.reencryptPromise;
 			}
-			session.realTitle = null;
-			this.hooks.onLocked(session);
-		}
+			if (session.state !== "unlocked") return;
+			const sameFile = session.view.file === session.file;
+			try {
+				if (session.dek && sameFile) {
+					const current = session.view.editor.getValue();
+					const currentTitle = this.readEditedInlineTitle(session);
+					const imageStage = await this.stageEditorImages(session, current);
+					const mergedImages = imageStage?.mergedImages ?? session.originalPayload.images;
+					session.realTitle = currentTitle;
+					session.pendingPayload = await reencryptRealText(
+						session.originalPayload,
+						session.dek,
+						current,
+						mergedImages,
+						session.realTitle,
+					);
+					const serialized = serializeFile(session.decoyBody, session.pendingPayload);
+					(session.view as unknown as { data?: string }).data = serialized;
+					await this.app.vault.modify(session.file, serialized);
+					session.originalPayload = session.pendingPayload;
+					if (imageStage && imageStage.staged.filesToDelete.length > 0) {
+						await deleteStagedVaultImages(this.app, imageStage.staged.filesToDelete);
+					}
+				}
+			} finally {
+				session.dek?.fill(0);
+				session.dek = null;
+				this.revokeImageUrls(session);
+				session.state = "locked";
+				session.pendingPayload = null;
+				session.capture.cancel();
+				if (session.reencryptTimer !== null) {
+					clearTimeout(session.reencryptTimer);
+					session.reencryptTimer = null;
+				}
+				if (sameFile) {
+					session.view.setViewData(session.decoyBody, true);
+					this.applyDisplayedTitle(session, session.file.basename);
+				}
+				session.realTitle = null;
+				this.hooks.onLocked(session);
+			}
+		})().finally(() => {
+			if (session.lockingPromise === runLock) {
+				session.lockingPromise = null;
+			}
+		});
+		session.lockingPromise = runLock;
+		return runLock;
 	}
 
 	async lockAll(reason: string): Promise<void> {
@@ -416,13 +439,20 @@ export class SessionManager {
 						) {
 							return;
 						}
+						const prevPending = session.pendingPayload;
+						const prevTitle = session.realTitle;
 						session.realTitle = snapshotTitle;
-						session.originalPayload = nextPayload;
 						session.pendingPayload = nextPayload;
-						await this.app.vault.modify(
-							session.file,
-							serializeFile(session.decoyBody, nextPayload),
-						);
+						const serialized = serializeFile(session.decoyBody, nextPayload);
+						(session.view as unknown as { data?: string }).data = serialized;
+						try {
+							await this.app.vault.modify(session.file, serialized);
+						} catch (saveError) {
+							session.pendingPayload = prevPending;
+							session.realTitle = prevTitle;
+							throw saveError;
+						}
+						session.originalPayload = nextPayload;
 						await this.finalizeStagedImages(session, imageStage.staged);
 						if (session.state === "unlocked" && session.reencryptSeq === seq) {
 							(session.view as unknown as { requestSave?: () => void }).requestSave?.();

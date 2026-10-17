@@ -20,7 +20,11 @@ import type { LlmRuntime } from "./llm/runtime";
 import { validateDecoy } from "./llm/validate";
 import { DECOY_TEMPLATES, weaveTemplate } from "./decoy/templates";
 import { changePassword, createFile, parseFileContent, serializeFile, unlockPayload } from "./crypto/payload";
-import { absorbVaultImages, restoreVaultImages } from "./crypto/images";
+import {
+	deleteStagedVaultImages,
+	readLinkedVaultImages,
+	restoreVaultImages,
+} from "./crypto/images";
 import { buildUnlockedImageExtension } from "./view/imageWidget";
 import { executeShred, type ShredTarget } from "./shred/duress";
 import { fileRecoveryEnabled } from "./shred/hygiene";
@@ -354,13 +358,13 @@ export default class VeneerPlugin extends Plugin {
 			onProtect: async ({ decoy, password }) => {
 				const { title: rawTitle, body: decoyBody } = splitTitleFromBody(decoy);
 				const finalBody = decoyBody.length > 0 ? decoyBody : decoy;
-				const rawImages = await absorbVaultImages(this.app, file.path, content);
+				const staged = await readLinkedVaultImages(this.app, file.path, content);
 				const { fileContent, payload } = await createFile(
 					content,
 					password,
 					finalBody,
 					undefined,
-					rawImages,
+					staged.absorbed,
 					originalTitle,
 				);
 				if (!payload || payload.v !== 1) {
@@ -373,6 +377,7 @@ export default class VeneerPlugin extends Plugin {
 					view.setViewData(finalBody, true);
 				}
 				await this.app.vault.modify(file, fileContent);
+				await deleteStagedVaultImages(this.app, staged.filesToDelete);
 				if (view && view.file === file) {
 					this.sessions.attachFromLoad(view, file, { decoyBody: finalBody, payload });
 					view.setViewData(finalBody, true);

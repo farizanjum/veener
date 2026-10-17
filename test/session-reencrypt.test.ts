@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { App, MarkdownView, TFile } from "obsidian";
 import { createFile, parseFileContent, unlockPayload } from "../src/crypto/payload";
 import { REENCRYPT_DEBOUNCE_MS, SessionManager } from "../src/view/session";
@@ -7,7 +7,19 @@ const DECOY = "## Weekend Grocery List\n\n- milk, eggs, bread";
 const INITIAL_REAL = "Top secret project roadmap v1";
 const PASSWORD = "correct horse battery staple";
 
-function createMockEnv(initialEditorText = INITIAL_REAL, readBinaryDelayMs = 0) {
+function createDeferred<T>() {
+	let resolve!: (value: T | PromiseLike<T>) => void;
+	const promise = new Promise<T>((res) => {
+		resolve = res;
+	});
+	return { promise, resolve };
+}
+
+function createMockEnv(
+	initialEditorText = INITIAL_REAL,
+	readBinaryGate?: Promise<void>,
+	shouldFailModify = false,
+) {
 	let editorText = initialEditorText;
 	let requestSaveCount = 0;
 	let metadataLookups = 0;
@@ -53,8 +65,8 @@ function createMockEnv(initialEditorText = INITIAL_REAL, readBinaryDelayMs = 0) 
 		},
 		vault: {
 			readBinary: async () => {
-				if (readBinaryDelayMs > 0) {
-					await new Promise((resolve) => setTimeout(resolve, readBinaryDelayMs));
+				if (readBinaryGate) {
+					await readBinaryGate;
 				}
 				return rawImageBytes.buffer.slice(0);
 			},
@@ -62,6 +74,9 @@ function createMockEnv(initialEditorText = INITIAL_REAL, readBinaryDelayMs = 0) 
 				deletedImages.push(file.path);
 			},
 			modify: async (file: { path: string }, content: string) => {
+				if (shouldFailModify) {
+					throw new Error("disk full");
+				}
 				modifiedFiles.push({ path: file.path, content });
 			},
 		},
@@ -94,6 +109,14 @@ function createMockEnv(initialEditorText = INITIAL_REAL, readBinaryDelayMs = 0) 
 }
 
 describe("SessionManager.scheduleReencrypt (Issue #1)", () => {
+	beforeEach(() => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
 	it("sets REENCRYPT_DEBOUNCE_MS to 600ms to prevent excessive crypto churn on fast typing", () => {
 		expect(REENCRYPT_DEBOUNCE_MS).toBe(600);
 	});
@@ -118,7 +141,8 @@ describe("SessionManager.scheduleReencrypt (Issue #1)", () => {
 		expect(session.reencryptTimer).not.toBeNull();
 		expect(session.reencryptTimer).not.toBe(firstTimer);
 
-		await new Promise((resolve) => setTimeout(resolve, REENCRYPT_DEBOUNCE_MS + 250));
+		await vi.advanceTimersByTimeAsync(REENCRYPT_DEBOUNCE_MS);
+		if (session.reencryptPromise) await session.reencryptPromise;
 
 		expect(session.reencryptTimer).toBeNull();
 		expect(session.pendingPayload).not.toBeNull();
@@ -144,7 +168,8 @@ describe("SessionManager.scheduleReencrypt (Issue #1)", () => {
 		env.setEditorText(`${INITIAL_REAL}\n![[Pasted chart.png]]`);
 		env.manager.scheduleReencrypt(session);
 
-		await new Promise((resolve) => setTimeout(resolve, REENCRYPT_DEBOUNCE_MS + 250));
+		await vi.advanceTimersByTimeAsync(REENCRYPT_DEBOUNCE_MS);
+		if (session.reencryptPromise) await session.reencryptPromise;
 
 		expect(env.modifiedFiles.length).toBeGreaterThanOrEqual(1);
 		expect(env.deletedImages).toEqual(["Pasted chart.png"]);
@@ -162,7 +187,8 @@ describe("SessionManager.scheduleReencrypt (Issue #1)", () => {
 	});
 
 	it("does not delete source image if user removes embed and locks while image read is in-flight", async () => {
-		const env = createMockEnv(INITIAL_REAL, 250);
+		const gate = createDeferred<void>();
+		const env = createMockEnv(INITIAL_REAL, gate.promise);
 		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
 		const parsed = parseFileContent(fileContent)!;
 
@@ -172,10 +198,13 @@ describe("SessionManager.scheduleReencrypt (Issue #1)", () => {
 		env.setEditorText(`${INITIAL_REAL}\n![[Pasted chart.png]]`);
 		env.manager.scheduleReencrypt(session);
 
-		await new Promise((resolve) => setTimeout(resolve, REENCRYPT_DEBOUNCE_MS + 40));
+		await vi.advanceTimersByTimeAsync(REENCRYPT_DEBOUNCE_MS);
+		expect(session.reencryptPromise).not.toBeNull();
 
 		env.setEditorText(`${INITIAL_REAL}\nRemoved the image embed before lock`);
-		await env.manager.lock(session, "tab-switch");
+		const lockPromise = env.manager.lock(session, "tab-switch");
+		gate.resolve();
+		await lockPromise;
 
 		expect(session.state).toBe("locked");
 		expect(env.deletedImages).toEqual([]);
@@ -187,7 +216,8 @@ describe("SessionManager.scheduleReencrypt (Issue #1)", () => {
 	});
 
 	it("prevents an older in-flight reencrypt job from overwriting a newer edit", async () => {
-		const env = createMockEnv(INITIAL_REAL, 250);
+		const gate = createDeferred<void>();
+		const env = createMockEnv(INITIAL_REAL, gate.promise);
 		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
 		const parsed = parseFileContent(fileContent)!;
 
@@ -197,12 +227,15 @@ describe("SessionManager.scheduleReencrypt (Issue #1)", () => {
 		env.setEditorText(`${INITIAL_REAL}\n![[Pasted chart.png]]\nOlder edit v1`);
 		env.manager.scheduleReencrypt(session);
 
-		await new Promise((resolve) => setTimeout(resolve, REENCRYPT_DEBOUNCE_MS + 40));
+		await vi.advanceTimersByTimeAsync(REENCRYPT_DEBOUNCE_MS);
+		expect(session.reencryptPromise).not.toBeNull();
 
 		env.setEditorText(`${INITIAL_REAL}\nNewer edit v2 without image`);
 		env.manager.scheduleReencrypt(session);
+		gate.resolve();
 
-		await new Promise((resolve) => setTimeout(resolve, REENCRYPT_DEBOUNCE_MS + 450));
+		await vi.advanceTimersByTimeAsync(REENCRYPT_DEBOUNCE_MS);
+		if (session.reencryptPromise) await session.reencryptPromise;
 
 		expect(env.deletedImages).toEqual([]);
 		expect(session.pendingPayload).not.toBeNull();
@@ -230,8 +263,28 @@ describe("SessionManager.scheduleReencrypt (Issue #1)", () => {
 		expect(session.reencryptTimer).toBeNull();
 		expect(session.pendingPayload).toBeNull();
 
-		await new Promise((resolve) => setTimeout(resolve, REENCRYPT_DEBOUNCE_MS + 150));
+		await vi.advanceTimersByTimeAsync(REENCRYPT_DEBOUNCE_MS + 150);
 		expect(session.pendingPayload).toBeNull();
 		expect(env.getRequestSaveCount()).toBe(0);
+	});
+
+	it("keeps source image intact and rolls back pendingPayload if vault.modify throws during scheduleReencrypt", async () => {
+		const env = createMockEnv(INITIAL_REAL, undefined, true);
+		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+		const parsed = parseFileContent(fileContent)!;
+
+		const session = env.manager.attachFromLoad(env.mockView, env.fakeFile, parsed);
+		await env.manager.unlock(session, PASSWORD);
+		const initialPending = session.pendingPayload;
+
+		env.setEditorText(`${INITIAL_REAL}\n![[Pasted chart.png]]`);
+		env.manager.scheduleReencrypt(session);
+
+		await vi.advanceTimersByTimeAsync(REENCRYPT_DEBOUNCE_MS);
+		if (session.reencryptPromise) await session.reencryptPromise;
+
+		expect(env.deletedImages).toEqual([]);
+		expect(session.pendingPayload).toBe(initialPending);
+		expect(session.originalPayload).toBe(parsed.payload);
 	});
 });
