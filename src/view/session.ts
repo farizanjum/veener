@@ -40,6 +40,12 @@ export interface ViewSession {
 	reencryptSeq: number;
 	reencryptPromise: Promise<void> | null;
 	lockingPromise: Promise<void> | null;
+	/**
+	 * Tail of the per-session disk-write queue. Serializes `MarkdownView.save`
+	 * and `lock`'s `vault.modify` so an in-flight save cannot land after
+	 * `lock()` and overwrite newer ciphertext.
+	 */
+	writePromise: Promise<void> | null;
 	/** Source files staged for a payload, released once that payload is persisted. */
 	stagedFilesByPayload: WeakMap<PayloadV1, StagedFile[]>;
 }
@@ -124,6 +130,7 @@ export class SessionManager {
 			reencryptSeq: 0,
 			reencryptPromise: null,
 			lockingPromise: null,
+			writePromise: null,
 			stagedFilesByPayload: new WeakMap(),
 		};
 		this.byView.set(view, session);
@@ -290,9 +297,11 @@ export class SessionManager {
 			this.readEditedInlineTitle(session),
 		);
 		if (session.state !== "unlocked" || !session.dek) return;
-		await this.app.vault.modify(
-			session.file,
-			serializeFile(session.decoyBody, nextPayload),
+		await this.enqueueWrite(session, () =>
+			this.app.vault.modify(
+				session.file,
+				serializeFile(session.decoyBody, nextPayload),
+			),
 		);
 		session.originalPayload = nextPayload;
 		session.pendingPayload = nextPayload;
@@ -366,9 +375,11 @@ export class SessionManager {
 						session.realTitle,
 					);
 					session.pendingPayload = lockedPayload;
-					await this.app.vault.modify(
-						session.file,
-						serializeFile(session.decoyBody, lockedPayload),
+					await this.enqueueWrite(session, () =>
+						this.app.vault.modify(
+							session.file,
+							serializeFile(session.decoyBody, lockedPayload),
+						),
 					);
 					session.originalPayload = lockedPayload;
 					await deleteStagedVaultImages(
@@ -506,6 +517,28 @@ export class SessionManager {
 				});
 			session.reencryptPromise = next;
 		}, REENCRYPT_DEBOUNCE_MS);
+	}
+
+	/**
+	 * Serializes disk writes (`MarkdownView.save` and `lock`'s `vault.modify`)
+	 * for a single session so an in-flight save cannot land after `lock()` and
+	 * overwrite newer ciphertext, and a new save cannot start until `lock()`'s
+	 * write completes.
+	 */
+	enqueueWrite<T>(session: ViewSession, task: () => Promise<T>): Promise<T> {
+		const prev = session.writePromise ?? Promise.resolve();
+		const run = prev.catch(() => undefined).then(task);
+		const tracked = run.then(
+			() => undefined,
+			() => undefined,
+		);
+		session.writePromise = tracked;
+		void tracked.finally(() => {
+			if (session.writePromise === tracked) {
+				session.writePromise = null;
+			}
+		});
+		return run;
 	}
 
 	/**

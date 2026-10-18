@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { App, MarkdownView, TFile } from "obsidian";
+import { MarkdownView, type App, type TFile } from "obsidian";
 import { createFile, parseFileContent, unlockPayload } from "../src/crypto/payload";
+import { installViewPatches } from "../src/view/patch";
 import { REENCRYPT_DEBOUNCE_MS, SessionManager } from "../src/view/session";
 
 const DECOY = "## Weekend Grocery List\n\n- milk, eggs, bread";
@@ -462,5 +463,88 @@ describe("SessionManager.scheduleReencrypt (Issue #1)", () => {
 
 		await env.manager.commitPersistedPayload(session, secondPayload);
 		expect(env.deletedImages).toEqual(["Pasted chart.png"]);
+	});
+
+	it("serializes MarkdownView.save() with lock() so an in-flight save cannot overwrite newer locked ciphertext", async () => {
+		const saveGate = createDeferred<void>();
+		const env = createMockEnv();
+		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+		const parsed = parseFileContent(fileContent)!;
+
+		// Wire a Base TextFileView-like save onto MarkdownView.prototype before
+		// installViewPatches captures it, so the patched save wraps a save that
+		// can be suspended mid-write.
+		const proto = MarkdownView.prototype as unknown as {
+			data: string;
+			file: TFile;
+			setViewData: (data: string, clear: boolean) => void;
+			getViewData: () => string;
+			save: () => Promise<void>;
+		};
+		proto.setViewData = (data: string) => {
+			env.setEditorText(data);
+		};
+		proto.getViewData = () => env.mockView.editor.getValue();
+		proto.save = async function (this: { file: TFile; data: string }) {
+			await saveGate.promise;
+			await (env.manager as unknown as { app: App }).app.vault.modify(this.file, this.data);
+		};
+
+		const cleanups: Array<() => void> = [];
+		installViewPatches(env.manager, (fn) => cleanups.push(fn));
+		Object.setPrototypeOf(env.mockView, MarkdownView.prototype);
+		delete (env.mockView as unknown as { setViewData?: unknown }).setViewData;
+
+		try {
+			const session = env.manager.attachFromLoad(env.mockView, env.fakeFile, parsed);
+			await env.manager.unlock(session, PASSWORD);
+
+			env.setEditorText("Older edit v1");
+			env.manager.scheduleReencrypt(session);
+			await vi.advanceTimersByTimeAsync(REENCRYPT_DEBOUNCE_MS);
+			if (session.reencryptPromise) await session.reencryptPromise;
+
+			// Start the save first and let it suspend inside its disk write.
+			const inFlightSave = env.mockView.save();
+
+			// A newer edit plus a lock while that save is still in flight. The
+			// write queue must hold lock()'s vault write until the save lands, so
+			// nothing reaches disk until the gate below is released.
+			env.setEditorText("Newest edit before lock v2");
+			const lockPromise = env.manager.lock(session, "manual");
+
+			const writesBeforeRelease = env.modifiedFiles.length;
+			for (let tick = 0; tick < 50; tick += 1) {
+				if (env.modifiedFiles.length > writesBeforeRelease) break;
+				await vi.advanceTimersByTimeAsync(0);
+			}
+			const lockWroteBeforeRelease =
+				env.modifiedFiles.length > writesBeforeRelease;
+
+			saveGate.resolve();
+			await Promise.all([inFlightSave, lockPromise]);
+
+			expect(session.state).toBe("locked");
+
+			// Census every write to the note: the newest locked ciphertext must be
+			// the last thing on disk regardless of which write started first.
+			const persistedTexts: string[] = [];
+			for (const entry of env.modifiedFiles) {
+				if (entry.path !== env.fakeFile.path) continue;
+				const parsedEntry = parseFileContent(entry.content);
+				if (!parsedEntry) continue;
+				const unlocked = await unlockPayload(parsedEntry.payload, PASSWORD);
+				persistedTexts.push(unlocked.realText);
+				unlocked.dek.fill(0);
+			}
+
+			expect(persistedTexts).toContain("Older edit v1");
+			expect(persistedTexts[persistedTexts.length - 1]).toBe(
+				"Newest edit before lock v2",
+			);
+			expect(lockWroteBeforeRelease).toBe(false);
+		} finally {
+			for (const cleanup of cleanups) cleanup();
+		}
 	});
 });
