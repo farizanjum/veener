@@ -19,6 +19,7 @@ function createMockEnv(
 	initialEditorText = INITIAL_REAL,
 	readBinaryGate?: Promise<void>,
 	shouldFailModify = false,
+	linkTargets?: Record<string, { path: string; name: string; extension: string }>,
 ) {
 	let editorText = initialEditorText;
 	let requestSaveCount = 0;
@@ -60,7 +61,7 @@ function createMockEnv(
 		metadataCache: {
 			getFirstLinkpathDest: (link: string) => {
 				metadataLookups += 1;
-				return link === "Pasted chart.png" ? fakeImageFile : null;
+				return linkTargets?.[link] ?? (link === "Pasted chart.png" ? fakeImageFile : null);
 			},
 		},
 		vault: {
@@ -105,6 +106,28 @@ function createMockEnv(
 		deletedImages,
 		modifiedFiles,
 		rawImageBytes,
+	};
+}
+
+/** Replaces the global blob URL factory so preview URL identity and revocation are assertable. */
+function stubObjectUrls() {
+	const originalCreate = URL.createObjectURL;
+	const originalRevoke = URL.revokeObjectURL;
+	let counter = 0;
+	const revoked = new Set<string>();
+	URL.createObjectURL = (_blob: Blob | MediaSource): string => {
+		counter += 1;
+		return `blob:test/${counter}`;
+	};
+	URL.revokeObjectURL = (url: string): void => {
+		revoked.add(url);
+	};
+	return {
+		revoked,
+		restore: () => {
+			URL.createObjectURL = originalCreate;
+			URL.revokeObjectURL = originalRevoke;
+		},
 	};
 }
 
@@ -280,5 +303,100 @@ describe("SessionManager.scheduleReencrypt (Issue #1)", () => {
 
 		expect(env.deletedImages).toEqual([]);
 		expect(session.state).toBe("locked");
+	});
+
+	it("keeps one shared preview URL alive across every key referencing the same image data", async () => {
+		const urls = stubObjectUrls();
+		try {
+			const env = createMockEnv(INITIAL_REAL, undefined, false, {
+				"attachments/Pasted chart.png": {
+					path: "attachments/Pasted chart.png",
+					name: "Pasted chart.png",
+					extension: "png",
+				},
+			});
+			const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+			const parsed = parseFileContent(fileContent)!;
+
+			const session = env.manager.attachFromLoad(env.mockView, env.fakeFile, parsed);
+			await env.manager.unlock(session, PASSWORD);
+
+			env.setEditorText(`${INITIAL_REAL}\n![[attachments/Pasted chart.png]]`);
+			env.manager.scheduleReencrypt(session);
+			await vi.advanceTimersByTimeAsync(REENCRYPT_DEBOUNCE_MS);
+			if (session.reencryptPromise) await session.reencryptPromise;
+
+			const linkUrl = session.imageUrls.get("attachments/Pasted chart.png");
+			const basenameUrl = session.imageUrls.get("Pasted chart.png");
+			expect(linkUrl).toBeDefined();
+			expect(basenameUrl).toBe(linkUrl);
+			for (const url of session.imageUrls.values()) {
+				expect(urls.revoked.has(url)).toBe(false);
+			}
+
+			await env.manager.lock(session, "test-cleanup");
+		} finally {
+			urls.restore();
+		}
+	});
+
+	it("gives distinct images with distinct data their own preview URLs without revoking either", async () => {
+		const urls = stubObjectUrls();
+		try {
+			const env = createMockEnv();
+			const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY, undefined, {
+				"attachments/chart.png": { mime: "image/png", data: new Uint8Array([1, 2, 3]) },
+				"chart.png": { mime: "image/png", data: new Uint8Array([9, 9, 9]) },
+			});
+			const parsed = parseFileContent(fileContent)!;
+
+			const session = env.manager.attachFromLoad(env.mockView, env.fakeFile, parsed);
+			await env.manager.unlock(session, PASSWORD);
+
+			const folderUrl = session.imageUrls.get("attachments/chart.png");
+			const rootUrl = session.imageUrls.get("chart.png");
+			expect(folderUrl).toBeDefined();
+			expect(rootUrl).toBeDefined();
+			expect(folderUrl).not.toBe(rootUrl);
+			expect(urls.revoked.size).toBe(0);
+
+			await env.manager.lock(session, "test-cleanup");
+		} finally {
+			urls.restore();
+		}
+	});
+
+	it("deletes a staged source image only once its own payload is reported as saved", async () => {
+		const env = createMockEnv();
+		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+		const parsed = parseFileContent(fileContent)!;
+
+		const session = env.manager.attachFromLoad(env.mockView, env.fakeFile, parsed);
+		await env.manager.unlock(session, PASSWORD);
+
+		env.setEditorText(`${INITIAL_REAL}\n![[Pasted chart.png]]`);
+		env.manager.scheduleReencrypt(session);
+		await vi.advanceTimersByTimeAsync(REENCRYPT_DEBOUNCE_MS);
+		if (session.reencryptPromise) await session.reencryptPromise;
+
+		const persisted = session.pendingPayload!;
+		expect(persisted).not.toBeNull();
+		expect(session.pendingStagedDeletions.length).toBe(1);
+		expect(env.deletedImages).toEqual([]);
+		expect(env.manager.savedPayloadFor(session)).toBe(persisted);
+
+		await env.manager.commitPersistedPayload(session, { ...persisted });
+		expect(env.deletedImages).toEqual([]);
+		expect(session.pendingStagedDeletions.length).toBe(1);
+
+		await env.manager.commitPersistedPayload(session, persisted);
+		expect(env.deletedImages).toEqual(["Pasted chart.png"]);
+		expect(session.pendingStagedDeletions).toEqual([]);
+		expect(session.originalPayload).toBe(persisted);
+
+		await env.manager.commitPersistedPayload(session, persisted);
+		expect(env.deletedImages).toEqual(["Pasted chart.png"]);
+
+		await env.manager.lock(session, "test-cleanup");
 	});
 });

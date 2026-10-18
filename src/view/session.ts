@@ -39,6 +39,8 @@ export interface ViewSession {
 	reencryptSeq: number;
 	reencryptPromise: Promise<void> | null;
 	lockingPromise: Promise<void> | null;
+	/** Vault images staged for a pending payload, released once that payload is saved. */
+	pendingStagedDeletions: Array<{ payload: PayloadV1; files: TFile[] }>;
 }
 
 export interface SessionHooks {
@@ -78,7 +80,11 @@ export class SessionManager {
 			if (existing.file === file) {
 				existing.decoyBody = parsed.decoyBody;
 				existing.originalPayload = parsed.payload;
-				if (existing.state === "unlocked") void this.lock(existing, "reload");
+				if (existing.state === "unlocked") {
+					void this.lock(existing, "reload").catch((error) =>
+						console.warn("Veneer: reload lock failed", error),
+					);
+				}
 				return existing;
 			}
 			if (existing.state === "unlocked") {
@@ -88,6 +94,7 @@ export class SessionManager {
 				this.revokeImageUrls(existing);
 				existing.state = "locked";
 				existing.pendingPayload = null;
+				existing.pendingStagedDeletions = [];
 				existing.realTitle = null;
 				existing.capture.cancel();
 				if (existing.reencryptTimer !== null) {
@@ -117,6 +124,7 @@ export class SessionManager {
 			reencryptSeq: 0,
 			reencryptPromise: null,
 			lockingPromise: null,
+			pendingStagedDeletions: [],
 		};
 		this.byView.set(view, session);
 		this.byPath.set(file.path, session);
@@ -139,7 +147,9 @@ export class SessionManager {
 	detach(view: MarkdownView): void {
 		const session = this.byView.get(view);
 		if (!session) return;
-		void this.lock(session, "detach");
+		void this.lock(session, "detach").catch((error) =>
+			console.warn("Veneer: detach lock failed", error),
+		);
 		this.byView.delete(view);
 		if (this.byPath.get(session.file.path) === session) {
 			this.byPath.delete(session.file.path);
@@ -151,16 +161,31 @@ export class SessionManager {
 		images: Record<string, { mime: string; data: Uint8Array<ArrayBuffer> }>,
 	): void {
 		if (typeof URL === "undefined" || typeof URL.createObjectURL !== "function") return;
+		// One vault image can appear under several keys (link path and basename) that
+		// share a single `data` reference; a per-entry URL would revoke a URL still
+		// referenced by a sibling key.
+		const next = new Map(session.imageUrls);
+		const urlByData = new Map<Uint8Array<ArrayBuffer>, string>();
 		for (const [name, img] of Object.entries(images)) {
-			const previousUrl = session.imageUrls.get(name);
-			if (previousUrl && typeof URL.revokeObjectURL === "function") {
-				URL.revokeObjectURL(previousUrl);
+			let url = urlByData.get(img.data);
+			if (!url) {
+				const blob = new Blob([img.data], { type: img.mime });
+				url = URL.createObjectURL(blob);
+				urlByData.set(img.data, url);
 			}
-			const blob = new Blob([img.data], { type: img.mime });
-			const url = URL.createObjectURL(blob);
-			session.imageUrls.set(name, url);
+			next.set(name, url);
 			const basename = name.split("/").pop() ?? name;
-			session.imageUrls.set(basename, url);
+			if (!next.has(basename)) next.set(basename, url);
+		}
+		if (typeof URL.revokeObjectURL === "function") {
+			const retained = new Set(next.values());
+			for (const url of new Set(session.imageUrls.values())) {
+				if (!retained.has(url)) URL.revokeObjectURL(url);
+			}
+		}
+		session.imageUrls.clear();
+		for (const [key, url] of next) {
+			session.imageUrls.set(key, url);
 		}
 	}
 
@@ -343,9 +368,10 @@ export class SessionManager {
 						serializeFile(session.decoyBody, lockedPayload),
 					);
 					session.originalPayload = lockedPayload;
-					if (imageStage && imageStage.staged.filesToDelete.length > 0) {
-						await deleteStagedVaultImages(this.app, imageStage.staged.filesToDelete);
-					}
+					await this.deleteStagedForSession(
+						session,
+						imageStage?.staged.filesToDelete ?? [],
+					);
 				}
 			} finally {
 				session.dek?.fill(0);
@@ -353,6 +379,7 @@ export class SessionManager {
 				this.revokeImageUrls(session);
 				session.state = "locked";
 				session.pendingPayload = null;
+				session.pendingStagedDeletions = [];
 				session.capture.cancel();
 				if (session.reencryptTimer !== null) {
 					clearTimeout(session.reencryptTimer);
@@ -392,6 +419,7 @@ export class SessionManager {
 			this.revokeImageUrls(session);
 			session.state = "locked";
 			session.pendingPayload = null;
+			session.pendingStagedDeletions = [];
 			session.capture.cancel();
 			if (session.reencryptTimer !== null) {
 				clearTimeout(session.reencryptTimer);
@@ -453,6 +481,14 @@ export class SessionManager {
 						}
 						session.realTitle = snapshotTitle;
 						session.pendingPayload = nextPayload;
+						// Hold the staged source files until this payload is actually
+						// written to disk, so a failed save cannot delete them.
+						if (imageStage.staged.filesToDelete.length > 0) {
+							session.pendingStagedDeletions.push({
+								payload: nextPayload,
+								files: imageStage.staged.filesToDelete,
+							});
+						}
 						this.refreshPreviewImageUrls(session, imageStage.staged);
 						(session.view as unknown as { requestSave?: () => void }).requestSave?.();
 					} catch (error) {
@@ -466,5 +502,47 @@ export class SessionManager {
 				});
 			session.reencryptPromise = next;
 		}, REENCRYPT_DEBOUNCE_MS);
+	}
+
+	/**
+	 * The payload a save would write for this session right now. Mirrors
+	 * `computeSavedContent` so a completed save can be matched to its images.
+	 */
+	savedPayloadFor(session: ViewSession): PayloadV1 {
+		return session.state === "unlocked"
+			? (session.pendingPayload ?? session.originalPayload)
+			: session.originalPayload;
+	}
+
+	/**
+	 * Marks `persisted` as durably on disk: it becomes the new baseline and any
+	 * staged source files queued for it are released. Matching is by payload
+	 * identity, so saving a stale snapshot releases nothing.
+	 */
+	async commitPersistedPayload(session: ViewSession, persisted: PayloadV1): Promise<void> {
+		if (session.state !== "unlocked" || session.lockingPromise !== null) return;
+		session.originalPayload = persisted;
+		const queued = session.pendingStagedDeletions;
+		if (queued.length === 0) return;
+		const matched = queued.filter((entry) => entry.payload === persisted);
+		if (matched.length === 0) return;
+		session.pendingStagedDeletions = queued.filter((entry) => entry.payload !== persisted);
+		for (const entry of matched) {
+			await deleteStagedVaultImages(this.app, entry.files);
+		}
+	}
+
+	private async deleteStagedForSession(
+		session: ViewSession,
+		extra: readonly TFile[],
+	): Promise<void> {
+		const pending = new Set<TFile>(extra);
+		for (const entry of session.pendingStagedDeletions) {
+			for (const file of entry.files) pending.add(file);
+		}
+		session.pendingStagedDeletions = [];
+		if (pending.size > 0) {
+			await deleteStagedVaultImages(this.app, [...pending]);
+		}
 	}
 }

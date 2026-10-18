@@ -53,10 +53,18 @@ export function installViewPatches(
 
 	proto.save = async function (this: MarkdownView): Promise<void> {
 		const session = sessions.get(this);
-		if (session && this.file === session.file) {
+		const active = session && this.file === session.file ? session : null;
+		// Snapshot the payload this write persists before the sync below mutates
+		// view state, so the staged-file cleanup targets the bytes that reached
+		// disk even if a fresh reencrypt lands while the write is in flight.
+		const persisted = active ? sessions.savedPayloadFor(active) : null;
+		if (active) {
 			this.data = this.getViewData();
 		}
-		return originalSave.call(this);
+		await originalSave.call(this);
+		if (active && persisted) {
+			await sessions.commitPersistedPayload(active, persisted);
+		}
 	};
 
 	registerCleanup(() => {
