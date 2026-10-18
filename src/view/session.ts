@@ -421,9 +421,20 @@ export class SessionManager {
 		return runLock;
 	}
 
+	/**
+	 * Masks every session, reporting and swallowing a per-session failure so one
+	 * rejected write cannot leave the remaining notes plaintext. Keeping this
+	 * method total also lets `maskAll` reach the clipboard clear and content
+	 * protection that follow it.
+	 */
 	async lockAll(reason: string): Promise<void> {
-		for (const session of this.all()) {
-			await this.lock(session, reason);
+		const results = await Promise.allSettled(
+			this.all().map((session) => this.lock(session, reason)),
+		);
+		for (const result of results) {
+			if (result.status === "rejected") {
+				console.warn("Veneer: lock failed", result.reason);
+			}
 		}
 	}
 

@@ -23,12 +23,13 @@ function createDeferred<T>() {
 /**
  * Builds an in-memory stand-in for the Obsidian app, workspace, and markdown
  * view so session behavior can be exercised without a real vault. The optional
- * gates let a test hold binary reads or fail `vault.modify` on demand.
+ * gates let a test hold binary reads or fail `vault.modify` on demand, either for
+ * every file or for a caller-chosen path.
  */
 function createMockEnv(
 	initialEditorText = INITIAL_REAL,
 	readBinaryGate?: Promise<void>,
-	shouldFailModify = false,
+	shouldFailModify: boolean | ((path: string) => boolean) = false,
 	linkTargets?: Record<string, { path: string; name: string; extension: string }>,
 ) {
 	let editorText = initialEditorText;
@@ -86,7 +87,9 @@ function createMockEnv(
 				deletedImages.push(file.path);
 			},
 			modify: async (file: { path: string }, content: string) => {
-				if (shouldFailModify) {
+				const shouldFail =
+					typeof shouldFailModify === "function" ? shouldFailModify(file.path) : shouldFailModify;
+				if (shouldFail) {
 					throw new Error("disk full");
 				}
 				modifiedFiles.push({ path: file.path, content });
@@ -317,6 +320,51 @@ describe("SessionManager.scheduleReencrypt (Issue #1)", () => {
 
 		expect(env.deletedImages).toEqual([]);
 		expect(session.state).toBe("locked");
+	});
+
+	it("masks every session when one session's write fails during lockAll()", async () => {
+		const secondPath = "Second Note.md";
+		const env = createMockEnv(INITIAL_REAL, undefined, (path) => path !== secondPath);
+		const firstContent = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+		const secondContent = await createFile("Second secret text", PASSWORD, DECOY);
+
+		let secondEditorText = "";
+		const secondFile = {
+			path: secondPath,
+			basename: "Second Note",
+			name: secondPath,
+			extension: "md",
+		} as unknown as TFile;
+		const secondView = {
+			file: secondFile,
+			editor: {
+				getValue: () => secondEditorText,
+				cm: { dispatch: vi.fn() },
+			},
+			setViewData: (data: string) => {
+				secondEditorText = data;
+			},
+			requestSave: () => undefined,
+		} as unknown as MarkdownView;
+
+		const failing = env.manager.attachFromLoad(
+			env.mockView,
+			env.fakeFile,
+			parseFileContent(firstContent.fileContent)!,
+		);
+		const surviving = env.manager.attachFromLoad(
+			secondView,
+			secondFile,
+			parseFileContent(secondContent.fileContent)!,
+		);
+		await env.manager.unlock(failing, PASSWORD);
+		await env.manager.unlock(surviving, PASSWORD);
+
+		await expect(env.manager.lockAll("panic")).resolves.toBeUndefined();
+
+		expect(failing.state).toBe("locked");
+		expect(surviving.state).toBe("locked");
+		expect(env.modifiedFiles.map((entry) => entry.path)).toEqual([secondPath]);
 	});
 
 	it("keeps one shared preview URL alive across every key referencing the same image data", async () => {
