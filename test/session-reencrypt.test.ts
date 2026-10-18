@@ -39,6 +39,7 @@ function createMockEnv(
 		path: "Pasted chart.png",
 		name: "Pasted chart.png",
 		extension: "png",
+		stat: { mtime: 1000, size: rawImageBytes.byteLength },
 	};
 
 	const mockView = {
@@ -106,6 +107,9 @@ function createMockEnv(
 		deletedImages,
 		modifiedFiles,
 		rawImageBytes,
+		setImageStat: (mtime: number, size: number) => {
+			fakeImageFile.stat = { mtime, size };
+		},
 	};
 }
 
@@ -381,22 +385,82 @@ describe("SessionManager.scheduleReencrypt (Issue #1)", () => {
 
 		const persisted = session.pendingPayload!;
 		expect(persisted).not.toBeNull();
-		expect(session.pendingStagedDeletions.length).toBe(1);
+		expect(session.stagedFilesByPayload.get(persisted)?.length).toBe(1);
 		expect(env.deletedImages).toEqual([]);
 		expect(env.manager.savedPayloadFor(session)).toBe(persisted);
 
 		await env.manager.commitPersistedPayload(session, { ...persisted });
 		expect(env.deletedImages).toEqual([]);
-		expect(session.pendingStagedDeletions.length).toBe(1);
+		expect(session.stagedFilesByPayload.get(persisted)?.length).toBe(1);
 
 		await env.manager.commitPersistedPayload(session, persisted);
 		expect(env.deletedImages).toEqual(["Pasted chart.png"]);
-		expect(session.pendingStagedDeletions).toEqual([]);
+		expect(session.stagedFilesByPayload.get(persisted)).toBeUndefined();
 		expect(session.originalPayload).toBe(persisted);
 
 		await env.manager.commitPersistedPayload(session, persisted);
 		expect(env.deletedImages).toEqual(["Pasted chart.png"]);
 
 		await env.manager.lock(session, "test-cleanup");
+	});
+
+	it("does not delete a staged source whose embed was removed before lock()", async () => {
+		const env = createMockEnv();
+		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+		const parsed = parseFileContent(fileContent)!;
+
+		const session = env.manager.attachFromLoad(env.mockView, env.fakeFile, parsed);
+		await env.manager.unlock(session, PASSWORD);
+
+		env.setEditorText(`${INITIAL_REAL}\n![[Pasted chart.png]]`);
+		env.manager.scheduleReencrypt(session);
+		await vi.advanceTimersByTimeAsync(REENCRYPT_DEBOUNCE_MS);
+		if (session.reencryptPromise) await session.reencryptPromise;
+
+		const stagedPayload = session.pendingPayload!;
+		expect(session.stagedFilesByPayload.get(stagedPayload)?.length).toBe(1);
+		expect(env.deletedImages).toEqual([]);
+
+		env.setEditorText(`${INITIAL_REAL}\nDropped the embed before locking`);
+		await env.manager.lock(session, "test-cleanup");
+
+		expect(env.deletedImages).toEqual([]);
+		const lastSaved = parseFileContent(env.modifiedFiles[env.modifiedFiles.length - 1]!.content)!;
+		const unlocked = await unlockPayload(lastSaved.payload, PASSWORD);
+		expect(unlocked.realText).toBe(`${INITIAL_REAL}\nDropped the embed before locking`);
+		expect(unlocked.images["Pasted chart.png"]).toBeUndefined();
+		unlocked.dek.fill(0);
+	});
+
+	it("releases a staged source only for the payload whose snapshot still matches the file on disk", async () => {
+		const env = createMockEnv();
+		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+		const parsed = parseFileContent(fileContent)!;
+
+		const session = env.manager.attachFromLoad(env.mockView, env.fakeFile, parsed);
+		await env.manager.unlock(session, PASSWORD);
+
+		env.setImageStat(1000, env.rawImageBytes.byteLength);
+		env.setEditorText(`${INITIAL_REAL}\n![[Pasted chart.png]]`);
+		env.manager.scheduleReencrypt(session);
+		await vi.advanceTimersByTimeAsync(REENCRYPT_DEBOUNCE_MS);
+		if (session.reencryptPromise) await session.reencryptPromise;
+		const firstPayload = session.pendingPayload!;
+		expect(session.stagedFilesByPayload.get(firstPayload)?.length).toBe(1);
+
+		env.setImageStat(2000, env.rawImageBytes.byteLength);
+		env.setEditorText(`${INITIAL_REAL}\n![[Pasted chart.png]]\nSecond edit`);
+		env.manager.scheduleReencrypt(session);
+		await vi.advanceTimersByTimeAsync(REENCRYPT_DEBOUNCE_MS);
+		if (session.reencryptPromise) await session.reencryptPromise;
+		const secondPayload = session.pendingPayload!;
+		expect(secondPayload).not.toBe(firstPayload);
+		expect(session.stagedFilesByPayload.get(secondPayload)?.length).toBe(1);
+
+		await env.manager.commitPersistedPayload(session, firstPayload);
+		expect(env.deletedImages).toEqual([]);
+
+		await env.manager.commitPersistedPayload(session, secondPayload);
+		expect(env.deletedImages).toEqual(["Pasted chart.png"]);
 	});
 });

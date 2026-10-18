@@ -45,12 +45,22 @@ export function mimeForPath(filePath: string): string {
 	return "application/octet-stream";
 }
 
-export interface StagedVaultImages {
-	absorbed: Record<string, { mime: string; data: Uint8Array<ArrayBuffer> }>;
-	filesToDelete: TFile[];
+/**
+ * An immutable snapshot of one vault image source: the payload keys whose bytes
+ * came from it and the stat it had when staged, so a later stage cannot change
+ * how an earlier payload's release is judged.
+ */
+export interface StagedFile {
+	file: TFile;
+	keys: string[];
+	mtime: number | undefined;
+	size: number | undefined;
 }
 
-const stagedFileSnapshots = new WeakMap<TFile, { mtime: number | undefined; size: number | undefined }>();
+export interface StagedVaultImages {
+	absorbed: Record<string, { mime: string; data: Uint8Array<ArrayBuffer> }>;
+	filesToDelete: StagedFile[];
+}
 
 /**
  * Reads local vault images referenced in `markdown` without deleting their source files.
@@ -62,8 +72,7 @@ export async function readLinkedVaultImages(
 ): Promise<StagedVaultImages> {
 	const links = extractImageLinks(markdown);
 	const absorbed: Record<string, { mime: string; data: Uint8Array<ArrayBuffer> }> = {};
-	const filesToDelete: TFile[] = [];
-	const seenPaths = new Set<string>();
+	const stagedByPath = new Map<string, StagedFile>();
 
 	for (const link of links) {
 		const resolved =
@@ -82,20 +91,26 @@ export async function readLinkedVaultImages(
 			if (resolved.name !== link) {
 				absorbed[resolved.name] = { mime, data };
 			}
-			if (!seenPaths.has(resolved.path)) {
-				seenPaths.add(resolved.path);
-				stagedFileSnapshots.set(resolved, {
+			const keys = resolved.name !== link ? [link, resolved.name] : [link];
+			const existing = stagedByPath.get(resolved.path);
+			if (existing) {
+				for (const key of keys) {
+					if (!existing.keys.includes(key)) existing.keys.push(key);
+				}
+			} else {
+				stagedByPath.set(resolved.path, {
+					file: resolved,
+					keys,
 					mtime: mtimeBefore,
 					size: sizeBefore ?? data.byteLength,
 				});
-				filesToDelete.push(resolved);
 			}
 		} catch (error) {
 			console.warn(`Veneer: failed to read image ${link}`, error);
 		}
 	}
 
-	return { absorbed, filesToDelete };
+	return { absorbed, filesToDelete: [...stagedByPath.values()] };
 }
 
 /**
@@ -104,20 +119,17 @@ export async function readLinkedVaultImages(
  */
 export async function deleteStagedVaultImages(
 	app: App,
-	filesToDelete: readonly TFile[],
+	filesToDelete: readonly StagedFile[],
 ): Promise<void> {
-	for (const file of filesToDelete) {
+	for (const entry of filesToDelete) {
+		const { file, mtime, size } = entry;
 		try {
-			const snapshot = stagedFileSnapshots.get(file);
 			const currentStat = (file as unknown as { stat?: { mtime?: number; size?: number } }).stat;
 			if (
-				snapshot &&
-				((snapshot.mtime !== undefined &&
+				(mtime !== undefined &&
 					currentStat?.mtime !== undefined &&
-					currentStat.mtime !== snapshot.mtime) ||
-					(snapshot.size !== undefined &&
-						currentStat?.size !== undefined &&
-						currentStat.size !== snapshot.size))
+					currentStat.mtime !== mtime) ||
+				(size !== undefined && currentStat?.size !== undefined && currentStat.size !== size)
 			) {
 				continue;
 			}

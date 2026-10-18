@@ -10,6 +10,7 @@ import {
 import {
 	deleteStagedVaultImages,
 	readLinkedVaultImages,
+	type StagedFile,
 	type StagedVaultImages,
 } from "../crypto/images";
 import { BackoffTracker } from "../lock/backoff";
@@ -39,8 +40,8 @@ export interface ViewSession {
 	reencryptSeq: number;
 	reencryptPromise: Promise<void> | null;
 	lockingPromise: Promise<void> | null;
-	/** Vault images staged for a pending payload, released once that payload is saved. */
-	pendingStagedDeletions: Array<{ payload: PayloadV1; files: TFile[] }>;
+	/** Source files staged for a payload, released once that payload is persisted. */
+	stagedFilesByPayload: WeakMap<PayloadV1, StagedFile[]>;
 }
 
 export interface SessionHooks {
@@ -94,7 +95,6 @@ export class SessionManager {
 				this.revokeImageUrls(existing);
 				existing.state = "locked";
 				existing.pendingPayload = null;
-				existing.pendingStagedDeletions = [];
 				existing.realTitle = null;
 				existing.capture.cancel();
 				if (existing.reencryptTimer !== null) {
@@ -124,7 +124,7 @@ export class SessionManager {
 			reencryptSeq: 0,
 			reencryptPromise: null,
 			lockingPromise: null,
-			pendingStagedDeletions: [],
+			stagedFilesByPayload: new WeakMap(),
 		};
 		this.byView.set(view, session);
 		this.byPath.set(file.path, session);
@@ -297,7 +297,10 @@ export class SessionManager {
 		session.originalPayload = nextPayload;
 		session.pendingPayload = nextPayload;
 		this.refreshPreviewImageUrls(session, result.staged);
-		await deleteStagedVaultImages(this.app, result.staged.filesToDelete);
+		await deleteStagedVaultImages(
+			this.app,
+			this.persistedStagedFiles(result.staged.filesToDelete, nextPayload.images),
+		);
 	}
 
 	async unlock(session: ViewSession, password: string): Promise<UnlockOutcome> {
@@ -368,9 +371,12 @@ export class SessionManager {
 						serializeFile(session.decoyBody, lockedPayload),
 					);
 					session.originalPayload = lockedPayload;
-					await this.deleteStagedForSession(
-						session,
-						imageStage?.staged.filesToDelete ?? [],
+					await deleteStagedVaultImages(
+						this.app,
+						this.persistedStagedFiles(
+							imageStage?.staged.filesToDelete ?? [],
+							lockedPayload.images,
+						),
 					);
 				}
 			} finally {
@@ -379,7 +385,6 @@ export class SessionManager {
 				this.revokeImageUrls(session);
 				session.state = "locked";
 				session.pendingPayload = null;
-				session.pendingStagedDeletions = [];
 				session.capture.cancel();
 				if (session.reencryptTimer !== null) {
 					clearTimeout(session.reencryptTimer);
@@ -419,7 +424,6 @@ export class SessionManager {
 			this.revokeImageUrls(session);
 			session.state = "locked";
 			session.pendingPayload = null;
-			session.pendingStagedDeletions = [];
 			session.capture.cancel();
 			if (session.reencryptTimer !== null) {
 				clearTimeout(session.reencryptTimer);
@@ -484,10 +488,10 @@ export class SessionManager {
 						// Hold the staged source files until this payload is actually
 						// written to disk, so a failed save cannot delete them.
 						if (imageStage.staged.filesToDelete.length > 0) {
-							session.pendingStagedDeletions.push({
-								payload: nextPayload,
-								files: imageStage.staged.filesToDelete,
-							});
+							session.stagedFilesByPayload.set(
+								nextPayload,
+								imageStage.staged.filesToDelete,
+							);
 						}
 						this.refreshPreviewImageUrls(session, imageStage.staged);
 						(session.view as unknown as { requestSave?: () => void }).requestSave?.();
@@ -522,27 +526,24 @@ export class SessionManager {
 	async commitPersistedPayload(session: ViewSession, persisted: PayloadV1): Promise<void> {
 		if (session.state !== "unlocked" || session.lockingPromise !== null) return;
 		session.originalPayload = persisted;
-		const queued = session.pendingStagedDeletions;
-		if (queued.length === 0) return;
-		const matched = queued.filter((entry) => entry.payload === persisted);
-		if (matched.length === 0) return;
-		session.pendingStagedDeletions = queued.filter((entry) => entry.payload !== persisted);
-		for (const entry of matched) {
-			await deleteStagedVaultImages(this.app, entry.files);
-		}
+		const staged = session.stagedFilesByPayload.get(persisted);
+		if (!staged) return;
+		session.stagedFilesByPayload.delete(persisted);
+		await deleteStagedVaultImages(
+			this.app,
+			this.persistedStagedFiles(staged, persisted.images),
+		);
 	}
 
-	private async deleteStagedForSession(
-		session: ViewSession,
-		extra: readonly TFile[],
-	): Promise<void> {
-		const pending = new Set<TFile>(extra);
-		for (const entry of session.pendingStagedDeletions) {
-			for (const file of entry.files) pending.add(file);
-		}
-		session.pendingStagedDeletions = [];
-		if (pending.size > 0) {
-			await deleteStagedVaultImages(this.app, [...pending]);
-		}
+	/**
+	 * Narrows `staged` to the files whose bytes are present in the persisted
+	 * payload, so a source removed from the note before a save is never deleted.
+	 */
+	private persistedStagedFiles(
+		staged: readonly StagedFile[],
+		images: PayloadV1["images"],
+	): StagedFile[] {
+		if (staged.length === 0) return [];
+		return staged.filter((entry) => entry.keys.some((key) => key in (images ?? {})));
 	}
 }
