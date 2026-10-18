@@ -24,6 +24,7 @@ export interface ViewSession {
 	readonly file: TFile;
 	state: "locked" | "unlocked";
 	lockingPromise: Promise<void> | null;
+	killGeneration: number;
 	decoyBody: string;
 	originalPayload: PayloadV1;
 	pendingPayload: PayloadV1 | null;
@@ -39,6 +40,7 @@ export interface SessionHooks {
 	onUnlocked(session: ViewSession): void;
 	onLocked(session: ViewSession): void;
 	onUnlockBlocked(reason: string): void;
+	onLockFailed?(error: unknown): void;
 }
 
 const REENCRYPT_DEBOUNCE_MS = 250;
@@ -87,6 +89,17 @@ export class SessionManager {
 		return sessions.find((s) => s.state === "unlocked") ?? sessions[sessions.length - 1] ?? null;
 	}
 
+	hasLiveSession(path: string): boolean {
+		const set = this.byPath.get(path);
+		if (!set) return false;
+		for (const session of set) {
+			if (session.state === "unlocked" || session.lockingPromise !== null) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	all(): ViewSession[] {
 		const out: ViewSession[] = [];
 		for (const set of this.byPath.values()) {
@@ -101,10 +114,15 @@ export class SessionManager {
 			if (existing.file === file) {
 				existing.decoyBody = parsed.decoyBody;
 				existing.originalPayload = parsed.payload;
-				if (existing.state === "unlocked") void this.lock(existing, "reload");
+				if (existing.state === "unlocked") {
+					void this.lock(existing, "reload").catch((error) => {
+						console.warn("Veneer: lock on reload failed", error);
+					});
+				}
 				return existing;
 			}
-			if (existing.state === "unlocked") {
+			existing.killGeneration += 1;
+			if (existing.state === "unlocked" || existing.lockingPromise !== null) {
 				existing.dek?.fill(0);
 				existing.dek = null;
 				this.revokeImageUrls(existing);
@@ -127,6 +145,7 @@ export class SessionManager {
 			file,
 			state: "locked",
 			lockingPromise: null,
+			killGeneration: 0,
 			decoyBody: parsed.decoyBody,
 			originalPayload: parsed.payload,
 			pendingPayload: null,
@@ -164,7 +183,9 @@ export class SessionManager {
 	detach(view: MarkdownView): void {
 		const session = this.byView.get(view);
 		if (!session) return;
-		void this.lock(session, "detach");
+		void this.lock(session, "detach").catch((error) => {
+			console.warn("Veneer: lock on detach failed", error);
+		});
 		this.byView.delete(view);
 		this.removeFromPath(session.file.path, session);
 	}
@@ -176,6 +197,7 @@ export class SessionManager {
 	discardAndDetach(view: MarkdownView): void {
 		const session = this.byView.get(view);
 		if (!session) return;
+		session.killGeneration += 1;
 		session.dek?.fill(0);
 		session.dek = null;
 		this.revokeImageUrls(session);
@@ -242,11 +264,12 @@ export class SessionManager {
 		currentText?: string,
 		dekOverride?: Uint8Array<ArrayBuffer> | null,
 	): Promise<void> {
+		const startGeneration = session.killGeneration;
 		const activeDek = dekOverride ?? session.dek;
 		if (session.state !== "unlocked" || !activeDek) return;
 		const text = currentText ?? session.view.editor.getValue();
 		const newImages = await absorbVaultImages(this.app, session.file.path, text);
-		if (Object.keys(newImages).length === 0) return;
+		if (session.killGeneration !== startGeneration || Object.keys(newImages).length === 0) return;
 		const encryptionDek = dekOverride ?? session.dek;
 		if (!encryptionDek) return;
 		const encryptedNew = await encryptImageMap(
@@ -254,6 +277,7 @@ export class SessionManager {
 			session.originalPayload.note_id,
 			newImages,
 		);
+		if (session.killGeneration !== startGeneration) return;
 		session.originalPayload = {
 			...session.originalPayload,
 			images: {
@@ -267,9 +291,15 @@ export class SessionManager {
 	}
 
 	async unlock(session: ViewSession, password: string): Promise<UnlockOutcome> {
+		const startGeneration = session.killGeneration;
 		if (session.lockingPromise !== null) {
-			await session.lockingPromise;
+			try {
+				await session.lockingPromise;
+			} catch (error) {
+				console.warn("Veneer: prior lock failed before unlock", error);
+			}
 		}
+		if (session.killGeneration !== startGeneration) return "blocked";
 		if (session.state === "unlocked") return "ok";
 		const blockReason = this.unlockBlockReason();
 		if (blockReason !== null) {
@@ -280,6 +310,10 @@ export class SessionManager {
 		if (!session.backoff.canAttempt(now)) return "backoff";
 		try {
 			const { realText, dek, images, realTitle } = await unlockPayload(session.originalPayload, password);
+			if (session.killGeneration !== startGeneration) {
+				dek.fill(0);
+				return "blocked";
+			}
 			session.backoff.recordSuccess();
 			session.dek = dek;
 			session.state = "unlocked";
@@ -297,6 +331,7 @@ export class SessionManager {
 			this.hooks.onUnlocked(session);
 			return "ok";
 		} catch {
+			if (session.killGeneration !== startGeneration) return "blocked";
 			session.backoff.recordFailure(now);
 			return "wrong";
 		}
@@ -318,22 +353,37 @@ export class SessionManager {
 		let currentText = sameFile ? session.view.editor.getValue() : "";
 		let currentTitle = sameFile ? this.readEditedInlineTitle(session) : session.realTitle;
 		const dek = session.dek ? new Uint8Array(session.dek) : null;
+		const startGeneration = session.killGeneration;
 		let resolveLock!: () => void;
-		const lockingPromise = new Promise<void>((resolve) => {
+		let rejectLock!: (reason?: unknown) => void;
+		const lockingPromise = new Promise<void>((resolve, reject) => {
 			resolveLock = resolve;
+			rejectLock = reject;
 		});
 		session.lockingPromise = lockingPromise;
 		void (async (): Promise<void> => {
+			let lockError: unknown = null;
+			let hasFailed = false;
 			try {
-				if (dek && sameFile && session.lockingPromise === lockingPromise) {
+				if (
+					dek &&
+					sameFile &&
+					session.lockingPromise === lockingPromise &&
+					session.killGeneration === startGeneration
+				) {
 					await this.absorbNewEditorImages(session, currentText, dek);
-					if (session.lockingPromise !== lockingPromise) return;
+					if (session.lockingPromise !== lockingPromise || session.killGeneration !== startGeneration) return;
 					if (session.view.file === session.file && session.state === "unlocked") {
 						const postAbsorbText = session.view.editor.getValue();
 						if (postAbsorbText !== currentText && postAbsorbText !== session.decoyBody) {
 							currentText = postAbsorbText;
 							await this.absorbNewEditorImages(session, currentText, dek);
-							if (session.lockingPromise !== lockingPromise) return;
+							if (
+								session.lockingPromise !== lockingPromise ||
+								session.killGeneration !== startGeneration
+							) {
+								return;
+							}
 						}
 						currentTitle = this.readEditedInlineTitle(session);
 					}
@@ -345,13 +395,18 @@ export class SessionManager {
 						session.originalPayload.images,
 						session.realTitle,
 					);
-					if (session.lockingPromise !== lockingPromise) return;
+					if (session.lockingPromise !== lockingPromise || session.killGeneration !== startGeneration) return;
 					if (session.view.file === session.file && session.state === "unlocked") {
 						const latestText = session.view.editor.getValue();
 						if (latestText !== currentText && latestText !== session.decoyBody) {
 							currentText = latestText;
 							await this.absorbNewEditorImages(session, currentText, dek);
-							if (session.lockingPromise !== lockingPromise) return;
+							if (
+								session.lockingPromise !== lockingPromise ||
+								session.killGeneration !== startGeneration
+							) {
+								return;
+							}
 							currentTitle = this.readEditedInlineTitle(session);
 							session.realTitle = currentTitle;
 							session.pendingPayload = await reencryptRealText(
@@ -361,22 +416,32 @@ export class SessionManager {
 								session.originalPayload.images,
 								session.realTitle,
 							);
-							if (session.lockingPromise !== lockingPromise) return;
+							if (
+								session.lockingPromise !== lockingPromise ||
+								session.killGeneration !== startGeneration
+							) {
+								return;
+							}
 						}
 					}
 					await this.app.vault.modify(
 						session.file,
 						serializeFile(session.decoyBody, session.pendingPayload),
 					);
-					if (session.lockingPromise !== lockingPromise) return;
+					if (session.lockingPromise !== lockingPromise || session.killGeneration !== startGeneration) return;
 					session.originalPayload = session.pendingPayload;
 					for (const peer of this.getAllByPath(session.file.path)) {
 						peer.originalPayload = session.pendingPayload;
 					}
 				}
+			} catch (error) {
+				hasFailed = true;
+				lockError = error;
 			} finally {
 				dek?.fill(0);
-				if (session.lockingPromise === lockingPromise) {
+				const ownedOnExit =
+					session.lockingPromise === lockingPromise && session.killGeneration === startGeneration;
+				if (ownedOnExit) {
 					session.dek?.fill(0);
 					session.dek = null;
 					this.revokeImageUrls(session);
@@ -394,16 +459,35 @@ export class SessionManager {
 					}
 					session.realTitle = null;
 					this.hooks.onLocked(session);
+					if (hasFailed) {
+						this.hooks.onLockFailed?.(lockError);
+						rejectLock(lockError);
+					} else {
+						resolveLock();
+					}
+				} else {
+					resolveLock();
 				}
-				resolveLock();
 			}
 		})();
 		return lockingPromise;
 	}
 
 	async lockAll(reason: string): Promise<void> {
+		let firstError: unknown = null;
+		let hasError = false;
 		for (const session of this.all()) {
-			await this.lock(session, reason);
+			try {
+				await this.lock(session, reason);
+			} catch (error) {
+				if (!hasError) {
+					hasError = true;
+					firstError = error;
+				}
+			}
+		}
+		if (hasError) {
+			throw firstError;
 		}
 	}
 
@@ -413,6 +497,7 @@ export class SessionManager {
 	 */
 	hardKillAll(): void {
 		for (const session of this.all()) {
+			session.killGeneration += 1;
 			session.dek?.fill(0);
 			session.dek = null;
 			this.revokeImageUrls(session);

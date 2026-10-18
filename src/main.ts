@@ -64,6 +64,9 @@ export default class VeneerPlugin extends Plugin {
 				onUnlocked: () => { this.lockEngine.onSessionUnlocked(); this.updateWordCounter(); },
 				onLocked: () => { this.dots.reset(); this.updateWordCounter(); },
 				onUnlockBlocked: () => this.warnFileRecoveryOnce(),
+				onLockFailed: () => {
+					new Notice("Could not safely re-encrypt this note. Mask it and try again.");
+				},
 			},
 			() => this.settings.triggerPrefix,
 			() =>
@@ -259,7 +262,11 @@ export default class VeneerPlugin extends Plugin {
 				const view = this.app.workspace.getActiveViewOfType(MarkdownView);
 				if (!view) return;
 				const session = this.sessions.get(view);
-				if (session) void this.sessions.lock(session, "manual");
+				if (session) {
+					void this.sessions.lock(session, "manual").catch((error) => {
+						console.warn("Veneer: manual mask failed", error);
+					});
+				}
 			},
 		});
 		this.addCommand({
@@ -378,11 +385,21 @@ export default class VeneerPlugin extends Plugin {
 		}).open();
 	}
 
+	private abortIfLiveSession(file: TFile, notice: string): boolean {
+		if (!this.sessions.hasLiveSession(file.path)) return false;
+		new Notice(notice);
+		return true;
+	}
+
 	private async refreshDecoy(file: TFile): Promise<void> {
-		for (const session of this.sessions.getAllByPath(file.path)) {
-			if (session.state === "unlocked") {
-				await this.sessions.lock(session, "refresh-decoy");
+		try {
+			for (const session of this.sessions.getAllByPath(file.path)) {
+				if (session.state === "unlocked" || session.lockingPromise !== null) {
+					await this.sessions.lock(session, "refresh-decoy");
+				}
 			}
+		} catch {
+			return;
 		}
 		const content = await this.app.vault.read(file);
 		const parsed = parseFileContent(content);
@@ -403,14 +420,21 @@ export default class VeneerPlugin extends Plugin {
 		);
 		const { title: rawTitle, body: decoyBody } = splitTitleFromBody(result.text.trim());
 		const finalBody = decoyBody.length > 0 ? decoyBody : result.text.trim();
-		for (const session of this.sessions.getAllByPath(file.path)) {
-			if (session.state === "unlocked") {
-				await this.sessions.lock(session, "refresh-decoy");
+		try {
+			for (const session of this.sessions.getAllByPath(file.path)) {
+				if (session.state === "unlocked" || session.lockingPromise !== null) {
+					await this.sessions.lock(session, "refresh-decoy");
+				}
 			}
+		} catch {
+			return;
 		}
 		const latest = parseFileContent(await this.app.vault.read(file));
 		if (!latest) {
 			new Notice("Not a protected note.");
+			return;
+		}
+		if (this.abortIfLiveSession(file, "Note was unlocked during refresh. Mask it and try again.")) {
 			return;
 		}
 		for (const session of this.sessions.getAllByPath(file.path)) {
@@ -460,10 +484,14 @@ export default class VeneerPlugin extends Plugin {
 	private async changePasswordViaModal(): Promise<void> {
 		const file = this.app.workspace.getActiveFile();
 		if (!file) return;
-		for (const activeSession of this.sessions.getAllByPath(file.path)) {
-			if (activeSession.state === "unlocked") {
-				await this.sessions.lock(activeSession, "change-password");
+		try {
+			for (const activeSession of this.sessions.getAllByPath(file.path)) {
+				if (activeSession.state === "unlocked" || activeSession.lockingPromise !== null) {
+					await this.sessions.lock(activeSession, "change-password");
+				}
 			}
+		} catch {
+			return;
 		}
 		const content = await this.app.vault.read(file);
 		const parsed = parseFileContent(content);
@@ -481,12 +509,20 @@ export default class VeneerPlugin extends Plugin {
 		}
 		try {
 			for (const activeSession of this.sessions.getAllByPath(file.path)) {
-				if (activeSession.state === "unlocked") {
+				if (activeSession.state === "unlocked" || activeSession.lockingPromise !== null) {
 					await this.sessions.lock(activeSession, "change-password");
 				}
 			}
 			const latestParsed = parseFileContent(await this.app.vault.read(file)) ?? parsed;
 			const rotated = await changePassword(latestParsed.payload, oldPassword, newPassword);
+			if (
+				this.abortIfLiveSession(
+					file,
+					"Note was unlocked during password change. Mask it and try again.",
+				)
+			) {
+				return;
+			}
 			for (const openSession of this.sessions.getAllByPath(file.path)) {
 				openSession.originalPayload = rotated;
 				if (openSession.pendingPayload !== null) {
@@ -503,10 +539,14 @@ export default class VeneerPlugin extends Plugin {
 	private async unprotectViaModal(): Promise<void> {
 		const file = this.app.workspace.getActiveFile();
 		if (!file) return;
-		for (const activeSession of this.sessions.getAllByPath(file.path)) {
-			if (activeSession.state === "unlocked") {
-				await this.sessions.lock(activeSession, "unprotect");
+		try {
+			for (const activeSession of this.sessions.getAllByPath(file.path)) {
+				if (activeSession.state === "unlocked" || activeSession.lockingPromise !== null) {
+					await this.sessions.lock(activeSession, "unprotect");
+				}
 			}
+		} catch {
+			return;
 		}
 		const content = await this.app.vault.read(file);
 		const parsed = parseFileContent(content);
@@ -518,14 +558,20 @@ export default class VeneerPlugin extends Plugin {
 		if (password === null) return;
 		try {
 			for (const activeSession of this.sessions.getAllByPath(file.path)) {
-				if (activeSession.state === "unlocked") {
+				if (activeSession.state === "unlocked" || activeSession.lockingPromise !== null) {
 					await this.sessions.lock(activeSession, "unprotect");
 				}
 			}
 			const latestParsed = parseFileContent(await this.app.vault.read(file)) ?? parsed;
 			const { realText, dek, images, realTitle } = await unlockPayload(latestParsed.payload, password);
 			dek.fill(0);
+			if (this.abortIfLiveSession(file, "Note was unlocked during unprotect. Mask it and try again.")) {
+				return;
+			}
 			await restoreVaultImages(this.app, file.parent?.path ?? "", images);
+			if (this.abortIfLiveSession(file, "Note was unlocked during unprotect. Mask it and try again.")) {
+				return;
+			}
 			const openSessions = this.sessions.getAllByPath(file.path);
 			for (const session of openSessions) {
 				this.sessions.discardAndDetach(session.view);

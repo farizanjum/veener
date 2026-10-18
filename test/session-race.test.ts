@@ -29,18 +29,22 @@ interface FakeHarness {
 	readonly hooks: SessionHooks;
 	readonly modifyCalls: string[];
 	readonly lockedCount: () => number;
+	readonly lockFailedErrors: unknown[];
 	getEditorText(): string;
 	setEditorText(next: string): void;
 	setFile(next: TFile | null): void;
 	createPane(initialText?: string): FakePane;
 	setImageLookupDelay(delayMs: number, onLookup?: () => void): void;
+	setModifyFailure(error: Error | null): void;
 }
 
 function createFakeHarness(initialEditorText: string): FakeHarness {
 	let lockedEvents = 0;
+	const lockFailedErrors: unknown[] = [];
 	const modifyCalls: string[] = [];
 	let imageLookupDelayMs = 0;
 	let onImageLookup: (() => void) | undefined;
+	let modifyFailure: Error | null = null;
 
 	const file = {
 		path: "Weekend Errands.md",
@@ -102,6 +106,11 @@ function createFakeHarness(initialEditorText: string): FakeHarness {
 			delete: async () => undefined,
 			modify: async (_target: TFile, data: string) => {
 				await new Promise((resolve) => setTimeout(resolve, 15));
+				if (modifyFailure !== null) {
+					const err = modifyFailure;
+					modifyFailure = null;
+					throw err;
+				}
 				modifyCalls.push(data);
 			},
 		},
@@ -113,6 +122,9 @@ function createFakeHarness(initialEditorText: string): FakeHarness {
 			lockedEvents += 1;
 		},
 		onUnlockBlocked: () => undefined,
+		onLockFailed: (error: unknown) => {
+			lockFailedErrors.push(error);
+		},
 	};
 
 	return {
@@ -122,6 +134,7 @@ function createFakeHarness(initialEditorText: string): FakeHarness {
 		hooks,
 		modifyCalls,
 		lockedCount: () => lockedEvents,
+		lockFailedErrors,
 		getEditorText: primaryPane.getEditorText,
 		setEditorText: primaryPane.setEditorText,
 		setFile: primaryPane.setFile,
@@ -129,6 +142,9 @@ function createFakeHarness(initialEditorText: string): FakeHarness {
 		setImageLookupDelay: (delayMs: number, callback?: () => void) => {
 			imageLookupDelayMs = delayMs;
 			onImageLookup = callback;
+		},
+		setModifyFailure: (error: Error | null) => {
+			modifyFailure = error;
 		},
 	};
 }
@@ -406,5 +422,182 @@ describe("SessionManager race conditions (Issue #2)", () => {
 		expect(harness.modifyCalls).toHaveLength(0);
 		expect(session.lockingPromise).toBeNull();
 		expect(session.dek).toBeNull();
+	});
+
+	it("rejects the shared lock() promise and invokes onLockFailed when vault.modify throws", async () => {
+		// Given: an unlocked session whose vault.modify will throw on the next write
+		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+		const parsed = parseFileContent(fileContent);
+		if (!parsed) throw new Error("Expected parsed payload");
+
+		const harness = createFakeHarness(DECOY);
+		const sessions = new SessionManager(
+			harness.app,
+			harness.hooks,
+			() => ";;",
+			() => null,
+		);
+		const session = sessions.attachFromLoad(harness.view, harness.file, parsed);
+		await sessions.unlock(session, PASSWORD);
+		harness.setEditorText(EDITED_REAL);
+		const diskError = new Error("ENOSPC: no space left on device");
+		harness.setModifyFailure(diskError);
+
+		// When: lock() runs and encounters the modify failure
+		await expect(sessions.lock(session, "manual")).rejects.toThrow("ENOSPC: no space left on device");
+
+		// Then: the session still zeroes keys, restores decoy, and surfaces the failure via onLockFailed
+		expect(session.state).toBe("locked");
+		expect(session.dek).toBeNull();
+		expect(session.lockingPromise).toBeNull();
+		expect(harness.getEditorText()).toBe(DECOY);
+		expect(harness.lockFailedErrors).toEqual([diskError]);
+	});
+
+	it("prevents absorbNewEditorImages from merging images or creating blob URLs after hardKillAll mid-lock", async () => {
+		// Given: an unlocked session with an embedded image and stubbed URL.createObjectURL
+		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+		const parsed = parseFileContent(fileContent);
+		if (!parsed) throw new Error("Expected parsed payload");
+
+		const createdUrls: string[] = [];
+		const revokedUrls: string[] = [];
+		const originalCreate = URL.createObjectURL;
+		const originalRevoke = URL.revokeObjectURL;
+		URL.createObjectURL = () => {
+			const u = `blob:test-${createdUrls.length + 1}`;
+			createdUrls.push(u);
+			return u;
+		};
+		URL.revokeObjectURL = (u: string) => {
+			revokedUrls.push(u);
+		};
+
+		try {
+			const harness = createFakeHarness(DECOY);
+			const sessions = new SessionManager(
+				harness.app,
+				harness.hooks,
+				() => ";;",
+				() => null,
+			);
+			const session = sessions.attachFromLoad(harness.view, harness.file, parsed);
+			await sessions.unlock(session, PASSWORD);
+			harness.setEditorText(`${EDITED_REAL}\n![[Pasted image.png]]`);
+
+			// When: hardKillAll runs while absorbNewEditorImages is awaiting readBinary
+			harness.setImageLookupDelay(20, () => {
+				sessions.hardKillAll();
+			});
+			await sessions.lock(session, "shred-race");
+
+			// Then: the image was never merged into originalPayload and no unrevoked blob URLs remain
+			expect(session.originalPayload.images?.["Pasted image.png"]).toBeUndefined();
+			expect(session.imageUrls.size).toBe(0);
+			expect(createdUrls).toHaveLength(0);
+			expect(harness.modifyCalls).toHaveLength(0);
+		} finally {
+			URL.createObjectURL = originalCreate;
+			URL.revokeObjectURL = originalRevoke;
+		}
+	});
+
+	it("aborts an in-flight unlock() and zeroes the derived DEK if hardKillAll runs before unlockPayload resolves", async () => {
+		// Given: a locked session with a valid password
+		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+		const parsed = parseFileContent(fileContent);
+		if (!parsed) throw new Error("Expected parsed payload");
+
+		const harness = createFakeHarness(DECOY);
+		const sessions = new SessionManager(
+			harness.app,
+			harness.hooks,
+			() => ";;",
+			() => null,
+		);
+		const session = sessions.attachFromLoad(harness.view, harness.file, parsed);
+
+		// When: unlock() is started and hardKillAll() runs synchronously while Argon2id is in flight
+		const unlockPromise = sessions.unlock(session, PASSWORD);
+		sessions.hardKillAll();
+		const outcome = await unlockPromise;
+
+		// Then: unlock returns "blocked" silently, keeps state locked, and leaves decoy in the editor
+		expect(outcome).toBe("blocked");
+		expect(session.state).toBe("locked");
+		expect(session.dek).toBeNull();
+		expect(harness.getEditorText()).toBe(DECOY);
+	});
+
+	it("reports hasLiveSession accurately across locked, unlocked, in-flight lock, and detached states", async () => {
+		// Given: a newly attached locked session
+		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+		const parsed = parseFileContent(fileContent);
+		if (!parsed) throw new Error("Expected parsed payload");
+
+		const harness = createFakeHarness(DECOY);
+		const sessions = new SessionManager(
+			harness.app,
+			harness.hooks,
+			() => ";;",
+			() => null,
+		);
+		const session = sessions.attachFromLoad(harness.view, harness.file, parsed);
+		expect(sessions.hasLiveSession(harness.file.path)).toBe(false);
+
+		// When: the session is unlocked and then locked
+		await sessions.unlock(session, PASSWORD);
+		expect(sessions.hasLiveSession(harness.file.path)).toBe(true);
+		const lockPromise = sessions.lock(session, "manual");
+		expect(sessions.hasLiveSession(harness.file.path)).toBe(true);
+		await lockPromise;
+		expect(sessions.hasLiveSession(harness.file.path)).toBe(false);
+
+		// Then: unlocking again and calling discardAndDetach clears live status immediately
+		await sessions.unlock(session, PASSWORD);
+		expect(sessions.hasLiveSession(harness.file.path)).toBe(true);
+		sessions.discardAndDetach(harness.view);
+		expect(sessions.hasLiveSession(harness.file.path)).toBe(false);
+	});
+
+	it("masks all remaining sessions in lockAll even when the first session's lock fails, then rethrows the first error", async () => {
+		// Given: two unlocked sessions where the first session's vault.modify fails
+		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+		const parsed = parseFileContent(fileContent);
+		if (!parsed) throw new Error("Expected parsed payload");
+
+		const harness = createFakeHarness(DECOY);
+		const secondPane = harness.createPane(DECOY);
+		const secondFile = {
+			path: "Second Secret.md",
+			name: "Second Secret.md",
+			basename: "Second Secret",
+			extension: "md",
+		} as unknown as TFile;
+		secondPane.setFile(secondFile);
+
+		const sessions = new SessionManager(
+			harness.app,
+			harness.hooks,
+			() => ";;",
+			() => null,
+		);
+		const session1 = sessions.attachFromLoad(harness.view, harness.file, parsed);
+		const session2 = sessions.attachFromLoad(secondPane.view, secondFile, parsed);
+		await sessions.unlock(session1, PASSWORD);
+		await sessions.unlock(session2, PASSWORD);
+		harness.setEditorText(EDITED_REAL);
+		secondPane.setEditorText(EDITED_REAL);
+		harness.setModifyFailure(new Error("First pane write failed"));
+
+		// When: lockAll is invoked across both sessions
+		await expect(sessions.lockAll("panic")).rejects.toThrow("First pane write failed");
+
+		// Then: both sessions were masked and the second session still persisted its payload
+		expect(session1.state).toBe("locked");
+		expect(session2.state).toBe("locked");
+		expect(harness.getEditorText()).toBe(DECOY);
+		expect(secondPane.getEditorText()).toBe(DECOY);
+		expect(harness.modifyCalls).toHaveLength(1);
 	});
 });
