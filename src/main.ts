@@ -65,7 +65,9 @@ export default class VeneerPlugin extends Plugin {
 				onLocked: () => { this.dots.reset(); this.updateWordCounter(); },
 				onUnlockBlocked: () => this.warnFileRecoveryOnce(),
 				onLockFailed: () => {
-					new Notice("Could not safely re-encrypt this note. Mask it and try again.");
+					new Notice(
+						"Veneer: could not save your latest edits before masking. The note is masked; unlock it to check for missing changes.",
+					);
 				},
 			},
 			() => this.settings.triggerPrefix,
@@ -437,6 +439,7 @@ export default class VeneerPlugin extends Plugin {
 		if (this.abortIfLiveSession(file, "Note was unlocked during refresh. Mask it and try again.")) {
 			return;
 		}
+		await this.app.vault.modify(file, serializeFile(finalBody, latest.payload));
 		for (const session of this.sessions.getAllByPath(file.path)) {
 			session.decoyBody = finalBody;
 			session.originalPayload = latest.payload;
@@ -444,7 +447,6 @@ export default class VeneerPlugin extends Plugin {
 				session.view.setViewData(finalBody, true);
 			}
 		}
-		await this.app.vault.modify(file, serializeFile(finalBody, latest.payload));
 		await this.retitleToFile(file, rawTitle);
 		new Notice(`Cover refreshed (${result.source}).`);
 	}
@@ -523,13 +525,13 @@ export default class VeneerPlugin extends Plugin {
 			) {
 				return;
 			}
+			await this.app.vault.modify(file, serializeFile(latestParsed.decoyBody, rotated));
 			for (const openSession of this.sessions.getAllByPath(file.path)) {
 				openSession.originalPayload = rotated;
 				if (openSession.pendingPayload !== null) {
 					openSession.pendingPayload = rotated;
 				}
 			}
-			await this.app.vault.modify(file, serializeFile(latestParsed.decoyBody, rotated));
 			new Notice("Password changed.");
 		} catch {
 			new Notice("Password change failed.");
@@ -573,10 +575,19 @@ export default class VeneerPlugin extends Plugin {
 				return;
 			}
 			const openSessions = this.sessions.getAllByPath(file.path);
+			const releasePath = this.sessions.reservePath(file.path);
+			try {
+				await this.app.vault.modify(file, `${realText}\n`);
+			} catch (error) {
+				console.warn("Veneer: unprotect could not write the note", error);
+				new Notice("Could not write the unprotected note. The note is still masked.");
+				return;
+			} finally {
+				releasePath();
+			}
 			for (const session of openSessions) {
 				this.sessions.discardAndDetach(session.view);
 			}
-			await this.app.vault.modify(file, `${realText}\n`);
 			for (const session of openSessions) {
 				if (session.view.file === file) {
 					session.view.setViewData(realText, true);

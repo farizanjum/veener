@@ -600,4 +600,141 @@ describe("SessionManager race conditions (Issue #2)", () => {
 		expect(secondPane.getEditorText()).toBe(DECOY);
 		expect(harness.modifyCalls).toHaveLength(1);
 	});
+
+	it("blocks unlock and reports a live session while a path is reserved, then releases idempotently", async () => {
+		// Given: a locked session whose path is not reserved
+		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+		const parsed = parseFileContent(fileContent);
+		if (!parsed) throw new Error("Expected parsed payload");
+
+		const harness = createFakeHarness(DECOY);
+		const sessions = new SessionManager(
+			harness.app,
+			harness.hooks,
+			() => ";;",
+			() => null,
+		);
+		const session = sessions.attachFromLoad(harness.view, harness.file, parsed);
+		expect(sessions.isPathReserved(harness.file.path)).toBe(false);
+		expect(sessions.hasLiveSession(harness.file.path)).toBe(false);
+
+		// When: a caller reserves the path for a direct write
+		const release = sessions.reservePath(harness.file.path);
+
+		// Then: the path counts as live and unlock is refused without touching the session
+		expect(sessions.isPathReserved(harness.file.path)).toBe(true);
+		expect(sessions.hasLiveSession(harness.file.path)).toBe(true);
+		expect(await sessions.unlock(session, PASSWORD)).toBe("blocked");
+		expect(session.state).toBe("locked");
+		expect(session.dek).toBeNull();
+
+		// When: the release is called twice (idempotent)
+		release();
+		release();
+
+		// Then: the reservation is gone, the session is no longer live, and unlock succeeds
+		expect(sessions.isPathReserved(harness.file.path)).toBe(false);
+		expect(sessions.hasLiveSession(harness.file.path)).toBe(false);
+		expect(await sessions.unlock(session, PASSWORD)).toBe("ok");
+		expect(session.state).toBe("unlocked");
+	});
+
+	it("no-ops lock() while the path is reserved so the direct writer keeps exclusive access", async () => {
+		// Given: an unlocked session with unsaved edits and a reserved path
+		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+		const parsed = parseFileContent(fileContent);
+		if (!parsed) throw new Error("Expected parsed payload");
+
+		const harness = createFakeHarness(DECOY);
+		const sessions = new SessionManager(
+			harness.app,
+			harness.hooks,
+			() => ";;",
+			() => null,
+		);
+		const session = sessions.attachFromLoad(harness.view, harness.file, parsed);
+		await sessions.unlock(session, PASSWORD);
+		harness.setEditorText(EDITED_REAL);
+		const release = sessions.reservePath(harness.file.path);
+
+		try {
+			// When: lock() is triggered while the path is reserved
+			await sessions.lock(session, "reserved");
+
+			// Then: no write is attempted and the session keeps its unlocked state and edits
+			expect(harness.modifyCalls).toHaveLength(0);
+			expect(session.state).toBe("unlocked");
+			expect(session.lockingPromise).toBeNull();
+			expect(session.dek).not.toBeNull();
+			expect(harness.getEditorText()).toBe(EDITED_REAL);
+		} finally {
+			release();
+		}
+	});
+
+	it("lets an in-flight lock finish and persist its snapshot when the view is reassigned to another file", async () => {
+		// Given: an unlocked session whose lock() is suspended inside absorbNewEditorImages
+		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+		const parsed = parseFileContent(fileContent);
+		if (!parsed) throw new Error("Expected parsed payload");
+
+		const harness = createFakeHarness(DECOY);
+		const sessions = new SessionManager(
+			harness.app,
+			harness.hooks,
+			() => ";;",
+			() => null,
+		);
+		const session = sessions.attachFromLoad(harness.view, harness.file, parsed);
+		await sessions.unlock(session, PASSWORD);
+		harness.setEditorText(EDITED_REAL);
+
+		// When: lock() starts and the view is synchronously reassigned to another note mid-flight
+		const lockPromise = sessions.lock(session, "reassign-race");
+		const otherFile = {
+			path: "Other Note.md",
+			name: "Other Note.md",
+			basename: "Other Note",
+			extension: "md",
+		} as unknown as TFile;
+		sessions.attachFromLoad(harness.view, otherFile, parsed);
+		await lockPromise;
+
+		// Then: the orphaned lock was not killed, wrote exactly once, and persisted the latest real text
+		expect(session.killGeneration).toBe(0);
+		expect(session.state).toBe("locked");
+		expect(harness.modifyCalls).toHaveLength(1);
+		const rewritten = parseFileContent(harness.modifyCalls[0]);
+		if (!rewritten) throw new Error("Expected serialized payload");
+		const { realText } = await unlockPayload(rewritten.payload, PASSWORD);
+		expect(realText).toBe(EDITED_REAL);
+	});
+
+	it("aborts an in-flight unlock() that loses its view mapping even without a generation bump", async () => {
+		// Given: a locked session with a valid password
+		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+		const parsed = parseFileContent(fileContent);
+		if (!parsed) throw new Error("Expected parsed payload");
+
+		const harness = createFakeHarness(DECOY);
+		const sessions = new SessionManager(
+			harness.app,
+			harness.hooks,
+			() => ";;",
+			() => null,
+		);
+		const session = sessions.attachFromLoad(harness.view, harness.file, parsed);
+
+		// When: unlock() is started and the view is detached synchronously while the KDF is in flight
+		const unlockPromise = sessions.unlock(session, PASSWORD);
+		sessions.detach(harness.view);
+		const outcome = await unlockPromise;
+
+		// Then: the orphaned unlock is refused without a generation bump, so no key or text leaks into the pane
+		expect(outcome).toBe("blocked");
+		expect(session.killGeneration).toBe(0);
+		expect(session.state).toBe("locked");
+		expect(session.dek).toBeNull();
+		expect(harness.getEditorText()).toBe(DECOY);
+	});
 });

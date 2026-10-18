@@ -48,6 +48,7 @@ const REENCRYPT_DEBOUNCE_MS = 250;
 export class SessionManager {
 	private readonly byView = new WeakMap<MarkdownView, ViewSession>();
 	private readonly byPath = new Map<string, Set<ViewSession>>();
+	private readonly reservedPaths = new Set<string>();
 
 	constructor(
 		private readonly app: App,
@@ -89,7 +90,30 @@ export class SessionManager {
 		return sessions.find((s) => s.state === "unlocked") ?? sessions[sessions.length - 1] ?? null;
 	}
 
+	/**
+	 * Blocks new masking/unlocking work for a path while a caller writes the file
+	 * directly, so no session can interleave a conflicting write. Returns an
+	 * idempotent release.
+	 */
+	reservePath(path: string): () => void {
+		this.reservedPaths.add(path);
+		return () => {
+			this.reservedPaths.delete(path);
+		};
+	}
+
+	/** True while some caller holds the path via {@link reservePath}. */
+	isPathReserved(path: string): boolean {
+		return this.reservedPaths.has(path);
+	}
+
+	/** True while `session` is still the session mapped to its view. */
+	private isAttached(session: ViewSession): boolean {
+		return this.byView.get(session.view) === session;
+	}
+
 	hasLiveSession(path: string): boolean {
+		if (this.reservedPaths.has(path)) return true;
 		const set = this.byPath.get(path);
 		if (!set) return false;
 		for (const session of set) {
@@ -121,21 +145,26 @@ export class SessionManager {
 				}
 				return existing;
 			}
-			existing.killGeneration += 1;
-			if (existing.state === "unlocked" || existing.lockingPromise !== null) {
-				existing.dek?.fill(0);
-				existing.dek = null;
-				this.revokeImageUrls(existing);
-				existing.state = "locked";
-				existing.lockingPromise = null;
-				existing.pendingPayload = null;
-				existing.realTitle = null;
-				existing.capture.cancel();
-				if (existing.reencryptTimer !== null) {
-					clearTimeout(existing.reencryptTimer);
-					existing.reencryptTimer = null;
+			// A pending mask keeps its captured state and finishes on its own, so only
+			// its mappings move to the new session; invalidating it here would strand
+			// an in-flight re-encrypt mid-write.
+			if (existing.lockingPromise === null) {
+				existing.killGeneration += 1;
+				if (existing.state === "unlocked") {
+					existing.dek?.fill(0);
+					existing.dek = null;
+					this.revokeImageUrls(existing);
+					existing.state = "locked";
+					existing.lockingPromise = null;
+					existing.pendingPayload = null;
+					existing.realTitle = null;
+					existing.capture.cancel();
+					if (existing.reencryptTimer !== null) {
+						clearTimeout(existing.reencryptTimer);
+						existing.reencryptTimer = null;
+					}
+					this.hooks.onLocked(existing);
 				}
-				this.hooks.onLocked(existing);
 			}
 			this.removeFromPath(existing.file.path, existing);
 			this.byView.delete(view);
@@ -292,6 +321,7 @@ export class SessionManager {
 
 	async unlock(session: ViewSession, password: string): Promise<UnlockOutcome> {
 		const startGeneration = session.killGeneration;
+		if (this.reservedPaths.has(session.file.path)) return "blocked";
 		if (session.lockingPromise !== null) {
 			try {
 				await session.lockingPromise;
@@ -299,7 +329,7 @@ export class SessionManager {
 				console.warn("Veneer: prior lock failed before unlock", error);
 			}
 		}
-		if (session.killGeneration !== startGeneration) return "blocked";
+		if (session.killGeneration !== startGeneration || !this.isAttached(session)) return "blocked";
 		if (session.state === "unlocked") return "ok";
 		const blockReason = this.unlockBlockReason();
 		if (blockReason !== null) {
@@ -310,7 +340,7 @@ export class SessionManager {
 		if (!session.backoff.canAttempt(now)) return "backoff";
 		try {
 			const { realText, dek, images, realTitle } = await unlockPayload(session.originalPayload, password);
-			if (session.killGeneration !== startGeneration) {
+			if (session.killGeneration !== startGeneration || !this.isAttached(session)) {
 				dek.fill(0);
 				return "blocked";
 			}
@@ -342,6 +372,7 @@ export class SessionManager {
 	 * re-encrypts the latest plaintext to disk, zeroes key material, and restores the decoy cover.
 	 */
 	lock(session: ViewSession, reason: string): Promise<void> {
+		if (this.reservedPaths.has(session.file.path)) return Promise.resolve();
 		if (session.lockingPromise !== null) return session.lockingPromise;
 		if (session.state !== "unlocked") return Promise.resolve();
 		if (session.reencryptTimer !== null) {
