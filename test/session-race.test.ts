@@ -967,4 +967,122 @@ describe("SessionManager race conditions (Issue #2)", () => {
 		}
 		expect(sessions.hasLiveSession(harness.file.path)).toBe(false);
 	});
+
+	it("replays deferred saves only after the last reservation release and isolates a throwing save", () => {
+		// Given: a path reserved twice with three deferred saves queued behind it
+		const harness = createFakeHarness(DECOY);
+		const sessions = new SessionManager(
+			harness.app,
+			harness.hooks,
+			() => ";;",
+			() => null,
+		);
+		const release1 = sessions.reservePath(harness.file.path);
+		const release2 = sessions.reservePath(harness.file.path);
+
+		const order: string[] = [];
+		let reservedAtFlush: boolean | null = null;
+		sessions.deferSave(harness.file.path, () => {
+			reservedAtFlush = sessions.isPathReserved(harness.file.path);
+			order.push("first");
+		});
+		sessions.deferSave(harness.file.path, () => {
+			order.push("throwing");
+			throw new Error("deferred save exploded");
+		});
+		sessions.deferSave(harness.file.path, () => order.push("second"));
+
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		try {
+			// When: one reservation releases (ref-count still > 0) and then the last one releases
+			release1();
+			release1();
+			expect(order).toEqual([]);
+			expect(sessions.isPathReserved(harness.file.path)).toBe(true);
+
+			release2();
+
+			// Then: every deferred save ran once in order, the throwing one was isolated, and the
+			// flush observed the path as no longer reserved
+			expect(order).toEqual(["first", "throwing", "second"]);
+			expect(reservedAtFlush).toBe(false);
+			expect(warnSpy).toHaveBeenCalledWith(
+				"Veneer: deferred save after reservation failed",
+				expect.any(Error),
+			);
+			expect(sessions.isPathReserved(harness.file.path)).toBe(false);
+			expect(sessions.hasLiveSession(harness.file.path)).toBe(false);
+		} finally {
+			warnSpy.mockRestore();
+		}
+	});
+
+	it("ignores foreign editor text typed after a mid-lock detach instead of persisting it", async () => {
+		// Given: an unlocked session on a note with an embedded image, and a detach during absorption
+		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+		const parsed = parseFileContent(fileContent);
+		if (!parsed) throw new Error("Expected parsed payload");
+
+		const harness = createFakeHarness(DECOY);
+		const sessions = new SessionManager(
+			harness.app,
+			harness.hooks,
+			() => ";;",
+			() => null,
+		);
+		const session = sessions.attachFromLoad(harness.view, harness.file, parsed);
+		await sessions.unlock(session, PASSWORD);
+		const textWithImage = `${EDITED_REAL}\n![[Pasted image.png]]`;
+		harness.setEditorText(textWithImage);
+		const foreignText = "## Different cover\n\n- unrelated";
+
+		// When: the pane is detached and its text replaced with a foreign note while lock() awaits the image read
+		harness.setImageLookupDelay(20, () => {
+			sessions.detach(harness.view);
+			harness.setEditorText(foreignText);
+		});
+		await sessions.lock(session, "detach-race");
+
+		// Then: lock() re-read no text from the detached pane, so the payload keeps the real snapshot
+		expect(harness.modifyCalls).toHaveLength(1);
+		expect(session.state).toBe("locked");
+		expect(session.dek).toBeNull();
+		expect(session.lockingPromise).toBeNull();
+		const savedOnDisk = parseFileContent(harness.modifyCalls[0] ?? "");
+		if (!savedOnDisk) throw new Error("Expected saved payload on disk");
+		const unlockedAgain = await unlockPayload(savedOnDisk.payload, PASSWORD);
+		expect(unlockedAgain.realText).toBe(textWithImage);
+		expect(unlockedAgain.realText).not.toContain("Different cover");
+		unlockedAgain.dek.fill(0);
+	});
+
+	it("lets a concurrent unlock loser discard only its own key without re-running the unlock hooks", async () => {
+		// Given: a locked session unlocked twice before either derivation resolves
+		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+		const parsed = parseFileContent(fileContent);
+		if (!parsed) throw new Error("Expected parsed payload");
+
+		const harness = createFakeHarness(DECOY);
+		let unlockedCalls = 0;
+		const sessions = new SessionManager(
+			harness.app,
+			{ ...harness.hooks, onUnlocked: () => (unlockedCalls += 1) },
+			() => ";;",
+			() => null,
+		);
+		const session = sessions.attachFromLoad(harness.view, harness.file, parsed);
+
+		// When: both unlock() calls are in flight at their unlockPayload await
+		const first = sessions.unlock(session, PASSWORD);
+		const second = sessions.unlock(session, PASSWORD);
+		const outcomes = await Promise.all([first, second]);
+
+		// Then: both report success, the winner's key survives, and only one unlock was announced
+		expect(outcomes).toEqual(["ok", "ok"]);
+		expect(session.state).toBe("unlocked");
+		expect(session.killGeneration).toBe(0);
+		expect(session.dek).not.toBeNull();
+		expect(unlockedCalls).toBe(1);
+		expect(harness.getEditorText()).toBe(INITIAL_REAL);
+	});
 });

@@ -55,6 +55,12 @@ export function installViewPatches(
 		const session = sessions.get(this);
 		if (session && this.file === session.file) {
 			if (sessions.isPathReserved(session.file.path)) {
+				// A reservation holder is mid-write for this path. Replay this save once
+				// the last reservation releases rather than dropping it silently.
+				sessions.deferSave(session.file.path, () => {
+					this.data = this.getViewData();
+					void originalSave.call(this);
+				});
 				return;
 			}
 			this.data = this.getViewData();

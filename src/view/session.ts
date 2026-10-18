@@ -50,6 +50,7 @@ export class SessionManager {
 	private readonly byPath = new Map<string, Set<ViewSession>>();
 	private readonly reservedPaths = new Map<string, number>();
 	private readonly pendingLocks = new Set<ViewSession>();
+	private readonly deferredSaves = new Map<string, Set<() => void>>();
 
 	constructor(
 		private readonly app: App,
@@ -106,10 +107,39 @@ export class SessionManager {
 			const remaining = (this.reservedPaths.get(path) ?? 1) - 1;
 			if (remaining <= 0) {
 				this.reservedPaths.delete(path);
+				this.flushDeferredSaves(path);
 			} else {
 				this.reservedPaths.set(path, remaining);
 			}
 		};
+	}
+
+	/**
+	 * Records a save that was skipped because `path` was reserved, so it can be
+	 * replayed once the last reservation on that path releases. The holder sets
+	 * decoy and payload state synchronously before its write, so a post-release
+	 * `getViewData()` reads a consistent decoy + current ciphertext.
+	 */
+	deferSave(path: string, run: () => void): void {
+		let set = this.deferredSaves.get(path);
+		if (!set) {
+			set = new Set<() => void>();
+			this.deferredSaves.set(path, set);
+		}
+		set.add(run);
+	}
+
+	private flushDeferredSaves(path: string): void {
+		const set = this.deferredSaves.get(path);
+		if (!set) return;
+		this.deferredSaves.delete(path);
+		for (const run of set) {
+			try {
+				run();
+			} catch (error) {
+				console.warn("Veneer: deferred save after reservation failed", error);
+			}
+		}
 	}
 
 	/** True while some caller holds the path via {@link reservePath}. */
@@ -120,6 +150,15 @@ export class SessionManager {
 	/** True while `session` is still the session mapped to its view. */
 	private isAttached(session: ViewSession): boolean {
 		return this.byView.get(session.view) === session;
+	}
+
+	/**
+	 * Re-reads `session.state` across a call boundary. Read directly, the declared
+	 * union stays narrowed to the result of any earlier `state === "..."` check,
+	 * which would hide a concurrent transition of the same field.
+	 */
+	private stateOf(session: ViewSession): ViewSession["state"] {
+		return session.state;
 	}
 
 	hasLiveSession(path: string): boolean {
@@ -354,6 +393,14 @@ export class SessionManager {
 		if (!session.backoff.canAttempt(now)) return "backoff";
 		try {
 			const { realText, dek, images, realTitle } = await unlockPayload(session.originalPayload, password);
+			// A concurrent unlock() may have won while we awaited derivation, or a mask
+			// may have started. Either way this derivation lost; zero only our freshly
+			// derived key so we never touch the winner's live key material.
+			const stateAfterDerivation = this.stateOf(session);
+			if (stateAfterDerivation === "unlocked" || session.lockingPromise !== null) {
+				dek.fill(0);
+				return stateAfterDerivation === "unlocked" ? "ok" : "blocked";
+			}
 			if (
 				session.killGeneration !== startGeneration ||
 				!this.isAttached(session) ||
@@ -425,7 +472,11 @@ export class SessionManager {
 				) {
 					await this.absorbNewEditorImages(session, currentText, dek);
 					if (session.lockingPromise !== lockingPromise || session.killGeneration !== startGeneration) return;
-					if (session.view.file === session.file && session.state === "unlocked") {
+					if (
+						this.isAttached(session) &&
+						session.view.file === session.file &&
+						session.state === "unlocked"
+					) {
 						const postAbsorbText = session.view.editor.getValue();
 						if (postAbsorbText !== currentText && postAbsorbText !== session.decoyBody) {
 							currentText = postAbsorbText;
@@ -448,7 +499,11 @@ export class SessionManager {
 						session.realTitle,
 					);
 					if (session.lockingPromise !== lockingPromise || session.killGeneration !== startGeneration) return;
-					if (session.view.file === session.file && session.state === "unlocked") {
+					if (
+						this.isAttached(session) &&
+						session.view.file === session.file &&
+						session.state === "unlocked"
+					) {
 						const latestText = session.view.editor.getValue();
 						if (latestText !== currentText && latestText !== session.decoyBody) {
 							currentText = latestText;
@@ -506,7 +561,7 @@ export class SessionManager {
 						clearTimeout(session.reencryptTimer);
 						session.reencryptTimer = null;
 					}
-					if (sameFile && session.view.file === session.file) {
+					if (this.isAttached(session) && sameFile && session.view.file === session.file) {
 						session.view.setViewData(session.decoyBody, true);
 						this.applyDisplayedTitle(session, session.file.basename);
 					}
