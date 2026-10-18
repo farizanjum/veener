@@ -51,11 +51,11 @@ export function installViewPatches(
 		});
 	};
 
-	proto.save = async function (this: MarkdownView): Promise<void> {
+	proto.save = async function (this: MarkdownView, clear?: boolean): Promise<void> {
 		const session = sessions.get(this);
 		const active = session && this.file === session.file ? session : null;
 		if (!active) {
-			await originalSave.call(this);
+			await originalSave.call(this, clear);
 			return;
 		}
 		await sessions.enqueueWrite(active, async () => {
@@ -67,7 +67,7 @@ export function installViewPatches(
 			if (stillActive) {
 				this.data = this.getViewData();
 			}
-			await originalSave.call(this);
+			await originalSave.call(this, clear);
 			if (stillActive && persisted) {
 				await sessions.commitPersistedPayload(active, persisted);
 			}
