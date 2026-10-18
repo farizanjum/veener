@@ -1017,6 +1017,74 @@ describe("SessionManager race conditions (Issue #2)", () => {
 		}
 	});
 
+	it("replays a save queued during unprotect only after the session has been detached", async () => {
+		// Given: a locked, still-attached session on a path reserved for a direct plaintext
+		// write (the reservation unprotectViaModal holds), with a cover save already queued
+		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+		const parsed = parseFileContent(fileContent);
+		if (!parsed) throw new Error("Expected parsed payload");
+
+		const harness = createFakeHarness(DECOY);
+		const sessions = new SessionManager(
+			harness.app,
+			harness.hooks,
+			() => ";;",
+			() => null,
+		);
+		const session = sessions.attachFromLoad(harness.view, harness.file, parsed);
+		expect(session.state).toBe("locked");
+
+		// getViewData() masks again whenever sessions.get(view) still resolves, so the replay
+		// records exactly that read
+		const attachedWhenReplayed: boolean[] = [];
+		const releasePath = sessions.reservePath(harness.file.path);
+		sessions.deferSave(harness.file.path, () => {
+			attachedWhenReplayed.push(sessions.get(harness.view) !== null);
+		});
+
+		// When: unprotectViaModal's order runs -- discard and detach under the reservation, then release
+		const detached = sessions.discardAndDetach(session);
+		releasePath();
+
+		// Then: the queued save replayed only after detach, so its getViewData() read fell through
+		// to the plaintext editor value instead of re-serializing the decoy and ciphertext
+		expect(detached).toBe(true);
+		expect(attachedWhenReplayed).toEqual([false]);
+		expect(sessions.get(harness.view)).toBeNull();
+		expect(sessions.hasLiveSession(harness.file.path)).toBe(false);
+	});
+
+	it("re-masks the note when a queued unprotect save is replayed before the detach", async () => {
+		// Given: the same locked, attached session with a cover save queued under a reservation
+		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+		const parsed = parseFileContent(fileContent);
+		if (!parsed) throw new Error("Expected parsed payload");
+
+		const harness = createFakeHarness(DECOY);
+		const sessions = new SessionManager(
+			harness.app,
+			harness.hooks,
+			() => ";;",
+			() => null,
+		);
+		const session = sessions.attachFromLoad(harness.view, harness.file, parsed);
+
+		const attachedWhenReplayed: boolean[] = [];
+		const releasePath = sessions.reservePath(harness.file.path);
+		sessions.deferSave(harness.file.path, () => {
+			attachedWhenReplayed.push(sessions.get(harness.view) !== null);
+		});
+
+		// When: the reservation is released while the session is still attached, the order
+		// unprotectViaModal used before the fix
+		releasePath();
+
+		// Then: the replay saw the still-attached masked session and would have overwritten the
+		// plaintext with decoy + ciphertext, the regression releasing after detach prevents
+		expect(attachedWhenReplayed).toEqual([true]);
+		expect(sessions.discardAndDetach(session)).toBe(true);
+	});
+
 	it("ignores foreign editor text typed after a mid-lock detach instead of persisting it", async () => {
 		// Given: an unlocked session on a note with an embedded image, and a detach during absorption
 		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);

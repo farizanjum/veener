@@ -632,23 +632,30 @@ export default class VeneerPlugin extends Plugin {
 			const openSessions = this.sessions.getAllByPath(file.path);
 			const releasePath = this.sessions.reservePath(file.path);
 			try {
-				await this.app.vault.modify(file, `${realText}\n`);
-			} catch (error) {
-				console.warn("Veneer: unprotect could not write the note", error);
-				new Notice("Could not write the unprotected note. The note is still masked.");
-				return;
+				try {
+					await this.app.vault.modify(file, `${realText}\n`);
+				} catch (error) {
+					console.warn("Veneer: unprotect could not write the note", error);
+					new Notice("Could not write the unprotected note. The note is still masked.");
+					return;
+				}
+				// Detach while the path is still reserved. Releasing first would replay any
+				// save queued during the reservation against a still-attached, still-masked
+				// session, re-serializing decoy + ciphertext over the plaintext just written.
+				// Detaching here makes `sessions.get(view)` falsy, so a replayed save falls
+				// through to the editor's real text instead.
+				const targetSessions = new Set<ViewSession>([
+					...openSessions,
+					...this.sessions.getAllByPath(file.path),
+				]);
+				for (const session of targetSessions) {
+					const detached = this.sessions.discardAndDetach(session);
+					if (detached === true && session.view.file === file) {
+						session.view.setViewData(realText, true);
+					}
+				}
 			} finally {
 				releasePath();
-			}
-			const targetSessions = new Set<ViewSession>([
-				...openSessions,
-				...this.sessions.getAllByPath(file.path),
-			]);
-			for (const session of targetSessions) {
-				const detached = this.sessions.discardAndDetach(session);
-				if (detached === true && session.view.file === file) {
-					session.view.setViewData(realText, true);
-				}
 			}
 			await this.registry.remove(file.path);
 			if (realTitle && realTitle.trim().length > 0) {
