@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { editDistance, executeShred, safeEqual, type ShredDeps } from "../src/shred/duress";
+import {
+	editDistance,
+	executeShred,
+	safeEqual,
+	SHRED_FALLBACK_DECOY,
+	stripPortablePayload,
+	type ShredDeps,
+} from "../src/shred/duress";
+import { createFile, parseFileContent } from "../src/crypto/payload";
 
 function makeDeps(failOn?: string): { deps: ShredDeps; calls: string[] } {
 	const calls: string[] = [];
@@ -83,5 +91,25 @@ describe("editDistance", () => {
 		expect(editDistance("kitten", "sitting")).toBe(3);
 		expect(editDistance("same", "same")).toBe(0);
 		expect(editDistance("password", "password1")).toBe(1);
+	});
+});
+
+describe("stripPortablePayload", () => {
+	it("reduces a parsed portable file to its decoy body with a trailing newline", async () => {
+		const { fileContent } = await createFile("real notes", "test-password", "cover body");
+		const parsed = parseFileContent(fileContent);
+		if (parsed === null) throw new Error("Expected parseable payload");
+		const stripped = stripPortablePayload(fileContent, "stale fallback");
+		expect(stripped).toBe(`${parsed.decoyBody}\n`);
+		expect(parseFileContent(stripped)).toBeNull();
+		expect(stripped).toContain("cover body");
+	});
+
+	it("falls back to the remembered decoy when the content does not parse", () => {
+		expect(stripPortablePayload("plain junk", "stale fallback")).toBe("stale fallback\n");
+	});
+
+	it("uses the canned fallback for empty content and empty fallback", () => {
+		expect(stripPortablePayload("", "")).toBe(`${SHRED_FALLBACK_DECOY}\n`);
 	});
 });

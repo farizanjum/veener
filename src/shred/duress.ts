@@ -5,6 +5,8 @@
  * for testability; a failure on one file never aborts the rest.
  */
 
+import { parseFileContent } from "../crypto/payload";
+
 export interface ShredTarget {
 	path: string;
 	mode: "portable" | "stealth";
@@ -59,6 +61,29 @@ export async function executeShred(
 	steps.push("clear-webstorage");
 
 	return { processed: targets.length - failures.length, failures, steps };
+}
+
+/**
+ * Canned decorative note used when a shredded portable file has no remembered
+ * decoy and its payload no longer parses. Plausible, benign, and completely
+ * free of protected content.
+ */
+export const SHRED_FALLBACK_DECOY =
+	"## Daily notes\n\n- water the plants\n- reply to Kara about lunch\n- book the dentist";
+
+/**
+ * Returns the decoy-only content to leave on disk for a protected note during
+ * a portable-mode shred. When `content` still parses, this is exactly the
+ * note's decoy body; otherwise the shredder's last-known decoy (or a canned
+ * decoy) is used, so an unparseable payload can never leak protected text into
+ * the rewritten file.
+ */
+export function stripPortablePayload(content: string, fallbackDecoy?: string | null): string {
+	const parsed = parseFileContent(content);
+	if (parsed) return `${parsed.decoyBody}\n`;
+	const fallback =
+		fallbackDecoy && fallbackDecoy.length > 0 ? fallbackDecoy : SHRED_FALLBACK_DECOY;
+	return `${fallback}\n`;
 }
 
 /** Constant-time-ish string equality for PIN comparison (best effort in JS). */

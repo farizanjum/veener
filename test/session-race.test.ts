@@ -1153,4 +1153,196 @@ describe("SessionManager race conditions (Issue #2)", () => {
 		expect(unlockedCalls).toBe(1);
 		expect(harness.getEditorText()).toBe(INITIAL_REAL);
 	});
+
+	it("hardKillAll detaches the killed session from its pane and path", async () => {
+		// Given: an unlocked session attached to a pane and a path
+		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+		const parsed = parseFileContent(fileContent);
+		if (!parsed) throw new Error("Expected parsed payload");
+
+		const harness = createFakeHarness(DECOY);
+		const sessions = new SessionManager(
+			harness.app,
+			harness.hooks,
+			() => ";;",
+			() => null,
+		);
+		const session = sessions.attachFromLoad(harness.view, harness.file, parsed);
+		await sessions.unlock(session, PASSWORD);
+		expect(sessions.get(harness.view)).toBe(session);
+		expect(sessions.hasLiveSession(harness.file.path)).toBe(true);
+
+		// When: the shred hard-kills every session
+		await sessions.hardKillAll();
+
+		// Then: the pane and path no longer reference the dead session
+		expect(sessions.get(harness.view)).toBeNull();
+		expect(sessions.getByPath(harness.file.path)).toBeNull();
+		expect(sessions.getAllByPath(harness.file.path)).toEqual([]);
+		expect(sessions.hasLiveSession(harness.file.path)).toBe(false);
+		expect(session.state).toBe("locked");
+		expect(session.dek).toBeNull();
+	});
+
+	it("hardKillAll discards deferred saves queued behind a reservation", async () => {
+		// Given: an unlocked session whose path is reserved, with a save deferred behind it
+		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+		const parsed = parseFileContent(fileContent);
+		if (!parsed) throw new Error("Expected parsed payload");
+
+		const harness = createFakeHarness(DECOY);
+		const sessions = new SessionManager(
+			harness.app,
+			harness.hooks,
+			() => ";;",
+			() => null,
+		);
+		const session = sessions.attachFromLoad(harness.view, harness.file, parsed);
+		await sessions.unlock(session, PASSWORD);
+
+		const release = sessions.reservePath(harness.file.path);
+		const replay = vi.fn();
+		sessions.deferSave(harness.file.path, replay);
+
+		// When: the shred hard-kills the session and the reservation later releases
+		await sessions.hardKillAll();
+		release();
+
+		// Then: the deferred save is discarded, never replayed, and no disk write happened
+		expect(replay).not.toHaveBeenCalled();
+		expect(harness.modifyCalls).toEqual([]);
+	});
+
+	it("hardKillAll awaits an in-flight save write that no lock() owns", async () => {
+		// Given: an unlocked session with a ciphertext write in flight via enqueueWrite
+		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+		const parsed = parseFileContent(fileContent);
+		if (!parsed) throw new Error("Expected parsed payload");
+
+		const harness = createFakeHarness(DECOY);
+		const sessions = new SessionManager(
+			harness.app,
+			harness.hooks,
+			() => ";;",
+			() => null,
+		);
+		const session = sessions.attachFromLoad(harness.view, harness.file, parsed);
+		await sessions.unlock(session, PASSWORD);
+
+		const vault = harness.app.vault as unknown as {
+			modify: (target: TFile, data: string) => Promise<void>;
+		};
+		const originalModify = vault.modify;
+		let releaseWrite: () => void = () => undefined;
+		const gate = new Promise<void>((resolve) => {
+			releaseWrite = resolve;
+		});
+		let markEntered: () => void = () => undefined;
+		const writeEntered = new Promise<void>((resolve) => {
+			markEntered = resolve;
+		});
+		vault.modify = async (target: TFile, data: string) => {
+			markEntered();
+			await gate;
+			await originalModify(target, data);
+		};
+
+		try {
+			// When: a save write is in flight and the shred hard-kills the session
+			const savePromise = sessions.enqueueWrite(session, () =>
+				vault.modify(harness.file, "ciphertext"),
+			);
+			await writeEntered;
+			expect(session.lockingPromise).toBeNull();
+
+			let killSettled = false;
+			const killPromise = sessions.hardKillAll().then(() => {
+				killSettled = true;
+			});
+			await new Promise((resolve) => setTimeout(resolve, 0));
+
+			// Then: hardKillAll has not resolved while the write is still in flight
+			expect(killSettled).toBe(false);
+
+			releaseWrite();
+			await killPromise;
+			expect(killSettled).toBe(true);
+			expect(harness.modifyCalls).toEqual(["ciphertext"]);
+			await savePromise;
+		} finally {
+			vault.modify = originalModify;
+		}
+	});
+
+	it("runReservedWrite declines writes once the kill epoch is stale", async () => {
+		const harness = createFakeHarness(DECOY);
+		const sessions = new SessionManager(harness.app, harness.hooks, () => ";;", () => null);
+
+		let ran = false;
+		const stale = await sessions.runReservedWrite(-1, () => {
+			ran = true;
+			return Promise.resolve();
+		});
+		expect(stale).toBeNull();
+		expect(ran).toBe(false);
+
+		const startEpoch = sessions.currentKillEpoch();
+		let ranAfterKill = false;
+		void sessions.hardKillAll();
+		const declined = await sessions.runReservedWrite(startEpoch, () => {
+			ranAfterKill = true;
+			return Promise.resolve();
+		});
+		expect(declined).toBeNull();
+		expect(ranAfterKill).toBe(false);
+	});
+
+	it("hardKillAll waits for in-flight reserved writes before resolving", async () => {
+		const harness = createFakeHarness(DECOY);
+		const sessions = new SessionManager(harness.app, harness.hooks, () => ";;", () => null);
+		const startEpoch = sessions.currentKillEpoch();
+
+		let writeSettled = false;
+		let releaseWrite = () => {};
+		const write = sessions.runReservedWrite(startEpoch, () =>
+			new Promise<void>((resolve) => {
+				releaseWrite = () => {
+					writeSettled = true;
+					resolve();
+				};
+			}),
+		);
+
+		let killSettled = false;
+		const killPromise = sessions.hardKillAll();
+		void killPromise.then(() => {
+			killSettled = true;
+		});
+
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(writeSettled).toBe(false);
+		expect(killSettled).toBe(false);
+
+		releaseWrite();
+		await write;
+		await killPromise;
+		expect(writeSettled).toBe(true);
+		expect(killSettled).toBe(true);
+	});
+
+	it("remembers decoy fallbacks per path and moves them on rename", async () => {
+		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+		const parsed = parseFileContent(fileContent);
+		if (parsed === null) throw new Error("Expected parseable payload");
+		const harness = createFakeHarness(DECOY);
+		const sessions = new SessionManager(harness.app, harness.hooks, () => ";;", () => null);
+		sessions.attachFromLoad(harness.view, harness.file, parsed);
+
+		expect(sessions.getDecoyFallback(harness.file.path)).toBe(parsed.decoyBody);
+		expect(sessions.getDecoyFallback("missing.md")).toBeNull();
+
+		sessions.renamePath(harness.file.path, "renamed.md");
+		expect(sessions.getDecoyFallback("renamed.md")).toBe(parsed.decoyBody);
+		expect(sessions.getDecoyFallback(harness.file.path)).toBeNull();
+	});
 });

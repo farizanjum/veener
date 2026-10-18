@@ -51,7 +51,7 @@ export function installViewPatches(
 		});
 	};
 
-	proto.save = async function (this: MarkdownView): Promise<void> {
+	proto.save = async function (this: MarkdownView, clear?: boolean): Promise<void> {
 		const session = sessions.get(this);
 		if (session && this.file === session.file) {
 			if (sessions.isPathReserved(session.file.path)) {
@@ -63,9 +63,23 @@ export function installViewPatches(
 				});
 				return;
 			}
-			this.data = this.getViewData();
+			await sessions.enqueueWrite(session, async () => {
+				// Snapshot the payload this write persists when its turn in the write
+				// queue begins, so any preceding lock() write has already updated
+				// session state and staged-file cleanup targets the bytes written now.
+				const stillActive = sessions.get(this) === session && this.file === session.file;
+				const persisted = stillActive ? sessions.savedPayloadFor(session) : null;
+				if (stillActive) {
+					this.data = this.getViewData();
+				}
+				await originalSave.call(this, clear);
+				if (stillActive && persisted) {
+					await sessions.commitPersistedPayload(session, persisted);
+				}
+			});
+			return;
 		}
-		return originalSave.call(this);
+		await originalSave.call(this, clear);
 	};
 
 	registerCleanup(() => {
