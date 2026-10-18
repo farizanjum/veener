@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
 	absorbVaultImages,
+	deleteStagedVaultImages,
 	extractImageLinks,
 	mimeForPath,
+	readLinkedVaultImages,
 	restoreVaultImages,
 } from "../src/crypto/images";
 import {
@@ -145,5 +147,35 @@ describe("encrypted image payload round-trip", () => {
 		expect(Array.from(createdFiles.get("Pasted image 2026.png") ?? [])).toEqual([
 			10, 20, 30, 40,
 		]);
+	});
+
+	it("skips deleting a staged image if its file stat changed before deleteStagedVaultImages", async () => {
+		const rawBytes = new Uint8Array([10, 20, 30, 40]);
+		const deletedFiles: string[] = [];
+		const fakeFile = {
+			path: "Pasted image 2026.png",
+			name: "Pasted image 2026.png",
+			extension: "png",
+			stat: { mtime: 1000, size: 4 },
+		};
+
+		const mockApp = {
+			metadataCache: {
+				getFirstLinkpathDest: (link: string) =>
+					link === "Pasted image 2026.png" ? fakeFile : null,
+			},
+			vault: {
+				readBinary: async () => rawBytes.buffer.slice(0),
+				delete: async (file: { path: string }) => {
+					deletedFiles.push(file.path);
+				},
+			},
+		} as unknown as import("obsidian").App;
+
+		const staged = await readLinkedVaultImages(mockApp, "Note.md", REAL);
+		fakeFile.stat.mtime = 2000;
+		await deleteStagedVaultImages(mockApp, staged.filesToDelete);
+
+		expect(deletedFiles).toEqual([]);
 	});
 });
