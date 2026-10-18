@@ -12,7 +12,7 @@ export interface ShredTarget {
 
 export interface ShredDeps {
 	/** Swap views to decoy, zero DEKs/plaintext buffers, kill the save loop. */
-	zeroSessions: () => void;
+	zeroSessions: (() => void) | (() => Promise<void>);
 	/** Portable mode: rewrite the .md stripping the payload comment. */
 	rewritePortable: (path: string) => Promise<void>;
 	/** Stealth mode: delete the external payload store file. */
@@ -35,7 +35,7 @@ export async function executeShred(
 	const steps: string[] = [];
 	const failures: { path: string; error: string }[] = [];
 
-	deps.zeroSessions();
+	await deps.zeroSessions();
 	steps.push("zero-memory");
 
 	for (const target of targets) {

@@ -54,6 +54,9 @@ export function installViewPatches(
 	proto.save = async function (this: MarkdownView): Promise<void> {
 		const session = sessions.get(this);
 		if (session && this.file === session.file) {
+			if (sessions.isPathReserved(session.file.path)) {
+				return;
+			}
 			this.data = this.getViewData();
 		}
 		return originalSave.call(this);

@@ -4,7 +4,7 @@ import path from "path";
 import type { EditorState } from "@codemirror/state";
 import { DEFAULT_SETTINGS, MODEL_INFO, activeModel, type ModelId, type VeneerSettings } from "./settings";
 import { ProtectedRegistry } from "./registry";
-import { SessionManager } from "./view/session";
+import { SessionManager, type ViewSession } from "./view/session";
 import { installViewPatches } from "./view/patch";
 import { buildCaptureExtension } from "./capture/UnlockCapture";
 import { LockEngine } from "./lock/LockEngine";
@@ -19,7 +19,14 @@ import { selectRuntime } from "./llm/preferredRuntime";
 import type { LlmRuntime } from "./llm/runtime";
 import { validateDecoy } from "./llm/validate";
 import { DECOY_TEMPLATES, weaveTemplate } from "./decoy/templates";
-import { changePassword, createFile, parseFileContent, serializeFile, unlockPayload } from "./crypto/payload";
+import {
+	changePassword,
+	createFile,
+	parseFileContent,
+	serializeFile,
+	unlockPayload,
+	type PayloadV1,
+} from "./crypto/payload";
 import { absorbVaultImages, restoreVaultImages } from "./crypto/images";
 import { buildUnlockedImageExtension } from "./view/imageWidget";
 import { executeShred, type ShredTarget } from "./shred/duress";
@@ -170,7 +177,7 @@ export default class VeneerPlugin extends Plugin {
 	}
 
 	private async handleCandidate(
-		session: import("./view/session").ViewSession,
+		session: ViewSession,
 		secret: string,
 	): Promise<void> {
 		this.dots.reset();
@@ -439,13 +446,36 @@ export default class VeneerPlugin extends Plugin {
 		if (this.abortIfLiveSession(file, "Note was unlocked during refresh. Mask it and try again.")) {
 			return;
 		}
-		await this.app.vault.modify(file, serializeFile(finalBody, latest.payload));
+		const releasePath = this.sessions.reservePath(file.path);
+		const previousState = new Map<
+			ViewSession,
+			{ decoyBody: string; originalPayload: PayloadV1 }
+		>();
 		for (const session of this.sessions.getAllByPath(file.path)) {
+			previousState.set(session, {
+				decoyBody: session.decoyBody,
+				originalPayload: session.originalPayload,
+			});
 			session.decoyBody = finalBody;
 			session.originalPayload = latest.payload;
-			if (session.view.file === file) {
-				session.view.setViewData(finalBody, true);
+		}
+		try {
+			await this.app.vault.modify(file, serializeFile(finalBody, latest.payload));
+			for (const session of this.sessions.getAllByPath(file.path)) {
+				session.decoyBody = finalBody;
+				session.originalPayload = latest.payload;
+				if (session.view.file === file) {
+					session.view.setViewData(finalBody, true);
+				}
 			}
+		} catch (error) {
+			for (const [session, prev] of previousState) {
+				session.decoyBody = prev.decoyBody;
+				session.originalPayload = prev.originalPayload;
+			}
+			throw error;
+		} finally {
+			releasePath();
 		}
 		await this.retitleToFile(file, rawTitle);
 		new Notice(`Cover refreshed (${result.source}).`);
@@ -525,12 +555,37 @@ export default class VeneerPlugin extends Plugin {
 			) {
 				return;
 			}
-			await this.app.vault.modify(file, serializeFile(latestParsed.decoyBody, rotated));
+			const releasePath = this.sessions.reservePath(file.path);
+			const previousPayloads = new Map<
+				ViewSession,
+				{ original: PayloadV1; pending: PayloadV1 | null }
+			>();
 			for (const openSession of this.sessions.getAllByPath(file.path)) {
+				previousPayloads.set(openSession, {
+					original: openSession.originalPayload,
+					pending: openSession.pendingPayload,
+				});
 				openSession.originalPayload = rotated;
 				if (openSession.pendingPayload !== null) {
 					openSession.pendingPayload = rotated;
 				}
+			}
+			try {
+				await this.app.vault.modify(file, serializeFile(latestParsed.decoyBody, rotated));
+				for (const openSession of this.sessions.getAllByPath(file.path)) {
+					openSession.originalPayload = rotated;
+					if (openSession.pendingPayload !== null) {
+						openSession.pendingPayload = rotated;
+					}
+				}
+			} catch (error) {
+				for (const [openSession, prev] of previousPayloads) {
+					openSession.originalPayload = prev.original;
+					openSession.pendingPayload = prev.pending;
+				}
+				throw error;
+			} finally {
+				releasePath();
 			}
 			new Notice("Password changed.");
 		} catch {
@@ -585,11 +640,13 @@ export default class VeneerPlugin extends Plugin {
 			} finally {
 				releasePath();
 			}
-			for (const session of openSessions) {
-				this.sessions.discardAndDetach(session.view);
-			}
-			for (const session of openSessions) {
-				if (session.view.file === file) {
+			const targetSessions = new Set<ViewSession>([
+				...openSessions,
+				...this.sessions.getAllByPath(file.path),
+			]);
+			for (const session of targetSessions) {
+				const detached = this.sessions.discardAndDetach(session);
+				if (detached === true && session.view.file === file) {
 					session.view.setViewData(realText, true);
 				}
 			}

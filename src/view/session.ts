@@ -48,7 +48,8 @@ const REENCRYPT_DEBOUNCE_MS = 250;
 export class SessionManager {
 	private readonly byView = new WeakMap<MarkdownView, ViewSession>();
 	private readonly byPath = new Map<string, Set<ViewSession>>();
-	private readonly reservedPaths = new Set<string>();
+	private readonly reservedPaths = new Map<string, number>();
+	private readonly pendingLocks = new Set<ViewSession>();
 
 	constructor(
 		private readonly app: App,
@@ -96,9 +97,18 @@ export class SessionManager {
 	 * idempotent release.
 	 */
 	reservePath(path: string): () => void {
-		this.reservedPaths.add(path);
+		const nextCount = (this.reservedPaths.get(path) ?? 0) + 1;
+		this.reservedPaths.set(path, nextCount);
+		let released = false;
 		return () => {
-			this.reservedPaths.delete(path);
+			if (released) return;
+			released = true;
+			const remaining = (this.reservedPaths.get(path) ?? 1) - 1;
+			if (remaining <= 0) {
+				this.reservedPaths.delete(path);
+			} else {
+				this.reservedPaths.set(path, remaining);
+			}
 		};
 	}
 
@@ -114,6 +124,9 @@ export class SessionManager {
 
 	hasLiveSession(path: string): boolean {
 		if (this.reservedPaths.has(path)) return true;
+		for (const session of this.pendingLocks) {
+			if (session.file.path === path) return true;
+		}
 		const set = this.byPath.get(path);
 		if (!set) return false;
 		for (const session of set) {
@@ -223,9 +236,8 @@ export class SessionManager {
 	 * Immediately zeroes keys, cancels timers/in-flight locks, and detaches a session
 	 * without re-encrypting or writing decoy content back to disk (used when unprotecting).
 	 */
-	discardAndDetach(view: MarkdownView): void {
-		const session = this.byView.get(view);
-		if (!session) return;
+	discardAndDetach(session: ViewSession): boolean {
+		if (this.byView.get(session.view) !== session) return false;
 		session.killGeneration += 1;
 		session.dek?.fill(0);
 		session.dek = null;
@@ -239,9 +251,11 @@ export class SessionManager {
 			clearTimeout(session.reencryptTimer);
 			session.reencryptTimer = null;
 		}
-		this.byView.delete(view);
+		this.pendingLocks.delete(session);
+		this.byView.delete(session.view);
 		this.removeFromPath(session.file.path, session);
 		this.hooks.onLocked(session);
+		return true;
 	}
 
 	private populateImageUrls(
@@ -340,8 +354,14 @@ export class SessionManager {
 		if (!session.backoff.canAttempt(now)) return "backoff";
 		try {
 			const { realText, dek, images, realTitle } = await unlockPayload(session.originalPayload, password);
-			if (session.killGeneration !== startGeneration || !this.isAttached(session)) {
+			if (
+				session.killGeneration !== startGeneration ||
+				!this.isAttached(session) ||
+				this.isPathReserved(session.file.path)
+			) {
 				dek.fill(0);
+				session.dek?.fill(0);
+				session.dek = null;
 				return "blocked";
 			}
 			session.backoff.recordSuccess();
@@ -392,6 +412,7 @@ export class SessionManager {
 			rejectLock = reject;
 		});
 		session.lockingPromise = lockingPromise;
+		this.pendingLocks.add(session);
 		void (async (): Promise<void> => {
 			let lockError: unknown = null;
 			let hasFailed = false;
@@ -455,6 +476,7 @@ export class SessionManager {
 							}
 						}
 					}
+					if (this.isPathReserved(session.file.path)) return;
 					await this.app.vault.modify(
 						session.file,
 						serializeFile(session.decoyBody, session.pendingPayload),
@@ -499,6 +521,7 @@ export class SessionManager {
 				} else {
 					resolveLock();
 				}
+				this.pendingLocks.delete(session);
 			}
 		})();
 		return lockingPromise;
@@ -526,8 +549,12 @@ export class SessionManager {
 	 * Immediate mask with NO re-encryption: used by the duress shred (§11.2).
 	 * Drops keys and swaps to decoy; the shred deletes the payload from disk.
 	 */
-	hardKillAll(): void {
-		for (const session of this.all()) {
+	hardKillAll(): Promise<void> {
+		const inflight: Promise<void>[] = [];
+		for (const session of new Set([...this.all(), ...this.pendingLocks])) {
+			if (session.lockingPromise !== null) {
+				inflight.push(session.lockingPromise);
+			}
 			session.killGeneration += 1;
 			session.dek?.fill(0);
 			session.dek = null;
@@ -540,11 +567,14 @@ export class SessionManager {
 				clearTimeout(session.reencryptTimer);
 				session.reencryptTimer = null;
 			}
-			session.view.setViewData(session.decoyBody, true);
-			this.applyDisplayedTitle(session, session.file.basename);
+			if (this.isAttached(session) && session.view.file === session.file) {
+				session.view.setViewData(session.decoyBody, true);
+				this.applyDisplayedTitle(session, session.file.basename);
+			}
 			session.realTitle = null;
 			this.hooks.onLocked(session);
 		}
+		return Promise.allSettled(inflight).then(() => undefined);
 	}
 
 	/** Debounced ciphertext refresh so the synchronous save path never sees plaintext. */

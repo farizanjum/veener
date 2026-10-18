@@ -8,6 +8,7 @@ import {
 	unlockPayload,
 } from "../src/crypto/payload";
 import { computeSavedContent } from "../src/view/saveDecision";
+import { executeShred } from "../src/shred/duress";
 
 const DECOY = "## Grocery list\n\n- milk, eggs, bread";
 const INITIAL_REAL = "Top secret project alpha notes";
@@ -319,7 +320,7 @@ describe("SessionManager race conditions (Issue #2)", () => {
 		// When: discardAndDetach is called during permanent unprotection
 		const clearSpy = vi.spyOn(globalThis, "clearTimeout");
 		sessions.scheduleReencrypt(session);
-		sessions.discardAndDetach(harness.view);
+		expect(sessions.discardAndDetach(session)).toBe(true);
 
 		// Then: DEK bytes are zeroed, session is removed, and neither vault.modify nor decoy view overwrite occurs
 		expect(liveDek?.every((byte) => byte === 0)).toBe(true);
@@ -388,7 +389,7 @@ describe("SessionManager race conditions (Issue #2)", () => {
 
 		// And when: unprotecting detaches all sessions for the path
 		for (const openSession of sessions.getAllByPath(harness.file.path)) {
-			sessions.discardAndDetach(openSession.view);
+			expect(sessions.discardAndDetach(openSession)).toBe(true);
 		}
 		expect(sessions.getAllByPath(harness.file.path)).toHaveLength(0);
 		expect(sessions.get(harness.view)).toBeNull();
@@ -414,7 +415,7 @@ describe("SessionManager race conditions (Issue #2)", () => {
 
 		// When: discardAndDetach runs while lock() is awaiting readBinary
 		harness.setImageLookupDelay(20, () => {
-			sessions.discardAndDetach(harness.view);
+			sessions.discardAndDetach(session);
 		});
 		await sessions.lock(session, "detach-race");
 
@@ -556,7 +557,7 @@ describe("SessionManager race conditions (Issue #2)", () => {
 		// Then: unlocking again and calling discardAndDetach clears live status immediately
 		await sessions.unlock(session, PASSWORD);
 		expect(sessions.hasLiveSession(harness.file.path)).toBe(true);
-		sessions.discardAndDetach(harness.view);
+		sessions.discardAndDetach(session);
 		expect(sessions.hasLiveSession(harness.file.path)).toBe(false);
 	});
 
@@ -736,5 +737,234 @@ describe("SessionManager race conditions (Issue #2)", () => {
 		expect(session.state).toBe("locked");
 		expect(session.dek).toBeNull();
 		expect(harness.getEditorText()).toBe(DECOY);
+	});
+
+	it("cancels and awaits an orphaned pending lock during executeShred so destroyed notes never return", async () => {
+		// Given: an unlocked session on Note A whose lock() is paused in absorbNewEditorImages
+		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+		const parsedA = parseFileContent(fileContent);
+		if (!parsedA) throw new Error("Expected parsed payload A");
+
+		const otherDecoy = "## Travel packing\n\n- passport, charger";
+		const { fileContent: otherContent } = await createFile("Other secret", PASSWORD, otherDecoy);
+		const parsedB = parseFileContent(otherContent);
+		if (!parsedB) throw new Error("Expected parsed payload B");
+
+		const harness = createFakeHarness(DECOY);
+		const sessions = new SessionManager(
+			harness.app,
+			harness.hooks,
+			() => ";;",
+			() => null,
+		);
+		const sessionA = sessions.attachFromLoad(harness.view, harness.file, parsedA);
+		await sessions.unlock(sessionA, PASSWORD);
+		harness.setEditorText(`${EDITED_REAL}\n![[Pasted image.png]]`);
+
+		const noteB = {
+			path: "Travel Packing.md",
+			name: "Travel Packing.md",
+			basename: "Travel Packing",
+			extension: "md",
+		} as unknown as TFile;
+
+		const shredState: {
+			promise?: Promise<unknown>;
+			liveWhileOrphaned: boolean;
+			order: string[];
+		} = {
+			liveWhileOrphaned: false,
+			order: [],
+		};
+		harness.setImageLookupDelay(25, () => {
+			harness.setFile(noteB);
+			harness.setEditorText(otherDecoy);
+			sessions.attachFromLoad(harness.view, noteB, parsedB);
+			shredState.liveWhileOrphaned = sessions.hasLiveSession(harness.file.path);
+
+			shredState.promise = executeShred([{ path: harness.file.path, mode: "portable" }], {
+				zeroSessions: () => sessions.hardKillAll(),
+				rewritePortable: async () => {
+					shredState.order.push("rewrite-start");
+					await harness.app.vault.modify(harness.file, `${DECOY}\n`);
+				},
+				deleteStealth: async () => undefined,
+				clearRegistry: async () => undefined,
+				clearWebStorage: () => undefined,
+			});
+		});
+
+		// When: Note A's lock and the concurrent shred both complete
+		await sessions.lock(sessionA, "file-switch").finally(() => {
+			shredState.order.push("lock-settled");
+		});
+		expect(shredState.promise).toBeDefined();
+		await shredState.promise;
+
+		// Then: Note A remained live while orphaned, its lock settled before rewritePortable started, Note B's view was untouched, and disk holds only plain decoy
+		expect(shredState.liveWhileOrphaned).toBe(true);
+		expect(shredState.order).toEqual(["lock-settled", "rewrite-start"]);
+		expect(sessionA.killGeneration).toBeGreaterThan(0);
+		expect(sessionA.dek).toBeNull();
+		expect(harness.getEditorText()).toBe(otherDecoy);
+		expect(harness.modifyCalls).toEqual([`${DECOY}\n`]);
+		expect(parseFileContent(harness.modifyCalls[0] ?? "")).toBeNull();
+	});
+
+	it("reference-counts reservePath and blocks an already-running unlock() when reserved before unlockPayload resolves", async () => {
+		// Given: a locked session
+		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+		const parsed = parseFileContent(fileContent);
+		if (!parsed) throw new Error("Expected parsed payload");
+
+		const harness = createFakeHarness(DECOY);
+		const sessions = new SessionManager(
+			harness.app,
+			harness.hooks,
+			() => ";;",
+			() => null,
+		);
+		const session = sessions.attachFromLoad(harness.view, harness.file, parsed);
+
+		// When: unlock() starts before any reservation, then two overlapping reservations are taken and only the first is released while KDF runs
+		const unlockPromise = sessions.unlock(session, PASSWORD);
+		const release1 = sessions.reservePath(harness.file.path);
+		const release2 = sessions.reservePath(harness.file.path);
+		release1();
+		release1();
+		expect(sessions.isPathReserved(harness.file.path)).toBe(true);
+
+		const outcome = await unlockPromise;
+
+		// Then: unlock() re-checks reservation after unlockPayload, zeroes the DEK, and returns "blocked"
+		expect(outcome).toBe("blocked");
+		expect(session.state).toBe("locked");
+		expect(session.dek).toBeNull();
+		expect(harness.getEditorText()).toBe(DECOY);
+
+		// And when: the second reservation is released, the path is unreserved and unlock succeeds
+		release2();
+		expect(sessions.isPathReserved(harness.file.path)).toBe(false);
+		expect(await sessions.unlock(session, PASSWORD)).toBe("ok");
+		expect(session.state).toBe("unlocked");
+	});
+
+	it("discardAndDetach detaches only if the captured session still owns its pane", async () => {
+		// Given: sessionA in a pane that is then reassigned to another protected note (sessionB) during an async unprotect write
+		const { fileContent: contentA } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+		const parsedA = parseFileContent(contentA);
+		if (!parsedA) throw new Error("Expected parsed payload A");
+
+		const otherDecoy = "## Reading list\n\n- Designing Data-Intensive Applications";
+		const otherReal = "Confidential M&A term sheet";
+		const { fileContent: contentB } = await createFile(otherReal, PASSWORD, otherDecoy);
+		const parsedB = parseFileContent(contentB);
+		if (!parsedB) throw new Error("Expected parsed payload B");
+
+		const harness = createFakeHarness(DECOY);
+		const sessions = new SessionManager(
+			harness.app,
+			harness.hooks,
+			() => ";;",
+			() => null,
+		);
+		const sessionA = sessions.attachFromLoad(harness.view, harness.file, parsedA);
+
+		const fileB = {
+			path: "Reading List.md",
+			name: "Reading List.md",
+			basename: "Reading List",
+			extension: "md",
+		} as unknown as TFile;
+		harness.setFile(fileB);
+		harness.setEditorText(otherDecoy);
+		const sessionB = sessions.attachFromLoad(harness.view, fileB, parsedB);
+
+		// When: unprotect finishes writing fileA and calls discardAndDetach(sessionA)
+		const detachedOwnPane = sessions.discardAndDetach(sessionA);
+
+		// Then: discardAndDetach returns false, the pane still holds sessionB, and the editor still shows otherFile's decoy (not realText)
+		expect(detachedOwnPane).toBe(false);
+		expect(sessions.get(harness.view)).toBe(sessionB);
+		expect(harness.getEditorText()).toBe(otherDecoy);
+	});
+
+	it("preserves the rotated payload when a cover save occurs during the password rotation write window", async () => {
+		// Given: a locked session undergoing password rotation where the path is reserved and originalPayload is updated before vault.modify finishes
+		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+		const parsed = parseFileContent(fileContent);
+		if (!parsed) throw new Error("Expected parsed payload");
+
+		const harness = createFakeHarness(DECOY);
+		const sessions = new SessionManager(
+			harness.app,
+			harness.hooks,
+			() => ";;",
+			() => null,
+		);
+		const session = sessions.attachFromLoad(harness.view, harness.file, parsed);
+		const newPassword = "rotated passphrase 2026";
+		const rotated = await changePassword(session.originalPayload, PASSWORD, newPassword);
+
+		// When: password rotation reserves the path and updates session.originalPayload before vault.modify completes, and a cover edit/save occurs in the window
+		const release = sessions.reservePath(harness.file.path);
+		session.originalPayload = rotated;
+		const editedCover = `${DECOY}\n- coffee beans`;
+		harness.setEditorText(editedCover);
+		const savedDuringRotation = computeSavedContent({
+			unlocked: session.state === "unlocked",
+			editorValue: harness.getEditorText(),
+			decoyBody: session.decoyBody,
+			originalPayload: session.originalPayload,
+			pendingPayload: session.pendingPayload,
+		});
+		release();
+
+		// Then: the saved content carries the rotated payload (cannot be unlocked with the old password, unlocks with the new password)
+		const savedParsed = parseFileContent(savedDuringRotation);
+		expect(savedParsed).not.toBeNull();
+		if (!savedParsed) throw new Error("Expected saved parsed payload");
+		expect(savedParsed.decoyBody).toBe(editedCover);
+		await expect(unlockPayload(savedParsed.payload, PASSWORD)).rejects.toThrow();
+		const unlocked = await unlockPayload(savedParsed.payload, newPassword);
+		expect(unlocked.realText).toBe(INITIAL_REAL);
+		unlocked.dek.fill(0);
+	});
+
+	it("aborts an in-flight lock() disk write if the path becomes reserved before vault.modify", async () => {
+		// Given: an unlocked session with an embedded image whose lock() pauses inside absorbNewEditorImages
+		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+		const parsed = parseFileContent(fileContent);
+		if (!parsed) throw new Error("Expected parsed payload");
+
+		const harness = createFakeHarness(DECOY);
+		const sessions = new SessionManager(
+			harness.app,
+			harness.hooks,
+			() => ";;",
+			() => null,
+		);
+		const session = sessions.attachFromLoad(harness.view, harness.file, parsed);
+		await sessions.unlock(session, PASSWORD);
+		harness.setEditorText(`${EDITED_REAL}\n![[Pasted image.png]]`);
+
+		const reservationHolder: { release?: () => void } = {};
+		harness.setImageLookupDelay(20, () => {
+			reservationHolder.release = sessions.reservePath(harness.file.path);
+		});
+
+		try {
+			// When: lock() resumes after the path has been reserved by a direct writer
+			await sessions.lock(session, "late-reserve");
+
+			// Then: lock() skips vault.modify and still cleans up its RAM state in finally
+			expect(harness.modifyCalls).toHaveLength(0);
+			expect(session.state).toBe("locked");
+			expect(session.dek).toBeNull();
+			expect(session.lockingPromise).toBeNull();
+		} finally {
+			reservationHolder.release?.();
+		}
+		expect(sessions.hasLiveSession(harness.file.path)).toBe(false);
 	});
 });
