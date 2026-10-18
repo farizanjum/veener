@@ -8,6 +8,10 @@ const DECOY = "## Weekend Grocery List\n\n- milk, eggs, bread";
 const INITIAL_REAL = "Top secret project roadmap v1";
 const PASSWORD = "correct horse battery staple";
 
+/**
+ * Creates a promise alongside its resolve handle so a test can control exactly
+ * when an awaited async step completes.
+ */
 function createDeferred<T>() {
 	let resolve!: (value: T | PromiseLike<T>) => void;
 	const promise = new Promise<T>((res) => {
@@ -16,6 +20,11 @@ function createDeferred<T>() {
 	return { promise, resolve };
 }
 
+/**
+ * Builds an in-memory stand-in for the Obsidian app, workspace, and markdown
+ * view so session behavior can be exercised without a real vault. The optional
+ * gates let a test hold binary reads or fail `vault.modify` on demand.
+ */
 function createMockEnv(
 	initialEditorText = INITIAL_REAL,
 	readBinaryGate?: Promise<void>,

@@ -284,6 +284,10 @@ export class SessionManager {
 		cm?.dispatch({});
 	}
 
+	/**
+	 * Stages images newly referenced by the editor buffer and re-encrypts the
+	 * payload so they are absorbed without waiting for an explicit save.
+	 */
 	async absorbNewEditorImages(session: ViewSession): Promise<void> {
 		if (session.state !== "unlocked" || !session.dek) return;
 		const text = session.view.editor.getValue();

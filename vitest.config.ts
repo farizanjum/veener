@@ -13,9 +13,16 @@ export default defineConfig({
 		{
 			name: "obsidian-test-stub",
 			enforce: "pre",
+			/**
+			 * Redirects the bare `obsidian` import to the local stub module id so
+			 * runtime view patching resolves under Vite.
+			 */
 			resolveId(id) {
 				return id === "obsidian" ? OBSIDIAN_TEST_STUB_ID : null;
 			},
+			/**
+			 * Serves the minimal `MarkdownView` stub for the redirected module id.
+			 */
 			load(id) {
 				return id === OBSIDIAN_TEST_STUB_ID ? "export class MarkdownView {}" : null;
 			},
