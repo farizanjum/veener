@@ -456,11 +456,6 @@ export default class VeneerPlugin extends Plugin {
 		} catch {
 			return;
 		}
-		const latest = parseFileContent(await this.app.vault.read(file));
-		if (!latest) {
-			new Notice("Not a protected note.");
-			return;
-		}
 		if (this.abortIfLiveSession(file, "Note was unlocked during refresh. Mask it and try again.")) {
 			return;
 		}
@@ -469,15 +464,20 @@ export default class VeneerPlugin extends Plugin {
 			ViewSession,
 			{ decoyBody: string; originalPayload: PayloadV1 }
 		>();
-		for (const session of this.sessions.getAllByPath(file.path)) {
-			previousState.set(session, {
-				decoyBody: session.decoyBody,
-				originalPayload: session.originalPayload,
-			});
-			session.decoyBody = finalBody;
-			session.originalPayload = latest.payload;
-		}
 		try {
+			const latest = parseFileContent(await this.app.vault.read(file));
+			if (!latest) {
+				new Notice("Not a protected note.");
+				return;
+			}
+			for (const session of this.sessions.getAllByPath(file.path)) {
+				previousState.set(session, {
+					decoyBody: session.decoyBody,
+					originalPayload: session.originalPayload,
+				});
+				session.decoyBody = finalBody;
+				session.originalPayload = latest.payload;
+			}
 			const written = await this.sessions.runReservedWrite(startEpoch, () =>
 				this.app.vault.modify(file, serializeFile(finalBody, latest.payload)),
 			);
@@ -575,12 +575,6 @@ export default class VeneerPlugin extends Plugin {
 					await this.sessions.lock(activeSession, "change-password");
 				}
 			}
-			const latestParsed = parseFileContent(await this.app.vault.read(file));
-			if (!latestParsed) {
-				new Notice("Not a protected note.");
-				return;
-			}
-			const rotated = await changePassword(latestParsed.payload, oldPassword, newPassword);
 			if (
 				this.abortIfLiveSession(
 					file,
@@ -594,17 +588,23 @@ export default class VeneerPlugin extends Plugin {
 				ViewSession,
 				{ original: PayloadV1; pending: PayloadV1 | null }
 			>();
-			for (const openSession of this.sessions.getAllByPath(file.path)) {
-				previousPayloads.set(openSession, {
-					original: openSession.originalPayload,
-					pending: openSession.pendingPayload,
-				});
-				openSession.originalPayload = rotated;
-				if (openSession.pendingPayload !== null) {
-					openSession.pendingPayload = rotated;
-				}
-			}
 			try {
+				const latestParsed = parseFileContent(await this.app.vault.read(file));
+				if (!latestParsed) {
+					new Notice("Not a protected note.");
+					return;
+				}
+				const rotated = await changePassword(latestParsed.payload, oldPassword, newPassword);
+				for (const openSession of this.sessions.getAllByPath(file.path)) {
+					previousPayloads.set(openSession, {
+						original: openSession.originalPayload,
+						pending: openSession.pendingPayload,
+					});
+					openSession.originalPayload = rotated;
+					if (openSession.pendingPayload !== null) {
+						openSession.pendingPayload = rotated;
+					}
+				}
 				const written = await this.sessions.runReservedWrite(startEpoch, () =>
 					this.app.vault.modify(file, serializeFile(latestParsed.decoyBody, rotated)),
 				);
@@ -663,25 +663,25 @@ export default class VeneerPlugin extends Plugin {
 					await this.sessions.lock(activeSession, "unprotect");
 				}
 			}
-			const latestParsed = parseFileContent(await this.app.vault.read(file));
-			if (!latestParsed) {
-				new Notice("Not a protected note.");
-				return;
-			}
-			const { realText, dek, images, realTitle } = await unlockPayload(latestParsed.payload, password);
-			dek.fill(0);
-			if (this.abortIfLiveSession(file, "Note was unlocked during unprotect. Mask it and try again.")) {
-				return;
-			}
-			if (this.sessions.currentKillEpoch() !== startEpoch) return;
-			await restoreVaultImages(this.app, file.parent?.path ?? "", images);
-			if (this.sessions.currentKillEpoch() !== startEpoch) return;
 			if (this.abortIfLiveSession(file, "Note was unlocked during unprotect. Mask it and try again.")) {
 				return;
 			}
 			const openSessions = this.sessions.getAllByPath(file.path);
 			const releasePath = this.sessions.reservePath(file.path);
+			let realTitle: string | null = null;
 			try {
+				const latestParsed = parseFileContent(await this.app.vault.read(file));
+				if (!latestParsed) {
+					new Notice("Not a protected note.");
+					return;
+				}
+				const unlocked = await unlockPayload(latestParsed.payload, password);
+				unlocked.dek.fill(0);
+				const realText = unlocked.realText;
+				realTitle = unlocked.realTitle;
+				if (this.sessions.currentKillEpoch() !== startEpoch) return;
+				await restoreVaultImages(this.app, file.parent?.path ?? "", unlocked.images);
+				if (this.sessions.currentKillEpoch() !== startEpoch) return;
 				try {
 					const written = await this.sessions.runReservedWrite(startEpoch, () =>
 						this.app.vault.modify(file, `${realText}\n`),
