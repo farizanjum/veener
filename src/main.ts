@@ -500,7 +500,9 @@ export default class VeneerPlugin extends Plugin {
 				session.decoyBody = prev.decoyBody;
 				session.originalPayload = prev.originalPayload;
 			}
-			throw error;
+			console.warn("Veneer: cover refresh could not write the note", error);
+			new Notice("Could not refresh the cover. The previous cover is unchanged.");
+			return;
 		} finally {
 			releasePath();
 		}
@@ -573,7 +575,11 @@ export default class VeneerPlugin extends Plugin {
 					await this.sessions.lock(activeSession, "change-password");
 				}
 			}
-			const latestParsed = parseFileContent(await this.app.vault.read(file)) ?? parsed;
+			const latestParsed = parseFileContent(await this.app.vault.read(file));
+			if (!latestParsed) {
+				new Notice("Not a protected note.");
+				return;
+			}
 			const rotated = await changePassword(latestParsed.payload, oldPassword, newPassword);
 			if (
 				this.abortIfLiveSession(
@@ -657,7 +663,11 @@ export default class VeneerPlugin extends Plugin {
 					await this.sessions.lock(activeSession, "unprotect");
 				}
 			}
-			const latestParsed = parseFileContent(await this.app.vault.read(file)) ?? parsed;
+			const latestParsed = parseFileContent(await this.app.vault.read(file));
+			if (!latestParsed) {
+				new Notice("Not a protected note.");
+				return;
+			}
 			const { realText, dek, images, realTitle } = await unlockPayload(latestParsed.payload, password);
 			dek.fill(0);
 			if (this.abortIfLiveSession(file, "Note was unlocked during unprotect. Mask it and try again.")) {
