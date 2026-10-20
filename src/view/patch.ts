@@ -53,25 +53,47 @@ export function installViewPatches(
 
 	proto.save = async function (this: MarkdownView, clear?: boolean): Promise<void> {
 		const session = sessions.get(this);
-		const active = session && this.file === session.file ? session : null;
-		if (!active) {
-			await originalSave.call(this, clear);
+		if (session && this.file === session.file) {
+			if (sessions.isPathReserved(session.file.path)) {
+				// A reservation holder is mid-write for this path. Replay this save once
+				// the last reservation releases rather than dropping it silently.
+				sessions.deferSave(session.file.path, () => {
+					if (this.file !== session.file) return;
+					const stillAttached = sessions.get(this) === session && this.file === session.file;
+					if (stillAttached) {
+						// A duress shred can start the moment this reservation releases. Route
+						// the replay through the tracked write queue so `hardKillAll` captures
+						// and awaits it; an untracked save could otherwise land after the
+						// payload was targeted for zeroization and resurrect ciphertext.
+						void this.save(clear).catch((error) => {
+							console.warn("Veneer: deferred save after reservation failed", error);
+						});
+						return;
+					}
+					this.data = this.getViewData();
+					void Promise.resolve(originalSave.call(this, clear)).catch((error) => {
+						console.warn("Veneer: deferred save after reservation failed", error);
+					});
+				});
+				return;
+			}
+			await sessions.enqueueWrite(session, async () => {
+				// Snapshot the payload this write persists when its turn in the write
+				// queue begins, so any preceding lock() write has already updated
+				// session state and staged-file cleanup targets the bytes written now.
+				const stillActive = sessions.get(this) === session && this.file === session.file;
+				const persisted = stillActive ? sessions.savedPayloadFor(session) : null;
+				if (stillActive) {
+					this.data = this.getViewData();
+				}
+				await originalSave.call(this, clear);
+				if (stillActive && persisted) {
+					await sessions.commitPersistedPayload(session, persisted);
+				}
+			});
 			return;
 		}
-		await sessions.enqueueWrite(active, async () => {
-			// Snapshot the payload this write persists when its turn in the write
-			// queue begins, so any preceding lock() write has already updated
-			// session state and staged-file cleanup targets the bytes written now.
-			const stillActive = sessions.get(this) === active && this.file === active.file;
-			const persisted = stillActive ? sessions.savedPayloadFor(active) : null;
-			if (stillActive) {
-				this.data = this.getViewData();
-			}
-			await originalSave.call(this, clear);
-			if (stillActive && persisted) {
-				await sessions.commitPersistedPayload(active, persisted);
-			}
-		});
+		await originalSave.call(this, clear);
 	};
 
 	registerCleanup(() => {

@@ -28,6 +28,8 @@ export interface ViewSession {
 	readonly view: MarkdownView;
 	readonly file: TFile;
 	state: "locked" | "unlocked";
+	lockingPromise: Promise<void> | null;
+	killGeneration: number;
 	decoyBody: string;
 	originalPayload: PayloadV1;
 	pendingPayload: PayloadV1 | null;
@@ -39,7 +41,6 @@ export interface ViewSession {
 	reencryptTimer: ReturnType<typeof setTimeout> | null;
 	reencryptSeq: number;
 	reencryptPromise: Promise<void> | null;
-	lockingPromise: Promise<void> | null;
 	/**
 	 * Tail of the per-session disk-write queue. Serializes `MarkdownView.save`
 	 * and `lock`'s `vault.modify` so an in-flight save cannot land after
@@ -54,13 +55,24 @@ export interface SessionHooks {
 	onUnlocked(session: ViewSession): void;
 	onLocked(session: ViewSession): void;
 	onUnlockBlocked(reason: string): void;
+	onLockFailed?(error: unknown): void;
 }
 
 export const REENCRYPT_DEBOUNCE_MS = 600;
 
 export class SessionManager {
 	private readonly byView = new WeakMap<MarkdownView, ViewSession>();
-	private readonly byPath = new Map<string, ViewSession>();
+	private readonly byPath = new Map<string, Set<ViewSession>>();
+	private readonly reservedPaths = new Map<string, number>();
+	private readonly pendingLocks = new Set<ViewSession>();
+	private readonly deferredSaves = new Map<string, Set<() => void>>();
+
+	/** Monotonic epoch fencing duress writes; `runReservedWrite` declines stale snapshots. */
+	private killEpoch = 0;
+	/** In-flight reserved writes under a live epoch; `hardKillAll` awaits these. */
+	private readonly reservationWrites = new Set<Promise<void>>();
+	/** Last-known clean decoy per path, used as the shred rewrite fallback. */
+	private readonly lastKnownDecoy = new Map<string, string>();
 
 	constructor(
 		private readonly app: App,
@@ -69,16 +81,164 @@ export class SessionManager {
 		private readonly unlockBlockReason: () => string | null,
 	) {}
 
+	private addToPath(path: string, session: ViewSession): void {
+		let set = this.byPath.get(path);
+		if (!set) {
+			set = new Set<ViewSession>();
+			this.byPath.set(path, set);
+		}
+		set.add(session);
+	}
+
+	private removeFromPath(path: string, session: ViewSession): void {
+		const set = this.byPath.get(path);
+		if (!set) return;
+		set.delete(session);
+		if (set.size === 0) {
+			this.byPath.delete(path);
+		}
+	}
+
 	get(view: MarkdownView): ViewSession | null {
 		return this.byView.get(view) ?? null;
 	}
 
+	getAllByPath(path: string): ViewSession[] {
+		const set = this.byPath.get(path);
+		return set ? [...set] : [];
+	}
+
 	getByPath(path: string): ViewSession | null {
-		return this.byPath.get(path) ?? null;
+		const sessions = this.getAllByPath(path);
+		if (sessions.length === 0) return null;
+		return sessions.find((s) => s.state === "unlocked") ?? sessions[sessions.length - 1] ?? null;
+	}
+
+	/**
+	 * Blocks new masking/unlocking work for a path while a caller writes the file
+	 * directly, so no session can interleave a conflicting write. Returns an
+	 * idempotent release.
+	 */
+	reservePath(path: string): () => void {
+		const nextCount = (this.reservedPaths.get(path) ?? 0) + 1;
+		this.reservedPaths.set(path, nextCount);
+		let released = false;
+		return () => {
+			if (released) return;
+			released = true;
+			const remaining = (this.reservedPaths.get(path) ?? 1) - 1;
+			if (remaining <= 0) {
+				this.reservedPaths.delete(path);
+				this.flushDeferredSaves(path);
+			} else {
+				this.reservedPaths.set(path, remaining);
+			}
+		};
+	}
+
+	/** Current kill epoch; capture it before the first await of a duress write flow. */
+	currentKillEpoch(): number {
+		return this.killEpoch;
+	}
+
+	/**
+	 * Runs `task` only while the captured epoch is still live; declines (never
+	 * invokes `task`) once a shred has bumped the epoch. Registers the write
+	 * under a non-rejecting shadow so `hardKillAll` awaits it; rejections
+	 * still propagate to the caller unchanged.
+	 */
+	runReservedWrite(startEpoch: number, task: () => Promise<void>): Promise<boolean> {
+		if (startEpoch !== this.killEpoch) return Promise.resolve(false);
+		const write = task();
+		const shadow = write.then(
+			() => {},
+			() => {},
+		);
+		this.reservationWrites.add(shadow);
+		void shadow.then(() => {
+			this.reservationWrites.delete(shadow);
+		});
+		return write.then(() => true);
+	}
+
+	/** Remembers the last-known clean decoy for `path` (shred rewrite fallback). */
+	rememberDecoy(path: string, decoy: string): void {
+		this.lastKnownDecoy.set(path, decoy);
+	}
+
+	/** Last-known clean decoy for `path`, or `null` when none is remembered. */
+	getDecoyFallback(path: string): string | null {
+		return this.lastKnownDecoy.get(path) ?? null;
+	}
+
+	/**
+	 * Records a save that was skipped because `path` was reserved, so it can be
+	 * replayed once the last reservation on that path releases. The holder sets
+	 * decoy and payload state synchronously before its write, so a post-release
+	 * `getViewData()` reads a consistent decoy + current ciphertext.
+	 */
+	deferSave(path: string, run: () => void): void {
+		let set = this.deferredSaves.get(path);
+		if (!set) {
+			set = new Set<() => void>();
+			this.deferredSaves.set(path, set);
+		}
+		set.add(run);
+	}
+
+	private flushDeferredSaves(path: string): void {
+		const set = this.deferredSaves.get(path);
+		if (!set) return;
+		this.deferredSaves.delete(path);
+		for (const run of set) {
+			try {
+				run();
+			} catch (error) {
+				console.warn("Veneer: deferred save after reservation failed", error);
+			}
+		}
+	}
+
+	/** True while some caller holds the path via {@link reservePath}. */
+	isPathReserved(path: string): boolean {
+		return this.reservedPaths.has(path);
+	}
+
+	/** True while `session` is still the session mapped to its view. */
+	private isAttached(session: ViewSession): boolean {
+		return this.byView.get(session.view) === session;
+	}
+
+	/**
+	 * Re-reads `session.state` across a call boundary. Read directly, the declared
+	 * union stays narrowed to the result of any earlier `state === "..."` check,
+	 * which would hide a concurrent transition of the same field.
+	 */
+	private stateOf(session: ViewSession): ViewSession["state"] {
+		return session.state;
+	}
+
+	hasLiveSession(path: string): boolean {
+		if (this.reservedPaths.has(path)) return true;
+		for (const session of this.pendingLocks) {
+			if (session.file.path === path) return true;
+		}
+		const set = this.byPath.get(path);
+		if (!set) return false;
+		for (const session of set) {
+			if (session.state === "unlocked" || session.lockingPromise !== null) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	all(): ViewSession[] {
-		return [...this.byPath.values()];
+		const out: ViewSession[] = [];
+		for (const set of this.byPath.values()) {
+			out.push(...set);
+		}
+		return out;
 	}
 
 	attachFromLoad(view: MarkdownView, file: TFile, parsed: ParsedFile): ViewSession {
@@ -87,37 +247,45 @@ export class SessionManager {
 			if (existing.file === file) {
 				existing.decoyBody = parsed.decoyBody;
 				existing.originalPayload = parsed.payload;
+				this.rememberDecoy(file.path, parsed.decoyBody);
 				if (existing.state === "unlocked") {
-					void this.lock(existing, "reload").catch((error) =>
-						console.warn("Veneer: reload lock failed", error),
-					);
+					void this.lock(existing, "reload").catch((error) => {
+						console.warn("Veneer: lock on reload failed", error);
+					});
 				}
 				return existing;
 			}
-			if (existing.state === "unlocked") {
-				existing.reencryptSeq += 1;
-				existing.dek?.fill(0);
-				existing.dek = null;
-				this.revokeImageUrls(existing);
-				existing.state = "locked";
-				existing.pendingPayload = null;
-				existing.realTitle = null;
-				existing.capture.cancel();
-				if (existing.reencryptTimer !== null) {
-					clearTimeout(existing.reencryptTimer);
-					existing.reencryptTimer = null;
+			// A pending mask keeps its captured state and finishes on its own, so only
+			// its mappings move to the new session; invalidating it here would strand
+			// an in-flight re-encrypt mid-write.
+			if (existing.lockingPromise === null) {
+				existing.killGeneration += 1;
+				if (existing.state === "unlocked") {
+					existing.dek?.fill(0);
+					existing.dek = null;
+					this.revokeImageUrls(existing);
+					existing.state = "locked";
+					existing.lockingPromise = null;
+					existing.pendingPayload = null;
+					existing.realTitle = null;
+					existing.capture.cancel();
+					existing.reencryptSeq += 1;
+					if (existing.reencryptTimer !== null) {
+						clearTimeout(existing.reencryptTimer);
+						existing.reencryptTimer = null;
+					}
+					this.hooks.onLocked(existing);
 				}
-				this.hooks.onLocked(existing);
 			}
-			if (this.byPath.get(existing.file.path) === existing) {
-				this.byPath.delete(existing.file.path);
-			}
+			this.removeFromPath(existing.file.path, existing);
 			this.byView.delete(view);
 		}
 		const session: ViewSession = {
 			view,
 			file,
 			state: "locked",
+			lockingPromise: null,
+			killGeneration: 0,
 			decoyBody: parsed.decoyBody,
 			originalPayload: parsed.payload,
 			pendingPayload: null,
@@ -129,20 +297,31 @@ export class SessionManager {
 			reencryptTimer: null,
 			reencryptSeq: 0,
 			reencryptPromise: null,
-			lockingPromise: null,
 			writePromise: null,
 			stagedFilesByPayload: new WeakMap(),
 		};
 		this.byView.set(view, session);
-		this.byPath.set(file.path, session);
+		this.addToPath(file.path, session);
+		this.rememberDecoy(file.path, parsed.decoyBody);
 		return session;
 	}
 
 	renamePath(oldPath: string, newPath: string): void {
-		const session = this.byPath.get(oldPath);
-		if (!session) return;
+		if (oldPath === newPath) return;
+		const existingSet = this.byPath.get(oldPath);
+		if (!existingSet) return;
 		this.byPath.delete(oldPath);
-		this.byPath.set(newPath, session);
+		const targetSet = this.byPath.get(newPath);
+		if (targetSet) {
+			for (const session of existingSet) targetSet.add(session);
+		} else {
+			this.byPath.set(newPath, existingSet);
+		}
+		const movedDecoy = this.lastKnownDecoy.get(oldPath);
+		if (movedDecoy !== undefined) {
+			this.lastKnownDecoy.delete(oldPath);
+			this.lastKnownDecoy.set(newPath, movedDecoy);
+		}
 	}
 
 	pruneDetached(activeViews: Set<MarkdownView>): void {
@@ -154,13 +333,38 @@ export class SessionManager {
 	detach(view: MarkdownView): void {
 		const session = this.byView.get(view);
 		if (!session) return;
-		void this.lock(session, "detach").catch((error) =>
-			console.warn("Veneer: detach lock failed", error),
-		);
+		void this.lock(session, "detach").catch((error) => {
+			console.warn("Veneer: lock on detach failed", error);
+		});
 		this.byView.delete(view);
-		if (this.byPath.get(session.file.path) === session) {
-			this.byPath.delete(session.file.path);
+		this.removeFromPath(session.file.path, session);
+	}
+
+	/**
+	 * Immediately zeroes keys, cancels timers/in-flight locks, and detaches a session
+	 * without re-encrypting or writing decoy content back to disk (used when unprotecting).
+	 */
+	discardAndDetach(session: ViewSession): boolean {
+		if (this.byView.get(session.view) !== session) return false;
+		session.killGeneration += 1;
+		session.dek?.fill(0);
+		session.dek = null;
+		this.revokeImageUrls(session);
+		session.state = "locked";
+		session.lockingPromise = null;
+		session.pendingPayload = null;
+		session.realTitle = null;
+		session.capture.cancel();
+		session.reencryptSeq += 1;
+		if (session.reencryptTimer !== null) {
+			clearTimeout(session.reencryptTimer);
+			session.reencryptTimer = null;
 		}
+		this.pendingLocks.delete(session);
+		this.byView.delete(session.view);
+		this.removeFromPath(session.file.path, session);
+		this.hooks.onLocked(session);
+		return true;
 	}
 
 	private populateImageUrls(
@@ -317,6 +521,16 @@ export class SessionManager {
 	}
 
 	async unlock(session: ViewSession, password: string): Promise<UnlockOutcome> {
+		const startGeneration = session.killGeneration;
+		if (this.reservedPaths.has(session.file.path)) return "blocked";
+		if (session.lockingPromise !== null) {
+			try {
+				await session.lockingPromise;
+			} catch (error) {
+				console.warn("Veneer: prior lock failed before unlock", error);
+			}
+		}
+		if (session.killGeneration !== startGeneration || !this.isAttached(session)) return "blocked";
 		if (session.state === "unlocked") return "ok";
 		const blockReason = this.unlockBlockReason();
 		if (blockReason !== null) {
@@ -327,6 +541,24 @@ export class SessionManager {
 		if (!session.backoff.canAttempt(now)) return "backoff";
 		try {
 			const { realText, dek, images, realTitle } = await unlockPayload(session.originalPayload, password);
+			// A concurrent unlock() may have won while we awaited derivation, or a mask
+			// may have started. Either way this derivation lost; zero only our freshly
+			// derived key so we never touch the winner's live key material.
+			const stateAfterDerivation = this.stateOf(session);
+			if (stateAfterDerivation === "unlocked" || session.lockingPromise !== null) {
+				dek.fill(0);
+				return stateAfterDerivation === "unlocked" ? "ok" : "blocked";
+			}
+			if (
+				session.killGeneration !== startGeneration ||
+				!this.isAttached(session) ||
+				this.isPathReserved(session.file.path)
+			) {
+				dek.fill(0);
+				session.dek?.fill(0);
+				session.dek = null;
+				return "blocked";
+			}
 			session.backoff.recordSuccess();
 			session.dek = dek;
 			session.state = "unlocked";
@@ -344,48 +576,110 @@ export class SessionManager {
 			this.hooks.onUnlocked(session);
 			return "ok";
 		} catch {
+			if (session.killGeneration !== startGeneration) return "blocked";
 			session.backoff.recordFailure(now);
 			return "wrong";
 		}
 	}
 
-	async lock(session: ViewSession, reason: string): Promise<void> {
-		if (session.lockingPromise) return session.lockingPromise;
-		if (session.state !== "unlocked") return;
-		const runLock = (async () => {
-			console.debug(`Veneer: masking note (${reason})`);
-			session.reencryptSeq += 1;
-			if (session.reencryptTimer !== null) {
-				clearTimeout(session.reencryptTimer);
-				session.reencryptTimer = null;
-			}
-			if (session.reencryptPromise !== null) {
-				await session.reencryptPromise;
-			}
-			if (session.state !== "unlocked") return;
-			const sameFile = session.view.file === session.file;
+	/**
+	 * Coalesces concurrent mask triggers, snapshots the DEK and editor state,
+	 * re-encrypts the latest plaintext to disk, zeroes key material, and restores the decoy cover.
+	 */
+	lock(session: ViewSession, reason: string): Promise<void> {
+		if (this.reservedPaths.has(session.file.path)) return Promise.resolve();
+		if (session.lockingPromise !== null) return session.lockingPromise;
+		if (session.state !== "unlocked") return Promise.resolve();
+		session.reencryptSeq += 1;
+		if (session.reencryptTimer !== null) {
+			clearTimeout(session.reencryptTimer);
+			session.reencryptTimer = null;
+		}
+		console.debug(`Veneer: masking note (${reason})`);
+		const sameFile = session.view.file === session.file;
+		let currentText = sameFile ? session.view.editor.getValue() : "";
+		let currentTitle = sameFile ? this.readEditedInlineTitle(session) : session.realTitle;
+		const dek = session.dek ? new Uint8Array(session.dek) : null;
+		const startGeneration = session.killGeneration;
+		let resolveLock!: () => void;
+		let rejectLock!: (reason?: unknown) => void;
+		const lockingPromise = new Promise<void>((resolve, reject) => {
+			resolveLock = resolve;
+			rejectLock = reject;
+		});
+		session.lockingPromise = lockingPromise;
+		this.pendingLocks.add(session);
+		void (async (): Promise<void> => {
+			let lockError: unknown = null;
+			let hasFailed = false;
 			try {
-				if (session.dek && sameFile) {
-					const current = session.view.editor.getValue();
-					const currentTitle = this.readEditedInlineTitle(session);
-					const imageStage = await this.stageEditorImages(session, current);
+				if (
+					dek &&
+					sameFile &&
+					session.lockingPromise === lockingPromise &&
+					session.killGeneration === startGeneration
+				) {
+					const imageStage = await this.stageEditorImages(session, currentText);
 					const mergedImages = imageStage?.mergedImages ?? session.originalPayload.images;
+					if (session.lockingPromise !== lockingPromise || session.killGeneration !== startGeneration) return;
+					if (
+						this.isAttached(session) &&
+						session.view.file === session.file &&
+						session.state === "unlocked"
+					) {
+						const postStageText = session.view.editor.getValue();
+						if (postStageText !== currentText && postStageText !== session.decoyBody) {
+							currentText = postStageText;
+						}
+						currentTitle = this.readEditedInlineTitle(session);
+					}
 					session.realTitle = currentTitle;
-					const lockedPayload = await reencryptRealText(
+					let lockedPayload = await reencryptRealText(
 						session.originalPayload,
-						session.dek,
-						current,
+						dek,
+						currentText,
 						mergedImages,
 						session.realTitle,
 					);
+					if (session.lockingPromise !== lockingPromise || session.killGeneration !== startGeneration) return;
+					if (
+						this.isAttached(session) &&
+						session.view.file === session.file &&
+						session.state === "unlocked"
+					) {
+						const latestText = session.view.editor.getValue();
+						if (latestText !== currentText && latestText !== session.decoyBody) {
+							currentText = latestText;
+							currentTitle = this.readEditedInlineTitle(session);
+							session.realTitle = currentTitle;
+							lockedPayload = await reencryptRealText(
+								session.originalPayload,
+								dek,
+								currentText,
+								mergedImages,
+								session.realTitle,
+							);
+							if (
+								session.lockingPromise !== lockingPromise ||
+								session.killGeneration !== startGeneration
+							) {
+								return;
+							}
+						}
+					}
 					session.pendingPayload = lockedPayload;
+					if (this.isPathReserved(session.file.path)) return;
 					await this.enqueueWrite(session, () =>
 						this.app.vault.modify(
 							session.file,
 							serializeFile(session.decoyBody, lockedPayload),
 						),
 					);
+					if (session.lockingPromise !== lockingPromise || session.killGeneration !== startGeneration) return;
 					session.originalPayload = lockedPayload;
+					for (const peer of this.getAllByPath(session.file.path)) {
+						peer.originalPayload = lockedPayload;
+					}
 					await deleteStagedVaultImages(
 						this.app,
 						this.persistedStagedFiles(
@@ -394,72 +688,124 @@ export class SessionManager {
 						),
 					);
 				}
+			} catch (error) {
+				hasFailed = true;
+				lockError = error;
 			} finally {
-				session.dek?.fill(0);
-				session.dek = null;
-				this.revokeImageUrls(session);
-				session.state = "locked";
-				session.pendingPayload = null;
-				session.capture.cancel();
-				if (session.reencryptTimer !== null) {
-					clearTimeout(session.reencryptTimer);
-					session.reencryptTimer = null;
+				dek?.fill(0);
+				const ownedOnExit =
+					session.lockingPromise === lockingPromise && session.killGeneration === startGeneration;
+				if (ownedOnExit) {
+					session.dek?.fill(0);
+					session.dek = null;
+					this.revokeImageUrls(session);
+					session.state = "locked";
+					session.lockingPromise = null;
+					session.pendingPayload = null;
+					session.capture.cancel();
+					if (session.reencryptTimer !== null) {
+						clearTimeout(session.reencryptTimer);
+						session.reencryptTimer = null;
+					}
+					if (this.isAttached(session) && sameFile && session.view.file === session.file) {
+						session.view.setViewData(session.decoyBody, true);
+						this.applyDisplayedTitle(session, session.file.basename);
+					}
+					session.realTitle = null;
+					this.hooks.onLocked(session);
+					if (hasFailed) {
+						this.hooks.onLockFailed?.(lockError);
+						rejectLock(lockError);
+					} else {
+						resolveLock();
+					}
+				} else {
+					resolveLock();
 				}
-				if (sameFile) {
-					session.view.setViewData(session.decoyBody, true);
-					this.applyDisplayedTitle(session, session.file.basename);
-				}
-				session.realTitle = null;
-				this.hooks.onLocked(session);
+				this.pendingLocks.delete(session);
 			}
-		})().finally(() => {
-			if (session.lockingPromise === runLock) {
-				session.lockingPromise = null;
-			}
-		});
-		session.lockingPromise = runLock;
-		return runLock;
+		})();
+		return lockingPromise;
 	}
 
 	/**
-	 * Masks every session, reporting and swallowing a per-session failure so one
-	 * rejected write cannot leave the remaining notes plaintext. Keeping this
-	 * method total also lets `maskAll` reach the clipboard clear and content
-	 * protection that follow it.
+	 * Masks every session in order. A per-session failure is recorded but does
+	 * not abort the loop, so one rejected write cannot leave the remaining notes
+	 * plaintext; the first error is rethrown once every session has been masked.
+	 * Callers that must stay total (`maskAll`, which still clears the clipboard
+	 * and re-enables content protection afterwards) catch and warn.
 	 */
 	async lockAll(reason: string): Promise<void> {
-		const results = await Promise.allSettled(
-			this.all().map((session) => this.lock(session, reason)),
-		);
-		for (const result of results) {
-			if (result.status === "rejected") {
-				console.warn("Veneer: lock failed", result.reason);
+		const sessions = this.all();
+		const chains = new Map<string, Promise<void>>();
+		const failures = new Map<number, unknown>();
+
+		sessions.forEach((session, index) => {
+			const previous = chains.get(session.file.path) ?? Promise.resolve();
+			const current = previous
+				.then(() => this.lock(session, reason))
+				.catch((error) => {
+					failures.set(index, error);
+				});
+			chains.set(session.file.path, current);
+		});
+
+		await Promise.all(chains.values());
+		let firstFailure: { index: number; reason: unknown } | null = null;
+		for (const [index, reason] of failures) {
+			if (firstFailure === null || index < firstFailure.index) {
+				firstFailure = { index, reason };
 			}
+		}
+		if (firstFailure !== null) {
+			throw firstFailure.reason;
 		}
 	}
 
 	/**
 	 * Immediate mask with NO re-encryption: used by the duress shred (§11.2).
 	 * Drops keys and swaps to decoy; the shred deletes the payload from disk.
+	 * Killed sessions are also detached from their pane and path, queued deferred
+	 * saves are discarded, and every in-flight reservation write is awaited, so
+	 * nothing can re-serialize a payload or replay a save after the shred runs.
 	 */
-	hardKillAll(): void {
-		for (const session of this.all()) {
-			session.reencryptSeq += 1;
+	hardKillAll(): Promise<void> {
+		this.killEpoch += 1;
+		const inflight: Promise<void>[] = [...this.reservationWrites];
+		for (const session of new Set([...this.all(), ...this.pendingLocks])) {
+			if (session.lockingPromise !== null) {
+				inflight.push(session.lockingPromise);
+			}
+			if (session.writePromise !== null) {
+				inflight.push(session.writePromise);
+			}
+			session.killGeneration += 1;
 			session.dek?.fill(0);
 			session.dek = null;
 			this.revokeImageUrls(session);
 			session.state = "locked";
+			session.lockingPromise = null;
 			session.pendingPayload = null;
 			session.capture.cancel();
+			session.reencryptSeq += 1;
 			if (session.reencryptTimer !== null) {
 				clearTimeout(session.reencryptTimer);
 				session.reencryptTimer = null;
 			}
-			session.view.setViewData(session.decoyBody, true);
-			this.applyDisplayedTitle(session, session.file.basename);
+			if (this.isAttached(session) && session.view.file === session.file) {
+				session.view.setViewData(session.decoyBody, true);
+				this.applyDisplayedTitle(session, session.file.basename);
+			}
 			session.realTitle = null;
+			if (this.isAttached(session)) {
+				this.byView.delete(session.view);
+			}
+			this.removeFromPath(session.file.path, session);
+			this.pendingLocks.delete(session);
 			this.hooks.onLocked(session);
 		}
+		this.deferredSaves.clear();
+		return Promise.allSettled(inflight).then(() => undefined);
 	}
 
 	/** Debounced ciphertext refresh so the synchronous save path never sees plaintext. */

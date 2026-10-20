@@ -4,7 +4,7 @@ import path from "path";
 import type { EditorState } from "@codemirror/state";
 import { DEFAULT_SETTINGS, MODEL_INFO, activeModel, type ModelId, type VeneerSettings } from "./settings";
 import { ProtectedRegistry } from "./registry";
-import { SessionManager } from "./view/session";
+import { SessionManager, type ViewSession } from "./view/session";
 import { installViewPatches } from "./view/patch";
 import { buildCaptureExtension } from "./capture/UnlockCapture";
 import { LockEngine } from "./lock/LockEngine";
@@ -19,14 +19,21 @@ import { selectRuntime } from "./llm/preferredRuntime";
 import type { LlmRuntime } from "./llm/runtime";
 import { validateDecoy } from "./llm/validate";
 import { DECOY_TEMPLATES, weaveTemplate } from "./decoy/templates";
-import { changePassword, createFile, parseFileContent, serializeFile, unlockPayload } from "./crypto/payload";
+import {
+	changePassword,
+	createFile,
+	parseFileContent,
+	serializeFile,
+	unlockPayload,
+	type PayloadV1,
+} from "./crypto/payload";
 import {
 	deleteStagedVaultImages,
 	readLinkedVaultImages,
 	restoreVaultImages,
 } from "./crypto/images";
 import { buildUnlockedImageExtension } from "./view/imageWidget";
-import { executeShred, type ShredTarget } from "./shred/duress";
+import { executeShred, stripPortablePayload, type ShredTarget } from "./shred/duress";
 import { fileRecoveryEnabled } from "./shred/hygiene";
 import { newPinRecord, verifyPin } from "./shred/pin";
 import { clearWebStorage } from "./lock/power";
@@ -68,6 +75,11 @@ export default class VeneerPlugin extends Plugin {
 				onUnlocked: () => { this.lockEngine.onSessionUnlocked(); this.updateWordCounter(); },
 				onLocked: () => { this.dots.reset(); this.updateWordCounter(); },
 				onUnlockBlocked: () => this.warnFileRecoveryOnce(),
+				onLockFailed: () => {
+					new Notice(
+						"Veneer: could not save your latest edits before masking. The note is masked; unlock it to check for missing changes.",
+					);
+				},
 			},
 			() => this.settings.triggerPrefix,
 			() =>
@@ -169,7 +181,7 @@ export default class VeneerPlugin extends Plugin {
 	}
 
 	private async handleCandidate(
-		session: import("./view/session").ViewSession,
+		session: ViewSession,
 		secret: string,
 	): Promise<void> {
 		this.dots.reset();
@@ -198,8 +210,10 @@ export default class VeneerPlugin extends Plugin {
 				const file = this.app.vault.getAbstractFileByPath(path);
 				if (!(file instanceof TFile)) return;
 				const content = await this.app.vault.read(file);
-				const parsed = parseFileContent(content);
-				if (parsed) await this.app.vault.modify(file, `${parsed.decoyBody}\n`);
+				await this.app.vault.modify(
+					file,
+					stripPortablePayload(content, this.sessions.getDecoyFallback(path)),
+				);
 			},
 			deleteStealth: async (path) => {
 				await this.app.vault.adapter.remove(path);
@@ -263,7 +277,11 @@ export default class VeneerPlugin extends Plugin {
 				const view = this.app.workspace.getActiveViewOfType(MarkdownView);
 				if (!view) return;
 				const session = this.sessions.get(view);
-				if (session) void this.sessions.lock(session, "manual");
+				if (session) {
+					void this.sessions.lock(session, "manual").catch((error) => {
+						console.warn("Veneer: manual mask failed", error);
+					});
+				}
 			},
 		});
 		this.addCommand({
@@ -393,16 +411,28 @@ export default class VeneerPlugin extends Plugin {
 		}).open();
 	}
 
+	private abortIfLiveSession(file: TFile, notice: string): boolean {
+		if (!this.sessions.hasLiveSession(file.path)) return false;
+		new Notice(notice);
+		return true;
+	}
+
 	private async refreshDecoy(file: TFile): Promise<void> {
+		const startEpoch = this.sessions.currentKillEpoch();
+		try {
+			for (const session of this.sessions.getAllByPath(file.path)) {
+				if (session.state === "unlocked" || session.lockingPromise !== null) {
+					await this.sessions.lock(session, "refresh-decoy");
+				}
+			}
+		} catch {
+			return;
+		}
 		const content = await this.app.vault.read(file);
 		const parsed = parseFileContent(content);
 		if (!parsed) {
 			new Notice("Not a protected note.");
 			return;
-		}
-		const session = this.sessions.getByPath(file.path);
-		if (session && session.state === "unlocked") {
-			await this.sessions.lock(session, "refresh-decoy");
 		}
 		const result = await this.generator.generate(
 			"auto",
@@ -417,11 +447,65 @@ export default class VeneerPlugin extends Plugin {
 		);
 		const { title: rawTitle, body: decoyBody } = splitTitleFromBody(result.text.trim());
 		const finalBody = decoyBody.length > 0 ? decoyBody : result.text.trim();
-		if (session) {
-			session.decoyBody = finalBody;
-			session.view.setViewData(finalBody, true);
+		try {
+			for (const session of this.sessions.getAllByPath(file.path)) {
+				if (session.state === "unlocked" || session.lockingPromise !== null) {
+					await this.sessions.lock(session, "refresh-decoy");
+				}
+			}
+		} catch {
+			return;
 		}
-		await this.app.vault.modify(file, serializeFile(finalBody, parsed.payload));
+		if (this.abortIfLiveSession(file, "Note was unlocked during refresh. Mask it and try again.")) {
+			return;
+		}
+		const releasePath = this.sessions.reservePath(file.path);
+		const previousState = new Map<
+			ViewSession,
+			{ decoyBody: string; originalPayload: PayloadV1 }
+		>();
+		try {
+			const latest = parseFileContent(await this.app.vault.read(file));
+			if (!latest) {
+				new Notice("Not a protected note.");
+				return;
+			}
+			for (const session of this.sessions.getAllByPath(file.path)) {
+				previousState.set(session, {
+					decoyBody: session.decoyBody,
+					originalPayload: session.originalPayload,
+				});
+				session.decoyBody = finalBody;
+				session.originalPayload = latest.payload;
+			}
+			const written = await this.sessions.runReservedWrite(startEpoch, () =>
+				this.app.vault.modify(file, serializeFile(finalBody, latest.payload)),
+			);
+			if (!written) {
+				for (const [session, prev] of previousState) {
+					session.decoyBody = prev.decoyBody;
+					session.originalPayload = prev.originalPayload;
+				}
+				return;
+			}
+			for (const session of this.sessions.getAllByPath(file.path)) {
+				session.decoyBody = finalBody;
+				session.originalPayload = latest.payload;
+				if (session.view.file === file) {
+					session.view.setViewData(finalBody, true);
+				}
+			}
+		} catch (error) {
+			for (const [session, prev] of previousState) {
+				session.decoyBody = prev.decoyBody;
+				session.originalPayload = prev.originalPayload;
+			}
+			console.warn("Veneer: cover refresh could not write the note", error);
+			new Notice("Could not refresh the cover. The previous cover is unchanged.");
+			return;
+		} finally {
+			releasePath();
+		}
 		await this.retitleToFile(file, rawTitle);
 		new Notice(`Cover refreshed (${result.source}).`);
 	}
@@ -461,6 +545,16 @@ export default class VeneerPlugin extends Plugin {
 	private async changePasswordViaModal(): Promise<void> {
 		const file = this.app.workspace.getActiveFile();
 		if (!file) return;
+		const startEpoch = this.sessions.currentKillEpoch();
+		try {
+			for (const activeSession of this.sessions.getAllByPath(file.path)) {
+				if (activeSession.state === "unlocked" || activeSession.lockingPromise !== null) {
+					await this.sessions.lock(activeSession, "change-password");
+				}
+			}
+		} catch {
+			return;
+		}
 		const content = await this.app.vault.read(file);
 		const parsed = parseFileContent(content);
 		if (!parsed) {
@@ -476,8 +570,66 @@ export default class VeneerPlugin extends Plugin {
 			return;
 		}
 		try {
-			const rotated = await changePassword(parsed.payload, oldPassword, newPassword);
-			await this.app.vault.modify(file, serializeFile(parsed.decoyBody, rotated));
+			for (const activeSession of this.sessions.getAllByPath(file.path)) {
+				if (activeSession.state === "unlocked" || activeSession.lockingPromise !== null) {
+					await this.sessions.lock(activeSession, "change-password");
+				}
+			}
+			if (
+				this.abortIfLiveSession(
+					file,
+					"Note was unlocked during password change. Mask it and try again.",
+				)
+			) {
+				return;
+			}
+			const releasePath = this.sessions.reservePath(file.path);
+			const previousPayloads = new Map<
+				ViewSession,
+				{ original: PayloadV1; pending: PayloadV1 | null }
+			>();
+			try {
+				const latestParsed = parseFileContent(await this.app.vault.read(file));
+				if (!latestParsed) {
+					new Notice("Not a protected note.");
+					return;
+				}
+				const rotated = await changePassword(latestParsed.payload, oldPassword, newPassword);
+				for (const openSession of this.sessions.getAllByPath(file.path)) {
+					previousPayloads.set(openSession, {
+						original: openSession.originalPayload,
+						pending: openSession.pendingPayload,
+					});
+					openSession.originalPayload = rotated;
+					if (openSession.pendingPayload !== null) {
+						openSession.pendingPayload = rotated;
+					}
+				}
+				const written = await this.sessions.runReservedWrite(startEpoch, () =>
+					this.app.vault.modify(file, serializeFile(latestParsed.decoyBody, rotated)),
+				);
+				if (!written) {
+					for (const [openSession, prev] of previousPayloads) {
+						openSession.originalPayload = prev.original;
+						openSession.pendingPayload = prev.pending;
+					}
+					return;
+				}
+				for (const openSession of this.sessions.getAllByPath(file.path)) {
+					openSession.originalPayload = rotated;
+					if (openSession.pendingPayload !== null) {
+						openSession.pendingPayload = rotated;
+					}
+				}
+			} catch (error) {
+				for (const [openSession, prev] of previousPayloads) {
+					openSession.originalPayload = prev.original;
+					openSession.pendingPayload = prev.pending;
+				}
+				throw error;
+			} finally {
+				releasePath();
+			}
 			new Notice("Password changed.");
 		} catch {
 			new Notice("Password change failed.");
@@ -487,6 +639,16 @@ export default class VeneerPlugin extends Plugin {
 	private async unprotectViaModal(): Promise<void> {
 		const file = this.app.workspace.getActiveFile();
 		if (!file) return;
+		const startEpoch = this.sessions.currentKillEpoch();
+		try {
+			for (const activeSession of this.sessions.getAllByPath(file.path)) {
+				if (activeSession.state === "unlocked" || activeSession.lockingPromise !== null) {
+					await this.sessions.lock(activeSession, "unprotect");
+				}
+			}
+		} catch {
+			return;
+		}
 		const content = await this.app.vault.read(file);
 		const parsed = parseFileContent(content);
 		if (!parsed) {
@@ -496,12 +658,58 @@ export default class VeneerPlugin extends Plugin {
 		const password = await new PasswordModal(this.app, "Unprotect permanently").ask();
 		if (password === null) return;
 		try {
-			const { realText, dek, images, realTitle } = await unlockPayload(parsed.payload, password);
-			dek.fill(0);
-			await restoreVaultImages(this.app, file.parent?.path ?? "", images);
-			const session = this.sessions.getByPath(file.path);
-			if (session) this.sessions.detach(session.view);
-			await this.app.vault.modify(file, `${realText}\n`);
+			for (const activeSession of this.sessions.getAllByPath(file.path)) {
+				if (activeSession.state === "unlocked" || activeSession.lockingPromise !== null) {
+					await this.sessions.lock(activeSession, "unprotect");
+				}
+			}
+			if (this.abortIfLiveSession(file, "Note was unlocked during unprotect. Mask it and try again.")) {
+				return;
+			}
+			const openSessions = this.sessions.getAllByPath(file.path);
+			const releasePath = this.sessions.reservePath(file.path);
+			let realTitle: string | null = null;
+			try {
+				const latestParsed = parseFileContent(await this.app.vault.read(file));
+				if (!latestParsed) {
+					new Notice("Not a protected note.");
+					return;
+				}
+				const unlocked = await unlockPayload(latestParsed.payload, password);
+				unlocked.dek.fill(0);
+				const realText = unlocked.realText;
+				realTitle = unlocked.realTitle;
+				if (this.sessions.currentKillEpoch() !== startEpoch) return;
+				await restoreVaultImages(this.app, file.parent?.path ?? "", unlocked.images);
+				if (this.sessions.currentKillEpoch() !== startEpoch) return;
+				try {
+					const written = await this.sessions.runReservedWrite(startEpoch, () =>
+						this.app.vault.modify(file, `${realText}\n`),
+					);
+					if (!written) return;
+				} catch (error) {
+					console.warn("Veneer: unprotect could not write the note", error);
+					new Notice("Could not write the unprotected note. The note is still masked.");
+					return;
+				}
+				// Detach while the path is still reserved. Releasing first would replay any
+				// save queued during the reservation against a still-attached, still-masked
+				// session, re-serializing decoy + ciphertext over the plaintext just written.
+				// Detaching here makes `sessions.get(view)` falsy, so a replayed save falls
+				// through to the editor's real text instead.
+				const targetSessions = new Set<ViewSession>([
+					...openSessions,
+					...this.sessions.getAllByPath(file.path),
+				]);
+				for (const session of targetSessions) {
+					const detached = this.sessions.discardAndDetach(session);
+					if (detached === true && session.view.file === file) {
+						session.view.setViewData(realText, true);
+					}
+				}
+			} finally {
+				releasePath();
+			}
 			await this.registry.remove(file.path);
 			if (realTitle && realTitle.trim().length > 0) {
 				await this.retitleToFile(file, realTitle);

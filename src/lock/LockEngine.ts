@@ -72,7 +72,11 @@ export class LockEngine {
 
 	async maskAll(reason: string): Promise<void> {
 		const hadUnlocked = this.sessions.all().some((s) => s.state === "unlocked");
-		await this.sessions.lockAll(reason);
+		try {
+			await this.sessions.lockAll(reason);
+		} catch (error) {
+			console.warn(`Veneer: maskAll (${reason}) encountered an error`, error);
+		}
 		if (hadUnlocked) {
 			if (this.settings().clearClipboardOnLock) {
 				await this.clipboard.clearIfTainted();

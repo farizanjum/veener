@@ -37,11 +37,19 @@ function isTypingInput(tr: Transaction): boolean {
 	return tr.isUserEvent("input.type") || tr.isUserEvent("input.paste");
 }
 
+/**
+ * Builds the CodeMirror 6 transactionFilter extension that captures the inline
+ * unlock trigger and blocks document mutations while a session is actively masking.
+ */
 export function buildCaptureExtension(deps: CaptureDeps): Extension {
 	return EditorState.transactionFilter.of((tr) => {
 		const view = deps.resolveView(tr.startState);
 		const session = view ? deps.getSession(view) : null;
-		if (!session || session.state !== "locked") return tr;
+		if (!session) return tr;
+		if (session.lockingPromise !== null) {
+			return tr.docChanged ? [] : tr;
+		}
+		if (session.state !== "locked") return tr;
 		const buffer = session.capture;
 
 		if (tr.isUserEvent("input.delete")) {
