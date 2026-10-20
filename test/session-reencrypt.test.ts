@@ -307,6 +307,49 @@ describe("SessionManager.scheduleReencrypt (Issue #1)", () => {
 		expect(session.pendingPayload).toBeNull();
 	});
 
+	it("discards a stale pre-lock reencrypt snapshot after re-unlock instead of overwriting the payload", async () => {
+		const gate = createDeferred<void>();
+		const env = createMockEnv(INITIAL_REAL, gate.promise);
+		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+		const parsed = parseFileContent(fileContent)!;
+
+		const session = env.manager.attachFromLoad(env.mockView, env.fakeFile, parsed);
+		await env.manager.unlock(session, PASSWORD);
+
+		env.setEditorText(`${INITIAL_REAL}\nEdit captured before mask\n![[Pasted chart.png]]`);
+		env.manager.scheduleReencrypt(session);
+
+		await vi.advanceTimersByTimeAsync(REENCRYPT_DEBOUNCE_MS);
+		expect(session.reencryptPromise).not.toBeNull();
+		const seqBeforeLock = session.reencryptSeq;
+
+		env.setEditorText(`${INITIAL_REAL}\nEdit captured before mask`);
+		await env.manager.lock(session, "tab-switch");
+		// lock() must invalidate the parked job: its pre-mask snapshot is stale.
+		expect(session.reencryptSeq).toBe(seqBeforeLock + 1);
+		const writesAfterLock = env.modifiedFiles.length;
+
+		await env.manager.unlock(session, PASSWORD);
+		expect(session.state).toBe("unlocked");
+
+		gate.resolve();
+		await vi.advanceTimersByTimeAsync(0);
+		if (session.reencryptPromise) await session.reencryptPromise;
+
+		// The stale job resumes after re-unlock; without the lock() seq bump it
+		// would pass the generation gates and overwrite pendingPayload (and the
+		// next unlock would hand back pre-mask text with a resurrected embed).
+		expect(env.deletedImages).toEqual([]);
+		expect(env.modifiedFiles.length).toBe(writesAfterLock);
+		expect(session.pendingPayload).not.toBeNull();
+		const unlocked = await unlockPayload(session.pendingPayload!, PASSWORD);
+		expect(unlocked.realText).toBe(`${INITIAL_REAL}\nEdit captured before mask`);
+		expect(unlocked.images["Pasted chart.png"]).toBeUndefined();
+		unlocked.dek.fill(0);
+
+		await env.manager.lock(session, "test-cleanup");
+	});
+
 	it("keeps source image intact if vault.modify throws during lock()", async () => {
 		const env = createMockEnv(INITIAL_REAL, undefined, true);
 		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
@@ -600,6 +643,62 @@ describe("SessionManager.scheduleReencrypt (Issue #1)", () => {
 				"Newest edit before lock v2",
 			);
 			expect(lockWroteBeforeRelease).toBe(false);
+		} finally {
+			for (const cleanup of cleanups) cleanup();
+		}
+	});
+
+	it("tracks a replayed deferred save in session.writePromise so hardKillAll awaits it before shredding", async () => {
+		const saveGate = createDeferred<void>();
+		const env = createMockEnv();
+		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+		const parsed = parseFileContent(fileContent)!;
+
+		const proto = MarkdownView.prototype as unknown as {
+			data: string;
+			file: TFile;
+			setViewData: (data: string, clear: boolean) => void;
+			getViewData: () => string;
+			save: () => Promise<void>;
+		};
+		proto.setViewData = (data: string) => {
+			env.setEditorText(data);
+		};
+		proto.getViewData = () => env.mockView.editor.getValue();
+		proto.save = async function (this: { file: TFile; data: string }) {
+			await saveGate.promise;
+			await (env.manager as unknown as { app: App }).app.vault.modify(this.file, this.data);
+		};
+
+		const cleanups: Array<() => void> = [];
+		installViewPatches(env.manager, (fn) => cleanups.push(fn));
+		Object.setPrototypeOf(env.mockView, MarkdownView.prototype);
+		delete (env.mockView as unknown as { setViewData?: unknown }).setViewData;
+
+		try {
+			// Given: an attached session on a reserved path with a save queued via deferSave
+			const session = env.manager.attachFromLoad(env.mockView, env.fakeFile, parsed);
+			const release = env.manager.reservePath(env.fakeFile.path);
+			await env.mockView.save();
+			expect(session.writePromise).toBeNull();
+
+			// When: the reservation releases and a duress shred starts while the replayed save is in flight
+			release();
+			expect(session.writePromise).not.toBeNull();
+
+			let killSettled = false;
+			const killPromise = env.manager.hardKillAll().then(() => {
+				killSettled = true;
+			});
+			await vi.advanceTimersByTimeAsync(0);
+
+			// Then: hardKillAll waits for the replayed save to finish before resolving
+			expect(killSettled).toBe(false);
+
+			saveGate.resolve();
+			await killPromise;
+			expect(killSettled).toBe(true);
+			expect(env.modifiedFiles.length).toBe(1);
 		} finally {
 			for (const cleanup of cleanups) cleanup();
 		}

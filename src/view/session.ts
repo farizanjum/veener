@@ -147,8 +147,8 @@ export class SessionManager {
 	 * under a non-rejecting shadow so `hardKillAll` awaits it; rejections
 	 * still propagate to the caller unchanged.
 	 */
-	runReservedWrite<T>(startEpoch: number, task: () => Promise<T>): Promise<T | null> {
-		if (startEpoch !== this.killEpoch) return Promise.resolve(null);
+	runReservedWrite(startEpoch: number, task: () => Promise<void>): Promise<boolean> {
+		if (startEpoch !== this.killEpoch) return Promise.resolve(false);
 		const write = task();
 		const shadow = write.then(
 			() => {},
@@ -158,7 +158,7 @@ export class SessionManager {
 		void shadow.then(() => {
 			this.reservationWrites.delete(shadow);
 		});
-		return write;
+		return write.then(() => true);
 	}
 
 	/** Remembers the last-known clean decoy for `path` (shred rewrite fallback). */
@@ -269,6 +269,7 @@ export class SessionManager {
 					existing.pendingPayload = null;
 					existing.realTitle = null;
 					existing.capture.cancel();
+					existing.reencryptSeq += 1;
 					if (existing.reencryptTimer !== null) {
 						clearTimeout(existing.reencryptTimer);
 						existing.reencryptTimer = null;
@@ -354,6 +355,7 @@ export class SessionManager {
 		session.pendingPayload = null;
 		session.realTitle = null;
 		session.capture.cancel();
+		session.reencryptSeq += 1;
 		if (session.reencryptTimer !== null) {
 			clearTimeout(session.reencryptTimer);
 			session.reencryptTimer = null;
@@ -588,6 +590,7 @@ export class SessionManager {
 		if (this.reservedPaths.has(session.file.path)) return Promise.resolve();
 		if (session.lockingPromise !== null) return session.lockingPromise;
 		if (session.state !== "unlocked") return Promise.resolve();
+		session.reencryptSeq += 1;
 		if (session.reencryptTimer !== null) {
 			clearTimeout(session.reencryptTimer);
 			session.reencryptTimer = null;
@@ -733,20 +736,29 @@ export class SessionManager {
 	 * and re-enables content protection afterwards) catch and warn.
 	 */
 	async lockAll(reason: string): Promise<void> {
-		let firstError: unknown = null;
-		let hasError = false;
-		for (const session of this.all()) {
-			try {
-				await this.lock(session, reason);
-			} catch (error) {
-				if (!hasError) {
-					hasError = true;
-					firstError = error;
-				}
+		const sessions = this.all();
+		const chains = new Map<string, Promise<void>>();
+		const failures = new Map<number, unknown>();
+
+		sessions.forEach((session, index) => {
+			const previous = chains.get(session.file.path) ?? Promise.resolve();
+			const current = previous
+				.then(() => this.lock(session, reason))
+				.catch((error) => {
+					failures.set(index, error);
+				});
+			chains.set(session.file.path, current);
+		});
+
+		await Promise.all(chains.values());
+		let firstFailure: { index: number; reason: unknown } | null = null;
+		for (const [index, reason] of failures) {
+			if (firstFailure === null || index < firstFailure.index) {
+				firstFailure = { index, reason };
 			}
 		}
-		if (hasError) {
-			throw firstError;
+		if (firstFailure !== null) {
+			throw firstFailure.reason;
 		}
 	}
 

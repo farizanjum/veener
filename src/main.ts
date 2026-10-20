@@ -478,11 +478,16 @@ export default class VeneerPlugin extends Plugin {
 			session.originalPayload = latest.payload;
 		}
 		try {
-			const write = this.sessions.runReservedWrite(startEpoch, () =>
+			const written = await this.sessions.runReservedWrite(startEpoch, () =>
 				this.app.vault.modify(file, serializeFile(finalBody, latest.payload)),
 			);
-			if (write === null) return;
-			await write;
+			if (!written) {
+				for (const [session, prev] of previousState) {
+					session.decoyBody = prev.decoyBody;
+					session.originalPayload = prev.originalPayload;
+				}
+				return;
+			}
 			for (const session of this.sessions.getAllByPath(file.path)) {
 				session.decoyBody = finalBody;
 				session.originalPayload = latest.payload;
@@ -594,11 +599,16 @@ export default class VeneerPlugin extends Plugin {
 				}
 			}
 			try {
-				const write = this.sessions.runReservedWrite(startEpoch, () =>
+				const written = await this.sessions.runReservedWrite(startEpoch, () =>
 					this.app.vault.modify(file, serializeFile(latestParsed.decoyBody, rotated)),
 				);
-				if (write === null) return;
-				await write;
+				if (!written) {
+					for (const [openSession, prev] of previousPayloads) {
+						openSession.originalPayload = prev.original;
+						openSession.pendingPayload = prev.pending;
+					}
+					return;
+				}
 				for (const openSession of this.sessions.getAllByPath(file.path)) {
 					openSession.originalPayload = rotated;
 					if (openSession.pendingPayload !== null) {
@@ -653,7 +663,9 @@ export default class VeneerPlugin extends Plugin {
 			if (this.abortIfLiveSession(file, "Note was unlocked during unprotect. Mask it and try again.")) {
 				return;
 			}
+			if (this.sessions.currentKillEpoch() !== startEpoch) return;
 			await restoreVaultImages(this.app, file.parent?.path ?? "", images);
+			if (this.sessions.currentKillEpoch() !== startEpoch) return;
 			if (this.abortIfLiveSession(file, "Note was unlocked during unprotect. Mask it and try again.")) {
 				return;
 			}
@@ -661,11 +673,10 @@ export default class VeneerPlugin extends Plugin {
 			const releasePath = this.sessions.reservePath(file.path);
 			try {
 				try {
-					const write = this.sessions.runReservedWrite(startEpoch, () =>
-					this.app.vault.modify(file, `${realText}\n`),
-				);
-				if (write === null) return;
-				await write;
+					const written = await this.sessions.runReservedWrite(startEpoch, () =>
+						this.app.vault.modify(file, `${realText}\n`),
+					);
+					if (!written) return;
 				} catch (error) {
 					console.warn("Veneer: unprotect could not write the note", error);
 					new Notice("Could not write the unprotected note. The note is still masked.");

@@ -1274,7 +1274,7 @@ describe("SessionManager race conditions (Issue #2)", () => {
 		}
 	});
 
-	it("runReservedWrite declines writes once the kill epoch is stale", async () => {
+	it("runReservedWrite declines writes once the kill epoch is stale and distinguishes accepted writes via boolean result", async () => {
 		const harness = createFakeHarness(DECOY);
 		const sessions = new SessionManager(harness.app, harness.hooks, () => ";;", () => null);
 
@@ -1283,17 +1283,25 @@ describe("SessionManager race conditions (Issue #2)", () => {
 			ran = true;
 			return Promise.resolve();
 		});
-		expect(stale).toBeNull();
+		expect(stale).toBe(false);
 		expect(ran).toBe(false);
 
 		const startEpoch = sessions.currentKillEpoch();
+		let ranLive = false;
+		const accepted = await sessions.runReservedWrite(startEpoch, () => {
+			ranLive = true;
+			return Promise.resolve();
+		});
+		expect(accepted).toBe(true);
+		expect(ranLive).toBe(true);
+
 		let ranAfterKill = false;
 		void sessions.hardKillAll();
 		const declined = await sessions.runReservedWrite(startEpoch, () => {
 			ranAfterKill = true;
 			return Promise.resolve();
 		});
-		expect(declined).toBeNull();
+		expect(declined).toBe(false);
 		expect(ranAfterKill).toBe(false);
 	});
 
@@ -1344,5 +1352,71 @@ describe("SessionManager race conditions (Issue #2)", () => {
 		sessions.renamePath(harness.file.path, "renamed.md");
 		expect(sessions.getDecoyFallback("renamed.md")).toBe(parsed.decoyBody);
 		expect(sessions.getDecoyFallback(harness.file.path)).toBeNull();
+	});
+
+	it("runs lockAll concurrently across distinct paths while keeping same-path locks sequential", async () => {
+		// Given: two panes on Note A and one pane on Note B, all unlocked
+		const { fileContent: contentA } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+		const parsedA = parseFileContent(contentA);
+		if (!parsedA) throw new Error("Expected parsed payload A");
+
+		const { fileContent: contentB } = await createFile("Second note secret", PASSWORD, DECOY);
+		const parsedB = parseFileContent(contentB);
+		if (!parsedB) throw new Error("Expected parsed payload B");
+
+		const harness = createFakeHarness(DECOY);
+		const paneA2 = harness.createPane(DECOY);
+		const paneB = harness.createPane(DECOY);
+		const fileB = {
+			path: "Note B.md",
+			name: "Note B.md",
+			basename: "Note B",
+			extension: "md",
+		} as unknown as TFile;
+		paneB.setFile(fileB);
+
+		const sessions = new SessionManager(harness.app, harness.hooks, () => ";;", () => null);
+		const sessionA1 = sessions.attachFromLoad(harness.view, harness.file, parsedA);
+		const sessionA2 = sessions.attachFromLoad(paneA2.view, harness.file, parsedA);
+		const sessionB = sessions.attachFromLoad(paneB.view, fileB, parsedB);
+
+		await sessions.unlock(sessionA1, PASSWORD);
+		await sessions.unlock(sessionA2, PASSWORD);
+		await sessions.unlock(sessionB, PASSWORD);
+		harness.setEditorText("Edit A1");
+		paneA2.setEditorText("Edit A2");
+		paneB.setEditorText("Edit B");
+
+		const events: string[] = [];
+		const originalLock = sessions.lock.bind(sessions);
+		const lockSpy = vi.spyOn(sessions, "lock");
+		let releaseA1!: () => void;
+		const gateA1 = new Promise<void>((resolve) => {
+			releaseA1 = resolve;
+		});
+		lockSpy.mockImplementation((session, reason) => {
+			const label =
+				session === sessionA1 ? "A1" : session === sessionA2 ? "A2" : "B";
+			events.push(`start:${label}`);
+			if (session === sessionA1) {
+				return gateA1.then(() => originalLock(session, reason));
+			}
+			return originalLock(session, reason);
+		});
+
+		try {
+			// When: lockAll starts while sessionA1 is held at gateA1
+			const lockAllPromise = sessions.lockAll("panic");
+			await new Promise((resolve) => setTimeout(resolve, 0));
+
+			// Then: Note B starts concurrently with A1, while A2 waits for A1 on the same path
+			expect(events).toEqual(["start:A1", "start:B"]);
+
+			releaseA1();
+			await lockAllPromise;
+			expect(events).toEqual(["start:A1", "start:B", "start:A2"]);
+		} finally {
+			lockSpy.mockRestore();
+		}
 	});
 });
