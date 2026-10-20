@@ -20,7 +20,6 @@ export interface ShredDeps {
 	/** Stealth mode: delete the external payload store file. */
 	deleteStealth: (path: string) => Promise<void>;
 	clearRegistry: () => Promise<void>;
-	clearWebStorage: () => void;
 }
 
 export interface ShredReport {
@@ -57,8 +56,6 @@ export async function executeShred(
 
 	await deps.clearRegistry();
 	steps.push("clear-registry");
-	deps.clearWebStorage();
-	steps.push("clear-webstorage");
 
 	return { processed: targets.length - failures.length, failures, steps };
 }

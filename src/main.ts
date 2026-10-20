@@ -36,7 +36,6 @@ import { buildUnlockedImageExtension } from "./view/imageWidget";
 import { executeShred, stripPortablePayload, type ShredTarget } from "./shred/duress";
 import { fileRecoveryEnabled } from "./shred/hygiene";
 import { newPinRecord, verifyPin } from "./shred/pin";
-import { clearWebStorage } from "./lock/power";
 import { clearPartial, partialProgress, sha256HexOfFile } from "./llm/download";
 import { sanitizeTitle, siblingPath, splitTitleFromBody, withSuffix } from "./decoy/title";
 
@@ -219,7 +218,6 @@ export default class VeneerPlugin extends Plugin {
 				await this.app.vault.adapter.remove(path);
 			},
 			clearRegistry: () => this.registry.clear(),
-			clearWebStorage: () => clearWebStorage(),
 		});
 		console.warn(
 			`Veneer: shred finished, ${report.processed}/${targets.length} destroyed, ${report.failures.length} failed`,

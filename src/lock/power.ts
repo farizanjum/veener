@@ -15,12 +15,6 @@ interface BrowserWindowLike {
 interface RemoteLike {
 	powerMonitor?: PowerMonitorLike;
 	getCurrentWindow?(): BrowserWindowLike;
-	session?: {
-		defaultSession?: {
-			clearCache(): Promise<void>;
-			clearStorageData(options?: { storages?: string[] }): Promise<void>;
-		};
-	};
 }
 
 interface ElectronLike {
@@ -55,18 +49,5 @@ export function setContentProtection(protect: boolean): boolean {
 		return true;
 	} catch {
 		return false;
-	}
-}
-
-export async function clearWebStorage(): Promise<void> {
-	const session = electronRemote()?.session?.defaultSession;
-	if (!session) return;
-	try {
-		await session.clearCache();
-		await session.clearStorageData({
-			storages: ["localstorage", "indexdb", "websql", "serviceworkers", "cachestorage"],
-		});
-	} catch (error) {
-		console.warn("Veneer: web storage clear skipped", error);
 	}
 }
