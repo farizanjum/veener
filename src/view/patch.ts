@@ -58,17 +58,22 @@ export function installViewPatches(
 				// A reservation holder is mid-write for this path. Replay this save once
 				// the last reservation releases rather than dropping it silently.
 				sessions.deferSave(session.file.path, () => {
+					if (this.file !== session.file) return;
 					const stillAttached = sessions.get(this) === session && this.file === session.file;
 					if (stillAttached) {
 						// A duress shred can start the moment this reservation releases. Route
 						// the replay through the tracked write queue so `hardKillAll` captures
 						// and awaits it; an untracked save could otherwise land after the
 						// payload was targeted for zeroization and resurrect ciphertext.
-						void proto.save.call(this, clear);
+						void this.save(clear).catch((error) => {
+							console.warn("Veneer: deferred save after reservation failed", error);
+						});
 						return;
 					}
 					this.data = this.getViewData();
-					void originalSave.call(this, clear);
+					void Promise.resolve(originalSave.call(this, clear)).catch((error) => {
+						console.warn("Veneer: deferred save after reservation failed", error);
+					});
 				});
 				return;
 			}
