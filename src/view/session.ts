@@ -215,6 +215,7 @@ export class SessionManager {
 	private isHydratingView = false;
 
 	private readonly fileAuthorities = new Map<TFile, FileSnapshotAuthority>();
+	private readonly dirtySessionSnapshots = new Set<TFile>();
 	private readonly sessionMeta = new WeakMap<ViewSession, SessionInternalMeta>();
 	private readonly payloadRevisions = new WeakMap<PayloadV1, number>();
 	private readonly payloadFingerprintRevisions = new Map<string, number>();
@@ -242,6 +243,10 @@ export class SessionManager {
 	) {
 		this.coordinator = coordinator ?? getSharedLifecycleCoordinator();
 		this.owner = owner ?? this.coordinator.registerOwner(this.app);
+	}
+
+	getApp(): App {
+		return this.app;
 	}
 
 	/** Returns the shared `ViewLifecycleCoordinator` governing this manager. */
@@ -629,6 +634,7 @@ export class SessionManager {
 			authority.acceptedDecoyBody = cleanCover;
 			authority.acceptedCoverRevision = rev;
 		}
+		this.dirtySessionSnapshots.add(session.file);
 		this.rememberDecoy(session.file.path, cleanCover);
 		return rev;
 	}
@@ -652,6 +658,7 @@ export class SessionManager {
 		this.uncommittedStagedPayloads.delete(payload);
 		authority.acceptedPayload = payload;
 		authority.acceptedPayloadRevision = candidateRevision;
+		this.dirtySessionSnapshots.add(session.file);
 		this.runInternalSessionMutation(session, () => {
 			if (nextRealTitle !== undefined) {
 				session.realTitle = nextRealTitle;
@@ -680,6 +687,7 @@ export class SessionManager {
 		if (rev >= authority.acceptedPayloadRevision) {
 			authority.acceptedPayload = payload;
 			authority.acceptedPayloadRevision = rev;
+			this.dirtySessionSnapshots.delete(session.file);
 		}
 		this.runInternalSessionMutation(session, () => {
 			session.originalPayload = payload;
@@ -1537,7 +1545,16 @@ export class SessionManager {
 	 * non-rejecting shadow so `hardKillAll` awaits it; rejections still propagate
 	 * to the caller unchanged.
 	 */
-	runReservedWrite(startEpoch: number, task: () => Promise<void>): Promise<boolean> {
+	runReservedWrite(
+		startEpoch: number,
+		task: () => Promise<void>,
+		options?: {
+			readonly file?: TFile;
+			readonly commandId?: symbol;
+			readonly dispositionOnCommit?: CommittedDisposition;
+			readonly onCommitted?: () => void | Promise<void>;
+		},
+	): Promise<boolean> {
 		if (this.isDisposed() || startEpoch !== this.killEpoch) {
 			return Promise.resolve(false);
 		}
@@ -1555,6 +1572,40 @@ export class SessionManager {
 				});
 			}
 		}
+
+		const targetFile =
+			options?.file ??
+			(stagedSnapshots.length === 1 ? stagedSnapshots[0]?.file : undefined);
+
+		if (targetFile) {
+			return this.enqueueCoordinatedWrite<void>(
+				targetFile,
+				async () => {
+					await task();
+				},
+				{
+					epoch: startEpoch,
+					kind: "normal",
+					...(options?.commandId ? { commandId: options.commandId } : {}),
+					...(options?.dispositionOnCommit
+						? { dispositionOnCommit: options.dispositionOnCommit }
+						: {}),
+					onCommitted: async () => {
+						if (this.killEpoch === startEpoch) {
+							for (const item of stagedSnapshots) {
+								this.publishCommandCommit(item.file, {
+									kind: "password",
+									payload: item.payload,
+									decoyBody: item.decoyBody,
+								});
+							}
+						}
+						await options?.onCommitted?.();
+					},
+				},
+			).then((res) => res.status === "committed");
+		}
+
 		const write = task();
 		const shadow = write.then(
 			() => undefined,
@@ -1564,7 +1615,7 @@ export class SessionManager {
 		void shadow.then(() => {
 			this.reservationWrites.delete(shadow);
 		});
-		return write.then(() => {
+		return write.then(async () => {
 			if (this.killEpoch === startEpoch) {
 				for (const item of stagedSnapshots) {
 					this.publishCommandCommit(item.file, {
@@ -1574,6 +1625,7 @@ export class SessionManager {
 					});
 				}
 			}
+			await options?.onCommitted?.();
 			return true;
 		});
 	}
@@ -1643,6 +1695,11 @@ export class SessionManager {
 			});
 		}
 		return promise;
+	}
+
+	markSnapshotNeedsRetirementCommit(file: TFile): void {
+		if (this.isDisposed()) return;
+		this.dirtySessionSnapshots.add(file);
 	}
 
 	/** Remembers the last-known clean decoy for `path` (shred rewrite fallback). */
@@ -1864,6 +1921,7 @@ export class SessionManager {
 					if (rev >= authority.acceptedPayloadRevision) {
 						authority.acceptedPayload = next;
 						authority.acceptedPayloadRevision = rev;
+						this.dirtySessionSnapshots.add(file);
 					}
 				},
 				enumerable: true,
@@ -2863,8 +2921,14 @@ export class SessionManager {
 			() => undefined,
 			() => undefined,
 		);
+		this.reservationWrites.add(tracked);
+		void tracked.finally(() => {
+			this.reservationWrites.delete(tracked);
+		});
+		const ownerRuntime = this.coordinator.trackSubmittedOwnerPromise(this.app, this.owner, session.file, tracked);
 		session.writePromise = tracked;
 		void tracked.finally(() => {
+			ownerRuntime();
 			if (session.writePromise === tracked) {
 				session.writePromise = null;
 			}

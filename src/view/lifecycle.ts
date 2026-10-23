@@ -1,5 +1,6 @@
 import { MarkdownView, type App, type TFile } from "obsidian";
-import type { PayloadV1 } from "../crypto/payload";
+import { parseFileContent, type PayloadV1 } from "../crypto/payload";
+import { computeSavedContent } from "./saveDecision";
 
 /**
  * Shared owner-aware per-file write and retirement coordinator (§5 / Issue #13).
@@ -928,6 +929,16 @@ export class ViewLifecycleCoordinator {
 				if (record.barrierStatus === "failed") {
 					throw record.barrierFailure ?? new Error(`Retirement barrier failed for ${record.lastKnownPath}`);
 				}
+				if (record.barrierStatus === "draining") {
+					retiringDrains.push(
+						new Promise<void>((resolve, reject) => {
+							record.barrierWaiters.push({ resolve, reject });
+						}),
+					);
+				}
+				if (record.activePromise !== null) {
+					retiringDrains.push(record.activePromise);
+				}
 			}
 		}
 
@@ -937,13 +948,47 @@ export class ViewLifecycleCoordinator {
 
 		if (file) {
 			const record = scope.filesByRef.get(file);
-			if (record?.barrierStatus === "failed") {
-				throw record.barrierFailure ?? new Error(`Retirement barrier failed for ${file.path}`);
+			if (record) {
+				while (true) {
+					const currentStatus: string = record.barrierStatus;
+					if (currentStatus === "failed") {
+						throw record.barrierFailure ?? new Error(`Retirement barrier failed for ${file.path}`);
+					}
+					const hasPendingRetirement = record.queue.some(
+						(e) =>
+							!e.cancelledBeforeSubmit &&
+							(e.kind === "retirement-commit" ||
+								(e.owner !== null && e.owner.phase !== "active")),
+					);
+					if (currentStatus === "draining" && record.activePromise !== null) {
+						await record.activePromise;
+					} else if (hasPendingRetirement) {
+						await Promise.resolve();
+					} else {
+						break;
+					}
+				}
 			}
 		} else {
 			for (const record of scope.filesByRef.values()) {
-				if (record.barrierStatus === "failed") {
-					throw record.barrierFailure ?? new Error(`Retirement barrier failed for ${record.lastKnownPath}`);
+				while (true) {
+					const currentStatus: string = record.barrierStatus;
+					if (currentStatus === "failed") {
+						throw record.barrierFailure ?? new Error(`Retirement barrier failed for ${record.lastKnownPath}`);
+					}
+					const hasPendingRetirement = record.queue.some(
+						(e) =>
+							!e.cancelledBeforeSubmit &&
+							(e.kind === "retirement-commit" ||
+								(e.owner !== null && e.owner.phase !== "active")),
+					);
+					if (currentStatus === "draining" && record.activePromise !== null) {
+						await record.activePromise;
+					} else if (hasPendingRetirement) {
+						await Promise.resolve();
+					} else {
+						break;
+					}
 				}
 			}
 		}
@@ -1075,7 +1120,9 @@ export class ViewLifecycleCoordinator {
 		}
 
 		if (
-			(record.barrierStatus === "draining" || record.activePromise !== null) &&
+			(record.barrierStatus === "draining" ||
+				record.activePromise !== null ||
+				record.frozenSnapshot !== null) &&
 			record.frozenSnapshot !== null
 		) {
 			const safeRaw = record.frozenSnapshot.rawSerialized;
@@ -1092,6 +1139,11 @@ export class ViewLifecycleCoordinator {
 					});
 				} else if (record.activePromise !== null) {
 					void record.activePromise.then(() => {
+						if ((view as unknown as { file?: TFile | null }).file !== file) return;
+						return onAfterBarrier(view, file);
+					}).catch(() => undefined);
+				} else {
+					void Promise.resolve().then(() => {
 						if ((view as unknown as { file?: TFile | null }).file !== file) return;
 						return onAfterBarrier(view, file);
 					}).catch(() => undefined);
@@ -1136,6 +1188,10 @@ export class ViewLifecycleCoordinator {
 		}
 
 		const capturedSnapshot = record.frozenSnapshot;
+		const wasIdleBeforeGuard = !record.processing && record.activePromise === null && record.queue.length === 0;
+		if (wasIdleBeforeGuard && record.barrierStatus !== "failed") {
+			record.barrierStatus = "draining";
+		}
 
 		return this.enqueueFileWrite(app, {
 			file: capturedFile,
@@ -1164,7 +1220,15 @@ export class ViewLifecycleCoordinator {
 					return;
 				}
 				const effectiveSafe =
-					record.frozenSnapshot?.rawSerialized ?? capturedSnapshot?.rawSerialized;
+					this.getGuardEffectiveContent(
+						app,
+						capturedFile,
+						view.editor && typeof view.editor.getValue === "function"
+							? view.editor.getValue()
+							: undefined,
+					) ??
+					record.frozenSnapshot?.rawSerialized ??
+					capturedSnapshot?.rawSerialized;
 				if (effectiveSafe !== undefined) {
 					if (syncViewData) {
 						syncViewData(view, effectiveSafe);
@@ -1174,7 +1238,28 @@ export class ViewLifecycleCoordinator {
 				}
 				await rawSave.call(view, clear);
 			},
-		});
+		}).then(
+			(res) => {
+				if (
+					wasIdleBeforeGuard &&
+					record.barrierStatus === "draining" &&
+					record.queue.length === 0
+				) {
+					record.barrierStatus = "settled";
+					const waiters = record.barrierWaiters.splice(0);
+					for (const w of waiters) w.resolve();
+				}
+				return res;
+			},
+			(err) => {
+				if (wasIdleBeforeGuard && record.barrierStatus === "draining") {
+					record.barrierStatus = "settled";
+					const waiters = record.barrierWaiters.splice(0);
+					for (const w of waiters) w.resolve();
+				}
+				throw err;
+			},
+		);
 	}
 
 	/**
@@ -1222,17 +1307,22 @@ export class ViewLifecycleCoordinator {
 				save: targetProto.save,
 			};
 		} else {
-			// If prototype was externally replaced since our wrapper was installed, update predecessor
-			if (
-				targetProto.setViewData !== chain.installedWrappers.setViewData &&
-				chain.activeOwnerHandlers.size === 0
-			) {
+			const setChanged = targetProto.setViewData !== chain.installedWrappers.setViewData;
+			const getChanged = targetProto.getViewData !== chain.installedWrappers.getViewData;
+			const saveChanged = targetProto.save !== chain.installedWrappers.save;
+			if (setChanged || getChanged || saveChanged) {
 				chain.capturedPredecessors = {
-					setViewData: targetProto.setViewData,
-					getViewData: targetProto.getViewData,
-					save: targetProto.save,
+					setViewData: setChanged
+						? targetProto.setViewData
+						: chain.capturedPredecessors.setViewData,
+					getViewData: getChanged
+						? targetProto.getViewData
+						: chain.capturedPredecessors.getViewData,
+					save: saveChanged ? targetProto.save : chain.capturedPredecessors.save,
 				};
-				chain.installedWrappers = null;
+				if (setChanged && getChanged && saveChanged) {
+					chain.installedWrappers = null;
+				}
 			}
 		}
 
@@ -1319,12 +1409,88 @@ export class ViewLifecycleCoordinator {
 		};
 	}
 
+	hasRetainedGuards(app: object): boolean {
+		const scope = this.vaultMap.get(app);
+		if (!scope) return false;
+		if (scope.activeDestructionPromise !== null) return true;
+		for (const record of scope.filesByRef.values()) {
+			if (
+				record.processing ||
+				record.activePromise !== null ||
+				record.queue.length > 0 ||
+				record.barrierStatus === "draining" ||
+				record.barrierStatus === "failed" ||
+				record.quarantinedForDestruction ||
+				record.disposition !== null ||
+				record.frozenSnapshot !== null
+			) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	getGuardEffectiveContent(
+		app: object,
+		file: TFile | null | undefined,
+		fallbackEditorText?: string,
+	): string | null {
+		if (!file) return null;
+		const scope = this.vaultMap.get(app);
+		if (!scope) return null;
+		const record = scope.filesByRef.get(file);
+		if (!record) return null;
+		if (record.disposition?.kind === "unprotected" && record.disposition.plaintextContent !== undefined) {
+			return record.disposition.plaintextContent;
+		}
+		if (record.disposition?.kind === "destroyed") {
+			if (record.disposition.decoyBody !== undefined) {
+				return `${record.disposition.decoyBody}\n`;
+			}
+			return null;
+		}
+		if (record.frozenSnapshot !== null) {
+			if (fallbackEditorText !== undefined) {
+				const parsedEditor = parseFileContent(fallbackEditorText);
+				if (parsedEditor !== null) {
+					return computeSavedContent({
+						unlocked: true,
+						editorValue: "",
+						decoyBody: parsedEditor.decoyBody,
+						originalPayload: record.frozenSnapshot.payload,
+						pendingPayload: record.frozenSnapshot.payload,
+					});
+				}
+				return computeSavedContent({
+					unlocked: false,
+					editorValue: fallbackEditorText,
+					decoyBody: record.frozenSnapshot.decoyBody,
+					originalPayload: record.frozenSnapshot.payload,
+					pendingPayload: null,
+				});
+			}
+			return record.frozenSnapshot.rawSerialized;
+		}
+		if (
+			record.disposition?.kind === "protected" &&
+			record.disposition.rawSerialized !== undefined
+		) {
+			return record.disposition.rawSerialized;
+		}
+		return null;
+	}
+
 	private releaseOwnerFromPrototypeIfDrained(owner: OwnerToken): void {
 		if (!this.prototypeChain) return;
-		this.prototypeChain.activeOwnerHandlers.delete(owner.id);
-		this.prototypeChain.ownerOrder = this.prototypeChain.ownerOrder.filter(
-			(id) => id !== owner.id,
+		const ownerVaultHasGuards = Array.from(this.activeVaults).some(
+			(scope) => scope.owners.has(owner.id) && this.hasRetainedGuards(scope.app),
 		);
+		if (!ownerVaultHasGuards) {
+			this.prototypeChain.activeOwnerHandlers.delete(owner.id);
+			this.prototypeChain.ownerOrder = this.prototypeChain.ownerOrder.filter(
+				(id) => id !== owner.id,
+			);
+		}
 		this.tryRestorePrototypeAndSymbol();
 	}
 
@@ -1436,6 +1602,46 @@ export class ViewLifecycleCoordinator {
 		) {
 			this.activeVaults.delete(scope);
 		}
+	}
+
+	trackSubmittedOwnerPromise(
+		app: object,
+		owner: OwnerToken,
+		file: TFile,
+		promise: Promise<void>,
+	): () => void {
+		const scope = this.getOrCreateVaultScope(app);
+		let ownerRuntime = scope.owners.get(owner.id);
+		if (!ownerRuntime) {
+			ownerRuntime = {
+				token: owner,
+				activeSubmittedPromises: new Set<Promise<void>>(),
+				drainPromises: new Set<Promise<void>>(),
+				drainSettledPromise: null,
+			};
+			scope.owners.set(owner.id, ownerRuntime);
+		}
+		const record = this.getOrCreateFileRecord(scope, file);
+		ownerRuntime.activeSubmittedPromises.add(promise);
+		const prevActive = record.activePromise;
+		const combined =
+			prevActive === null ? promise : Promise.all([prevActive, promise]).then(() => undefined);
+		record.activePromise = combined;
+		let released = false;
+		return () => {
+			if (released) return;
+			released = true;
+			ownerRuntime?.activeSubmittedPromises.delete(promise);
+			if (record.activePromise === combined) {
+				record.activePromise = null;
+			}
+			this.pruneIfIdle(scope, record);
+		};
+	}
+
+	resetAllState(): void {
+		this.activeVaults.clear();
+		this.prototypeChain = null;
 	}
 
 	/**

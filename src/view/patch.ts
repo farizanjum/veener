@@ -1,104 +1,235 @@
-import { MarkdownView } from "obsidian";
+import { MarkdownView, type TFile } from "obsidian";
 import { parseFileContent, stripDraftCacheBlocks } from "../crypto/payload";
+import type { OwnedPrototypeLease } from "./lifecycle";
 import { computeSavedContent } from "./saveDecision";
-import type { SessionManager } from "./session";
+import type { SessionManager, ShutdownHandoffResult } from "./session";
+
+export interface ViewPatchController {
+	readonly lease: OwnedPrototypeLease;
+	readonly retireAndHandoff: () => ShutdownHandoffResult;
+	readonly drainPromise: () => Promise<void>;
+	readonly isRetired: () => boolean;
+}
 
 /**
- * MarkdownView prototype interception (§5). Three methods, one invariant:
+ * MarkdownView prototype interception (§5 / Issue #13). Three methods, one invariant:
  * disk only ever holds decoy + ciphertext.
  *
  * - setViewData: a file carrying a payload loads as its decoy only; the
- *   payload comment never enters the editor document.
- * - getViewData: always returns decoy + (pending or original) ciphertext.
+ *   payload comment never enters the editor document. While a retirement barrier
+ *   or frozen handoff is active, synchronous stale disk reloads render the safe
+ *   snapshot instead of overwriting it.
+ * - getViewData: always returns decoy + (pending or original) ciphertext while active,
+ *   or the frozen safe serialization while retired/draining.
  * - save: syncs this.data through the patched getViewData before delegating,
- *   covering every Obsidian save-path variant.
+ *   routing through the shared lifecycle coordinator across active and retiring states.
  */
 export function installViewPatches(
 	sessions: SessionManager,
 	registerCleanup: (cleanup: () => void) => void,
-): void {
-	const proto = MarkdownView.prototype;
-	const originalSetViewData = proto.setViewData;
-	const originalGetViewData = proto.getViewData;
-	const originalSave = proto.save;
+): ViewPatchController {
+	const coordinator = sessions.getCoordinator();
+	const owner = sessions.getOwnerToken();
+	const app = sessions.getApp();
 
-	proto.setViewData = function (this: MarkdownView, data: string, clear: boolean): void {
+	let retired = false;
+	let drainSettledPromise: Promise<void> = Promise.resolve();
+
+	let lease!: OwnedPrototypeLease;
+
+	const refreshAfterBarrier = async (view: MarkdownView, file: TFile): Promise<void> => {
+		if (sessions.isDisposed() || !coordinator.isOwnerActive(owner)) return;
+		if (view.file !== file) return;
+		try {
+			const raw = await app.vault.cachedRead(file);
+			if (sessions.isDisposed() || !coordinator.isOwnerActive(owner)) return;
+			if (view.file !== file) return;
+			const parsed = parseFileContent(raw);
+			if (parsed) {
+				sessions.attachFromLoad(view, file, parsed);
+				lease.baseOriginals.setViewData.call(view, parsed.decoyBody, true);
+			}
+		} catch {
+			return;
+		}
+	};
+
+	const setViewDataHandler = function (
+		this: MarkdownView,
+		data: string,
+		clear: boolean,
+	): void {
+		const rawSet = lease.baseOriginals.setViewData;
+		const file = this.file ?? null;
+
+		if (
+			coordinator.handleGuardedSetViewData({
+				app,
+				view: this,
+				file,
+				incomingData: data,
+				clear,
+				rawSetViewData: rawSet,
+				onAfterBarrier: (v, f) => refreshAfterBarrier(v, f),
+			})
+		) {
+			return;
+		}
+
+		if (sessions.isDisposed() || !coordinator.isOwnerActive(owner)) {
+			rawSet.call(this, data, clear);
+			return;
+		}
+
 		const parsed = parseFileContent(data);
 		if (parsed) {
 			if (this.file) {
 				sessions.attachFromLoad(this, this.file, parsed);
 			}
-			originalSetViewData.call(this, parsed.decoyBody, clear);
+			rawSet.call(this, parsed.decoyBody, clear);
 			return;
 		}
 		const existing = sessions.get(this);
 		if (existing && this.file !== existing.file) {
 			sessions.detach(this);
 		}
-		originalSetViewData.call(this, stripDraftCacheBlocks(data), clear);
+		rawSet.call(this, stripDraftCacheBlocks(data), clear);
 	};
 
-	proto.getViewData = function (this: MarkdownView): string {
+	const getViewDataHandler = function (this: MarkdownView): string {
+		const rawGet = lease.baseOriginals.getViewData;
 		const session = sessions.get(this);
-		if (!session || this.file !== session.file) return originalGetViewData.call(this);
-		const editorValue = this.editor ? this.editor.getValue() : session.decoyBody;
-		return computeSavedContent({
-			unlocked: session.state === "unlocked",
-			editorValue,
-			decoyBody: session.decoyBody,
-			originalPayload: session.originalPayload,
-			pendingPayload: session.pendingPayload,
-		});
+		if (session && this.file === session.file && !sessions.isDisposed()) {
+			const editorValue = this.editor ? this.editor.getValue() : session.decoyBody;
+			return computeSavedContent({
+				unlocked: session.state === "unlocked",
+				editorValue,
+				decoyBody: session.decoyBody,
+				originalPayload: session.originalPayload,
+				pendingPayload: session.pendingPayload,
+			});
+		}
+
+		const rawEditorValue = rawGet.call(this);
+		const guardedContent = coordinator.getGuardEffectiveContent(
+			app,
+			this.file ?? null,
+			rawEditorValue,
+		);
+		if (guardedContent !== null) {
+			return guardedContent;
+		}
+		return rawEditorValue;
 	};
 
-	proto.save = async function (this: MarkdownView, clear?: boolean): Promise<void> {
+	const saveHandler = async function (this: MarkdownView, clear?: boolean): Promise<void> {
+		const rawSave = lease.baseOriginals.save;
+
+		if (coordinator.isViewSaveBlocked(app, this)) {
+			throw new Error("Veneer: refusing native save on a view whose sanitization failed");
+		}
+
 		const session = sessions.get(this);
-		if (session && this.file === session.file) {
+		if (session && this.file === session.file && !sessions.isDisposed()) {
 			if (sessions.isPathReserved(session.file.path)) {
-				// A reservation holder is mid-write for this path. Replay this save once
-				// the last reservation releases rather than dropping it silently.
 				sessions.deferSave(session.file.path, () => {
 					if (this.file !== session.file) return;
 					const stillAttached = sessions.get(this) === session && this.file === session.file;
 					if (stillAttached) {
-						// A duress shred can start the moment this reservation releases. Route
-						// the replay through the tracked write queue so `hardKillAll` captures
-						// and awaits it; an untracked save could otherwise land after the
-						// payload was targeted for zeroization and resurrect ciphertext.
 						void this.save(clear).catch((error) => {
 							console.warn("Veneer: deferred save after reservation failed", error);
 						});
 						return;
 					}
 					this.data = this.getViewData();
-					void Promise.resolve(originalSave.call(this, clear)).catch((error) => {
+					void Promise.resolve(rawSave.call(this, clear)).catch((error) => {
 						console.warn("Veneer: deferred save after reservation failed", error);
 					});
 				});
 				return;
 			}
 			await sessions.enqueueWrite(session, async () => {
-				// Snapshot the payload this write persists when its turn in the write
-				// queue begins, so any preceding lock() write has already updated
-				// session state and staged-file cleanup targets the bytes written now.
 				const stillActive = sessions.get(this) === session && this.file === session.file;
 				const persisted = stillActive ? sessions.savedPayloadFor(session) : null;
 				if (stillActive) {
 					this.data = this.getViewData();
 				}
-				await originalSave.call(this, clear);
+				await rawSave.call(this, clear);
 				if (stillActive && persisted) {
 					await sessions.commitPersistedPayload(session, persisted);
 				}
 			});
 			return;
 		}
-		await originalSave.call(this, clear);
+
+		const currentFile = this.file ?? null;
+		if (
+			currentFile &&
+			(coordinator.getFrozenSnapshot(app, currentFile) !== null ||
+				coordinator.getCommittedDisposition(app, currentFile) !== null ||
+				retired ||
+				sessions.isDisposed())
+		) {
+			await coordinator.executeGuardedNativeSave({
+				app,
+				view: this,
+				clear,
+				rawSave,
+				syncViewData: (targetView, safeContent) => {
+					(targetView as unknown as { data: string }).data = safeContent;
+					if (
+						targetView.editor &&
+						typeof targetView.editor.getValue === "function" &&
+						targetView.editor.getValue() !== safeContent &&
+						typeof targetView.editor.setValue === "function"
+					) {
+						targetView.editor.setValue(safeContent);
+					}
+				},
+			});
+			return;
+		}
+
+		await rawSave.call(this, clear);
+	};
+
+	lease = coordinator.acquirePrototypeLease(owner, {
+		setViewData: setViewDataHandler,
+		getViewData: getViewDataHandler,
+		save: saveHandler,
+	});
+
+	sessions.setCapturedNativeSetViewData(lease.baseOriginals.setViewData);
+
+	const retireAndHandoff = (): ShutdownHandoffResult => {
+		const handoff = sessions.shutdownAndHandoff(lease.baseOriginals.setViewData);
+		if (!retired) {
+			retired = true;
+			const rawDrain = coordinator.beginRetirement(app, owner, handoff.retirementSpecs);
+			const observed = rawDrain.finally(() => {
+				if (!coordinator.hasRetainedGuards(app)) {
+					lease.releaseOwnerHandlers();
+				}
+			});
+			void observed.catch((error) => {
+				console.warn("Veneer: retirement drain failed", error);
+			});
+			drainSettledPromise = observed;
+		}
+		if (!coordinator.hasRetainedGuards(app) && coordinator.isCompletelyDrained()) {
+			lease.releaseOwnerHandlers();
+		}
+		return handoff;
 	};
 
 	registerCleanup(() => {
-		proto.setViewData = originalSetViewData;
-		proto.getViewData = originalGetViewData;
-		proto.save = originalSave;
+		retireAndHandoff();
 	});
+
+	return {
+		lease,
+		retireAndHandoff,
+		drainPromise: () => drainSettledPromise,
+		isRetired: () => retired,
+	};
 }

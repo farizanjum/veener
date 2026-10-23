@@ -246,7 +246,21 @@ export class ProtectWizard extends Modal {
 		);
 	}
 
+	cancelAndClose(): void {
+		try {
+			if (typeof this.close === "function") {
+				this.close();
+			} else {
+				this.onClose();
+			}
+		} catch {
+			try {
+				this.onClose();
+			} catch {}
+		}
+	}
+
 	onClose(): void {
-		this.contentEl.empty();
+		this.contentEl?.empty?.();
 	}
 }

@@ -15,7 +15,9 @@ export class PasswordModal extends Modal {
 	ask(): Promise<string | null> {
 		return new Promise((resolve) => {
 			this.resolve = resolve;
-			this.open();
+			if (typeof this.open === "function") {
+				this.open();
+			}
 		});
 	}
 
@@ -58,8 +60,25 @@ export class PasswordModal extends Modal {
 		this.close();
 	}
 
+	cancelAndClose(): void {
+		const pending = this.resolve;
+		this.resolve = null;
+		pending?.(null);
+		try {
+			if (typeof this.close === "function") {
+				this.close();
+			} else {
+				this.onClose();
+			}
+		} catch {
+			try {
+				this.onClose();
+			} catch {}
+		}
+	}
+
 	onClose(): void {
-		this.contentEl.empty();
+		this.contentEl?.empty?.();
 		this.resolve?.(null);
 		this.resolve = null;
 	}
@@ -76,8 +95,27 @@ export class DuressPinModal extends Modal {
 	ask(): Promise<string | null> {
 		return new Promise((resolve) => {
 			this.resolve = resolve;
-			this.open();
+			if (typeof this.open === "function") {
+				this.open();
+			}
 		});
+	}
+
+	cancelAndClose(): void {
+		const pending = this.resolve;
+		this.resolve = null;
+		pending?.(null);
+		try {
+			if (typeof this.close === "function") {
+				this.close();
+			} else {
+				this.onClose();
+			}
+		} catch {
+			try {
+				this.onClose();
+			} catch {}
+		}
 	}
 
 	onOpen(): void {
@@ -140,7 +178,7 @@ export class DuressPinModal extends Modal {
 	}
 
 	onClose(): void {
-		this.contentEl.empty();
+		this.contentEl?.empty?.();
 		this.resolve?.(null);
 		this.resolve = null;
 	}

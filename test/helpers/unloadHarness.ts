@@ -12,7 +12,8 @@ import {
 import { LockEngine } from "../../src/lock/LockEngine";
 import { ProtectedRegistry } from "../../src/registry";
 import { DEFAULT_SETTINGS, type VeneerSettings } from "../../src/settings";
-import { installViewPatches } from "../../src/view/patch";
+import { VIEW_LIFECYCLE_SYMBOL } from "../../src/view/lifecycle";
+import { installViewPatches, type ViewPatchController } from "../../src/view/patch";
 import { SessionManager, type SessionHooks, type ViewSession } from "../../src/view/session";
 
 export const DEFAULT_DECOY = "# Weekend Grocery List\n\n- milk\n- eggs\n- bread";
@@ -255,7 +256,7 @@ export interface ViewUnloadHarness {
 	readonly deletedImages: string[];
 	readonly panes: MockPane[];
 	readonly patchCleanups: Array<() => void>;
-	readonly patchController: unknown;
+	readonly patchController: ViewPatchController;
 	readonly rawNativeSetViewData: (this: MarkdownView, data: string, clear?: boolean) => void;
 	readonly rawNativeGetViewData: (this: MarkdownView) => string;
 	readonly rawNativeSave: (this: MarkdownView, clear?: boolean) => Promise<void>;
@@ -522,7 +523,7 @@ export function createViewUnloadHarness(options?: ViewUnloadHarnessOptions): Vie
 	);
 
 	const patchCleanups: Array<() => void> = [];
-	const patchController: unknown = installViewPatches(sessions, (cleanup) => {
+	const patchController: ViewPatchController = installViewPatches(sessions, (cleanup) => {
 		patchCleanups.push(cleanup);
 	});
 
@@ -765,6 +766,9 @@ export function createViewUnloadHarness(options?: ViewUnloadHarnessOptions): Vie
 		proto.setViewData = savedProto.setViewData;
 		proto.getViewData = savedProto.getViewData;
 		proto.save = savedProto.save;
+		sessions.getCoordinator().resetAllState();
+		const holder = MarkdownView.prototype as unknown as Record<symbol, unknown>;
+		delete holder[VIEW_LIFECYCLE_SYMBOL];
 	};
 
 	return {
