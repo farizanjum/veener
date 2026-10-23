@@ -1,6 +1,7 @@
 import type { App, MarkdownView, TFile } from "obsidian";
 import {
 	encryptImageMap,
+	parseFileContent,
 	reencryptRealText,
 	serializeFile,
 	unlockPayload,
@@ -19,12 +20,16 @@ import {
 	getSharedLifecycleCoordinator,
 	type CommittedDisposition,
 	type FrozenSafeSnapshot,
+	type KeylessRetirementSpec,
 	type OwnerPhase,
 	type OwnerToken,
+	type PendingCommandKind,
+	type PendingCommandRecord,
 	type ViewLifecycleCoordinator,
 	type WriteAdmissionResult,
 	type WriteJobKind,
 } from "./lifecycle";
+import { computeSavedContent } from "./saveDecision";
 
 /**
  * Per-view session state machine (§5). A view is either locked (editor shows
@@ -105,6 +110,82 @@ export interface PrepareRetirementOptions {
 	readonly detachSessions?: boolean;
 }
 
+export type NativeViewDataSetter =
+	| ((this: MarkdownView, data: string, clear: boolean) => void)
+	| ((view: MarkdownView, data: string, clear: boolean) => void);
+
+export type ViewHydrationStatus =
+	| "hydrated"
+	| "fallback-hydrated"
+	| "save-blocked"
+	| "skipped-switched-file";
+
+export interface ViewHydrationOutcome {
+	readonly view: MarkdownView;
+	readonly file: TFile;
+	readonly path: string;
+	readonly status: ViewHydrationStatus;
+	readonly error?: unknown;
+}
+
+export interface ShutdownHandoffFailure {
+	readonly file: TFile;
+	readonly path: string;
+	readonly view?: MarkdownView;
+	readonly reason: unknown;
+	readonly saveBlocked: boolean;
+}
+
+export interface ShutdownHandoffResult {
+	readonly preparation: SessionRetirementPreparation;
+	readonly capturedNativeSetViewData: NativeViewDataSetter | null;
+	readonly snapshotsByFile: ReadonlyMap<TFile, FrozenSafeSnapshot>;
+	readonly dispositionsByFile: ReadonlyMap<TFile, CommittedDisposition>;
+	readonly pendingCommandsByFile: ReadonlyMap<TFile, readonly PendingCommandRecord[]>;
+	readonly retirementSpecs: readonly KeylessRetirementSpec[];
+	readonly viewOutcomes: readonly ViewHydrationOutcome[];
+	readonly saveBlockedViews: readonly MarkdownView[];
+	readonly hasSaveBlockedViews: boolean;
+	readonly failures: readonly ShutdownHandoffFailure[];
+	readonly errors: readonly unknown[];
+}
+
+export type CommandCommitOutcome =
+	| {
+			readonly kind: "password" | "refresh" | "protect";
+			readonly payload: PayloadV1;
+			readonly decoyBody: string;
+			readonly revision?: number;
+	  }
+	| {
+			readonly kind: "unprotect";
+			readonly plaintextContent: string;
+			readonly revision?: number;
+	  };
+
+interface FileSnapshotAuthority {
+	readonly file: TFile;
+	acceptedPayload: PayloadV1;
+	acceptedPayloadRevision: number;
+	acceptedDecoyBody: string;
+	acceptedCoverRevision: number;
+	stagedCommand: {
+		payload?: PayloadV1;
+		decoyBody?: string;
+	} | null;
+}
+
+interface SessionInternalMeta {
+	readonly attachSeq: number;
+	loadedDecoyBody: string;
+	decoyBody: string;
+	originalPayload: PayloadV1;
+	pendingPayload: PayloadV1 | null;
+	observedCoverText: string | null;
+	observedCoverRevision: number;
+	internalMutationDepth: number;
+}
+
 export const REENCRYPT_DEBOUNCE_MS = 600;
 
 export class SessionManager {
@@ -129,6 +210,20 @@ export class SessionManager {
 	private disposed = false;
 	private retirementPreparation: SessionRetirementPreparation | null = null;
 	private retirementSessionsDetached = false;
+	private handoffResult: ShutdownHandoffResult | null = null;
+	private capturedNativeSetViewData: NativeViewDataSetter | null = null;
+	private isHydratingView = false;
+
+	private readonly fileAuthorities = new Map<TFile, FileSnapshotAuthority>();
+	private readonly sessionMeta = new WeakMap<ViewSession, SessionInternalMeta>();
+	private readonly payloadRevisions = new WeakMap<PayloadV1, number>();
+	private readonly payloadFingerprintRevisions = new Map<string, number>();
+	private readonly uncommittedStagedPayloads = new WeakSet<PayloadV1>();
+	private readonly frozenSnapshotsByFile = new Map<TFile, FrozenSafeSnapshot>();
+	private readonly capturedDispositionsByFile = new Map<TFile, CommittedDisposition>();
+	private readonly capturedPendingCommandsByFile = new Map<TFile, readonly PendingCommandRecord[]>();
+	private readonly trackedCommandIdsByFile = new Map<TFile, Set<symbol>>();
+	private attachSequenceCounter = 0;
 
 	/**
 	 * Every live DEK `Uint8Array` owned by this manager (session keys, `lock()`'s
@@ -299,11 +394,623 @@ export class SessionManager {
 		return groups;
 	}
 
-	/**
-	 * Returns the captured `SessionRetirementPreparation` from `prepareRetirement()`, if retired.
-	 */
 	getRetirementPreparation(): SessionRetirementPreparation | null {
 		return this.retirementPreparation;
+	}
+
+	setCapturedNativeSetViewData(setter: NativeViewDataSetter): void {
+		this.capturedNativeSetViewData = setter;
+	}
+
+	getCapturedNativeSetViewData(): NativeViewDataSetter | null {
+		return this.capturedNativeSetViewData;
+	}
+
+	getFrozenSnapshot(file: TFile): FrozenSafeSnapshot | null {
+		return this.frozenSnapshotsByFile.get(file) ?? this.coordinator.getFrozenSnapshot(this.app, file);
+	}
+
+	getFrozenSnapshots(): ReadonlyMap<TFile, FrozenSafeSnapshot> {
+		return this.frozenSnapshotsByFile;
+	}
+
+	getCommittedDisposition(file: TFile): CommittedDisposition | null {
+		return (
+			this.coordinator.getCommittedDisposition(this.app, file) ??
+			this.capturedDispositionsByFile.get(file) ??
+			null
+		);
+	}
+
+	getCapturedDispositions(): ReadonlyMap<TFile, CommittedDisposition> {
+		return this.capturedDispositionsByFile;
+	}
+
+	getCapturedPendingCommands(): ReadonlyMap<TFile, readonly PendingCommandRecord[]> {
+		return this.capturedPendingCommandsByFile;
+	}
+
+	getShutdownHandoffResult(): ShutdownHandoffResult | null {
+		return this.handoffResult;
+	}
+
+	beginCommand(file: TFile, kind: PendingCommandKind): symbol | null {
+		const cmdId = this.coordinator.beginCommand(this.app, this.owner, file, kind);
+		if (cmdId !== null) {
+			let set = this.trackedCommandIdsByFile.get(file);
+			if (!set) {
+				set = new Set<symbol>();
+				this.trackedCommandIdsByFile.set(file, set);
+			}
+			set.add(cmdId);
+		}
+		return cmdId;
+	}
+
+	getCommandRecord(file: TFile, commandId: symbol): Readonly<PendingCommandRecord> | null {
+		return this.coordinator.getCommandRecord(this.app, file, commandId);
+	}
+
+	finishCommand(file: TFile, commandId: symbol): void {
+		this.trackedCommandIdsByFile.get(file)?.delete(commandId);
+		this.coordinator.finishCommand(this.app, file, commandId);
+	}
+
+	private payloadFingerprint(file: TFile, payload: PayloadV1): string {
+		return `${file.path}::${payload.note_id}::${payload.cipher.nonce}::${payload.cipher.ct.slice(0, 64)}`;
+	}
+
+	private recordPayloadRevision(file: TFile, payload: PayloadV1, revision: number): void {
+		const existing = this.payloadRevisions.get(payload);
+		const nextRev = existing !== undefined && existing > revision ? existing : revision;
+		this.payloadRevisions.set(payload, nextRev);
+		const fp = this.payloadFingerprint(file, payload);
+		const existingFp = this.payloadFingerprintRevisions.get(fp);
+		if (existingFp === undefined || nextRev > existingFp) {
+			this.payloadFingerprintRevisions.set(fp, nextRev);
+		}
+	}
+
+	getPayloadRevision(file: TFile, payload: PayloadV1): number {
+		const direct = this.payloadRevisions.get(payload);
+		if (direct !== undefined) return direct;
+		const byFp = this.payloadFingerprintRevisions.get(this.payloadFingerprint(file, payload));
+		if (byFp !== undefined) {
+			this.payloadRevisions.set(payload, byFp);
+			return byFp;
+		}
+		return 0;
+	}
+
+	private getOrCreateFileAuthority(
+		file: TFile,
+		initialPayload: PayloadV1,
+		initialDecoyBody: string,
+	): FileSnapshotAuthority {
+		let authority = this.fileAuthorities.get(file);
+		if (authority) {
+			return authority;
+		}
+
+		const settledDisposition = this.coordinator.getCommittedDisposition(this.app, file);
+		const settledSnapshot = this.coordinator.getFrozenSnapshot(this.app, file);
+		let chosenPayload = initialPayload;
+		let chosenDecoy = initialDecoyBody;
+		let chosenPayloadRevision = this.getPayloadRevision(file, initialPayload);
+		let chosenCoverRevision = 0;
+
+		if (
+			settledDisposition?.kind === "protected" &&
+			settledDisposition.payload &&
+			settledDisposition.payload.note_id === initialPayload.note_id
+		) {
+			const sameCiphertext =
+				settledDisposition.payload.cipher.nonce === initialPayload.cipher.nonce &&
+				settledDisposition.payload.cipher.ct === initialPayload.cipher.ct;
+			if (sameCiphertext) {
+				chosenPayload = initialPayload;
+				chosenPayloadRevision = settledDisposition.revision;
+				chosenDecoy = initialDecoyBody;
+				if (
+					settledDisposition.decoyBody !== undefined &&
+					initialDecoyBody !== settledDisposition.decoyBody
+				) {
+					chosenCoverRevision = this.coordinator.nextFileRevision(this.app, file);
+				}
+			} else if (chosenPayloadRevision === 0 || chosenPayloadRevision <= settledDisposition.revision) {
+				chosenPayload = settledDisposition.payload;
+				chosenPayloadRevision = settledDisposition.revision;
+				if (settledDisposition.decoyBody !== undefined) {
+					chosenDecoy = settledDisposition.decoyBody;
+				}
+			}
+		} else if (
+			settledSnapshot !== null &&
+			settledSnapshot.payload.note_id === initialPayload.note_id
+		) {
+			const sameCiphertext =
+				settledSnapshot.payload.cipher.nonce === initialPayload.cipher.nonce &&
+				settledSnapshot.payload.cipher.ct === initialPayload.cipher.ct;
+			if (sameCiphertext) {
+				chosenPayload = initialPayload;
+				chosenPayloadRevision = settledSnapshot.revision;
+				chosenDecoy = initialDecoyBody;
+			} else if (chosenPayloadRevision === 0 || chosenPayloadRevision <= settledSnapshot.revision) {
+				chosenPayload = settledSnapshot.payload;
+				chosenPayloadRevision = settledSnapshot.revision;
+				chosenDecoy = settledSnapshot.decoyBody;
+			}
+		}
+
+		if (chosenPayloadRevision === 0) {
+			chosenPayloadRevision = this.coordinator.nextFileRevision(this.app, file);
+		}
+		this.recordPayloadRevision(file, chosenPayload, chosenPayloadRevision);
+		if (chosenPayload !== initialPayload && this.getPayloadRevision(file, initialPayload) === 0) {
+			this.recordPayloadRevision(file, initialPayload, 1);
+		}
+
+		authority = {
+			file,
+			acceptedPayload: chosenPayload,
+			acceptedPayloadRevision: chosenPayloadRevision,
+			acceptedDecoyBody: chosenDecoy,
+			acceptedCoverRevision: chosenCoverRevision,
+			stagedCommand: null,
+		};
+		this.fileAuthorities.set(file, authority);
+		return authority;
+	}
+
+	private runInternalSessionMutation(session: ViewSession, fn: () => void): void {
+		const meta = this.sessionMeta.get(session);
+		if (!meta) {
+			fn();
+			return;
+		}
+		meta.internalMutationDepth += 1;
+		try {
+			fn();
+		} finally {
+			meta.internalMutationDepth -= 1;
+		}
+	}
+
+	observeCoverEdit(session: ViewSession, explicitCover?: string): number {
+		if (
+			this.isDisposed() ||
+			this.isHydratingView ||
+			session.state !== "locked" ||
+			session.lockingPromise !== null ||
+			session.view.file !== session.file
+		) {
+			return 0;
+		}
+		const meta = this.sessionMeta.get(session);
+		const rawSource =
+			explicitCover !== undefined
+				? explicitCover
+				: session.view.editor && typeof session.view.editor.getValue === "function"
+					? session.view.editor.getValue()
+					: session.decoyBody;
+		const parsed = parseFileContent(rawSource);
+		const cleanCover = parsed ? parsed.decoyBody : rawSource;
+		const authority = this.getOrCreateFileAuthority(
+			session.file,
+			session.originalPayload,
+			session.decoyBody,
+		);
+
+		const baselineCover = meta?.loadedDecoyBody ?? authority.acceptedDecoyBody;
+		if (
+			cleanCover === baselineCover &&
+			cleanCover === authority.acceptedDecoyBody &&
+			explicitCover === undefined
+		) {
+			return meta?.observedCoverRevision ?? 0;
+		}
+
+		if (
+			meta &&
+			meta.observedCoverText === cleanCover &&
+			meta.observedCoverRevision > 0 &&
+			explicitCover === undefined
+		) {
+			return meta.observedCoverRevision;
+		}
+
+		const rev = this.coordinator.nextFileRevision(this.app, session.file);
+		if (meta) {
+			meta.observedCoverText = cleanCover;
+			meta.observedCoverRevision = rev;
+			meta.decoyBody = cleanCover;
+		}
+		if (rev >= authority.acceptedCoverRevision) {
+			authority.acceptedDecoyBody = cleanCover;
+			authority.acceptedCoverRevision = rev;
+		}
+		this.rememberDecoy(session.file.path, cleanCover);
+		return rev;
+	}
+
+	private acceptReencryptedPayload(
+		session: ViewSession,
+		payload: PayloadV1,
+		candidateRevision: number,
+		nextRealTitle?: string | null,
+	): boolean {
+		if (this.isDisposed()) return false;
+		const authority = this.getOrCreateFileAuthority(
+			session.file,
+			session.originalPayload,
+			session.decoyBody,
+		);
+		this.recordPayloadRevision(session.file, payload, candidateRevision);
+		if (candidateRevision < authority.acceptedPayloadRevision) {
+			return false;
+		}
+		this.uncommittedStagedPayloads.delete(payload);
+		authority.acceptedPayload = payload;
+		authority.acceptedPayloadRevision = candidateRevision;
+		this.runInternalSessionMutation(session, () => {
+			if (nextRealTitle !== undefined) {
+				session.realTitle = nextRealTitle;
+			}
+			session.pendingPayload = payload;
+		});
+		return true;
+	}
+
+	private commitSessionPayload(
+		session: ViewSession,
+		payload: PayloadV1,
+		candidateRevision?: number,
+	): number {
+		const authority = this.getOrCreateFileAuthority(
+			session.file,
+			session.originalPayload,
+			session.decoyBody,
+		);
+		const existingRev = this.getPayloadRevision(session.file, payload);
+		const rev =
+			candidateRevision ??
+			(existingRev > 0 ? existingRev : this.coordinator.nextFileRevision(this.app, session.file));
+		this.recordPayloadRevision(session.file, payload, rev);
+		this.uncommittedStagedPayloads.delete(payload);
+		if (rev >= authority.acceptedPayloadRevision) {
+			authority.acceptedPayload = payload;
+			authority.acceptedPayloadRevision = rev;
+		}
+		this.runInternalSessionMutation(session, () => {
+			session.originalPayload = payload;
+		});
+		const rawSerialized = computeSavedContent({
+			unlocked: true,
+			editorValue: "",
+			decoyBody: authority.acceptedDecoyBody,
+			originalPayload: authority.acceptedPayload,
+			pendingPayload: authority.acceptedPayload,
+		});
+		this.coordinator.publishCommittedDisposition(this.app, session.file, {
+			kind: "protected",
+			revision: authority.acceptedPayloadRevision,
+			decoyBody: authority.acceptedDecoyBody,
+			payload: authority.acceptedPayload,
+			rawSerialized,
+		});
+		return rev;
+	}
+
+	publishCommandCommit(file: TFile, outcome: CommandCommitOutcome): CommittedDisposition | null {
+		if (outcome.kind === "unprotect") {
+			const rev = outcome.revision ?? this.coordinator.nextFileRevision(this.app, file);
+			const disposition: CommittedDisposition = {
+				kind: "unprotected",
+				revision: rev,
+				plaintextContent: outcome.plaintextContent,
+			};
+			const published = this.coordinator.publishCommittedDisposition(
+				this.app,
+				file,
+				disposition,
+			);
+			if (!published) return null;
+			this.capturedDispositionsByFile.set(file, disposition);
+			this.frozenSnapshotsByFile.delete(file);
+			const auth = this.fileAuthorities.get(file);
+			if (auth) {
+				auth.stagedCommand = null;
+			}
+			return disposition;
+		}
+
+		const authority = this.getOrCreateFileAuthority(file, outcome.payload, outcome.decoyBody);
+		const rev = outcome.revision ?? this.coordinator.nextFileRevision(this.app, file);
+		this.uncommittedStagedPayloads.delete(outcome.payload);
+		this.recordPayloadRevision(file, outcome.payload, rev);
+		authority.stagedCommand = null;
+
+		if (rev < authority.acceptedPayloadRevision) {
+			return this.coordinator.getCommittedDisposition(this.app, file);
+		}
+
+		authority.acceptedPayload = outcome.payload;
+		authority.acceptedPayloadRevision = rev;
+		authority.acceptedDecoyBody = outcome.decoyBody;
+		authority.acceptedCoverRevision = rev;
+		this.lastKnownDecoy.set(file.path, outcome.decoyBody);
+
+		const rawSerialized = computeSavedContent({
+			unlocked: true,
+			editorValue: "",
+			decoyBody: outcome.decoyBody,
+			originalPayload: outcome.payload,
+			pendingPayload: outcome.payload,
+		});
+		const disposition: CommittedDisposition = {
+			kind: "protected",
+			revision: rev,
+			decoyBody: outcome.decoyBody,
+			payload: outcome.payload,
+			rawSerialized,
+		};
+		this.coordinator.publishCommittedDisposition(this.app, file, disposition);
+		this.capturedDispositionsByFile.set(file, disposition);
+		return disposition;
+	}
+
+	private collectPendingCommandsForFile(file: TFile): readonly PendingCommandRecord[] {
+		const ids = this.trackedCommandIdsByFile.get(file);
+		if (!ids || ids.size === 0) return [];
+		const out: PendingCommandRecord[] = [];
+		for (const id of ids) {
+			const rec = this.coordinator.getCommandRecord(this.app, file, id);
+			if (rec && !rec.settled) {
+				out.push({ ...rec });
+			}
+		}
+		return out;
+	}
+
+	private selectCanonicalPayloadForGroup(
+		file: TFile,
+		group: SessionRetirementGroup,
+		authority: FileSnapshotAuthority,
+	): { payload: PayloadV1; revision: number } {
+		let bestPayload = authority.acceptedPayload;
+		let bestRevision = authority.acceptedPayloadRevision;
+
+		const committed = this.coordinator.getCommittedDisposition(this.app, file);
+		if (
+			committed?.kind === "protected" &&
+			committed.payload &&
+			!this.uncommittedStagedPayloads.has(committed.payload) &&
+			committed.revision >= bestRevision
+		) {
+			bestPayload = committed.payload;
+			bestRevision = committed.revision;
+		}
+
+		const existingFrozen = this.coordinator.getFrozenSnapshot(this.app, file);
+		if (
+			existingFrozen &&
+			!this.uncommittedStagedPayloads.has(existingFrozen.payload) &&
+			existingFrozen.revision >= bestRevision
+		) {
+			bestPayload = existingFrozen.payload;
+			bestRevision = existingFrozen.revision;
+		}
+
+		for (const session of group.allSessions) {
+			const meta = this.sessionMeta.get(session);
+			const pendingCandidate = meta ? meta.pendingPayload : session.pendingPayload;
+			if (pendingCandidate !== null && !this.uncommittedStagedPayloads.has(pendingCandidate)) {
+				const pendingRev = this.getPayloadRevision(file, pendingCandidate);
+				if (pendingRev > bestRevision) {
+					bestPayload = pendingCandidate;
+					bestRevision = pendingRev;
+				}
+			}
+			const origCandidate = meta ? meta.originalPayload : session.originalPayload;
+			if (!this.uncommittedStagedPayloads.has(origCandidate)) {
+				const origRev = this.getPayloadRevision(file, origCandidate);
+				if (origRev > bestRevision) {
+					bestPayload = origCandidate;
+					bestRevision = origRev;
+				}
+			}
+		}
+
+		return { payload: bestPayload, revision: bestRevision };
+	}
+
+	private selectCanonicalCoverForGroup(
+		file: TFile,
+		group: SessionRetirementGroup,
+		authority: FileSnapshotAuthority,
+	): { decoyBody: string; revision: number } {
+		let bestCover = authority.acceptedDecoyBody;
+		let bestCoverRevision = authority.acceptedCoverRevision;
+		let hasChangedCover = authority.acceptedCoverRevision > 0;
+		let bestTieIsActiveView = false;
+		let bestTieAttachSeq = -1;
+
+		const committed = this.coordinator.getCommittedDisposition(this.app, file);
+		if (
+			committed?.kind === "protected" &&
+			committed.decoyBody !== undefined &&
+			committed.revision > bestCoverRevision
+		) {
+			bestCover = committed.decoyBody;
+			bestCoverRevision = committed.revision;
+		}
+
+		let activeWorkspaceView: MarkdownView | null = null;
+		try {
+			const ws = (this.app as unknown as {
+				workspace?: { getActiveViewOfType?: (ctor: unknown) => MarkdownView | null };
+			}).workspace;
+			activeWorkspaceView = ws?.getActiveViewOfType?.(null) ?? null;
+		} catch {
+			activeWorkspaceView = null;
+		}
+
+		for (const session of group.allSessions) {
+			const meta = this.sessionMeta.get(session);
+			const attachSeq = meta?.attachSeq ?? 0;
+			const loadedDecoy = meta?.loadedDecoyBody ?? authority.acceptedDecoyBody;
+
+			if (meta && meta.observedCoverRevision > 0 && meta.observedCoverText !== null) {
+				if (
+					!hasChangedCover ||
+					meta.observedCoverRevision > bestCoverRevision ||
+					(meta.observedCoverRevision === bestCoverRevision && attachSeq > bestTieAttachSeq)
+				) {
+					bestCover = meta.observedCoverText;
+					bestCoverRevision = meta.observedCoverRevision;
+					hasChangedCover = true;
+					bestTieAttachSeq = attachSeq;
+					bestTieIsActiveView = session.view === activeWorkspaceView;
+				}
+			}
+
+			const isAttachedToSameView = this.byView.get(session.view) === session;
+			const isSameFile = session.view.file === file;
+			const isPureLockedSession =
+				session.state === "locked" && session.lockingPromise === null;
+
+			if (isAttachedToSameView && isSameFile && isPureLockedSession) {
+				let rawEditor: string | null = null;
+				try {
+					if (session.view.editor && typeof session.view.editor.getValue === "function") {
+						rawEditor = session.view.editor.getValue();
+					}
+				} catch {
+					rawEditor = null;
+				}
+				if (rawEditor !== null) {
+					const parsed = parseFileContent(rawEditor);
+					const cleanCandidate = parsed ? parsed.decoyBody : rawEditor;
+					const candidateChanged =
+						cleanCandidate !== loadedDecoy ||
+						cleanCandidate !== authority.acceptedDecoyBody;
+					const candidateObservedRev =
+						meta && meta.observedCoverText === cleanCandidate
+							? meta.observedCoverRevision
+							: 0;
+					const isActiveView = session.view === activeWorkspaceView;
+
+					if (candidateChanged) {
+						if (!hasChangedCover) {
+							bestCover = cleanCandidate;
+							bestCoverRevision = candidateObservedRev;
+							hasChangedCover = true;
+							bestTieIsActiveView = isActiveView;
+							bestTieAttachSeq = attachSeq;
+						} else if (candidateObservedRev > bestCoverRevision) {
+							bestCover = cleanCandidate;
+							bestCoverRevision = candidateObservedRev;
+							bestTieIsActiveView = isActiveView;
+							bestTieAttachSeq = attachSeq;
+						} else if (candidateObservedRev === bestCoverRevision) {
+							if (
+								(isActiveView && !bestTieIsActiveView) ||
+								(isActiveView === bestTieIsActiveView && attachSeq > bestTieAttachSeq)
+							) {
+								bestCover = cleanCandidate;
+								bestTieIsActiveView = isActiveView;
+								bestTieAttachSeq = attachSeq;
+							}
+						}
+					}
+				}
+			}
+		}
+
+		return { decoyBody: bestCover, revision: bestCoverRevision };
+	}
+
+	private freezeCanonicalSnapshotsFromGroups(
+		groupsByFile: ReadonlyMap<TFile, SessionRetirementGroup>,
+		errors: unknown[],
+	): void {
+		for (const [file, group] of groupsByFile) {
+			try {
+				const pendingCmds = this.collectPendingCommandsForFile(file);
+				if (pendingCmds.length > 0) {
+					this.capturedPendingCommandsByFile.set(file, pendingCmds);
+				}
+
+				const committed = this.coordinator.getCommittedDisposition(this.app, file);
+				if (committed !== null) {
+					this.capturedDispositionsByFile.set(file, committed);
+					if (committed.kind === "unprotected" || committed.kind === "destroyed") {
+						continue;
+					}
+				}
+
+				const firstSession = group.allSessions[0];
+				if (!firstSession && !this.fileAuthorities.has(file)) {
+					continue;
+				}
+				const fallbackMeta = firstSession ? this.sessionMeta.get(firstSession) : undefined;
+				const fallbackPayload = fallbackMeta
+					? fallbackMeta.originalPayload
+					: firstSession!.originalPayload;
+				const fallbackDecoy = fallbackMeta
+					? fallbackMeta.loadedDecoyBody
+					: firstSession!.decoyBody;
+				const authority = this.getOrCreateFileAuthority(file, fallbackPayload, fallbackDecoy);
+
+				const { payload: canonicalPayload, revision: payloadRev } =
+					this.selectCanonicalPayloadForGroup(file, group, authority);
+				const { decoyBody: canonicalCover, revision: coverRev } =
+					this.selectCanonicalCoverForGroup(file, group, authority);
+
+				authority.acceptedPayload = canonicalPayload;
+				if (payloadRev > authority.acceptedPayloadRevision) {
+					authority.acceptedPayloadRevision = payloadRev;
+				}
+				authority.acceptedDecoyBody = canonicalCover;
+				if (coverRev > authority.acceptedCoverRevision) {
+					authority.acceptedCoverRevision = coverRev;
+				}
+				this.lastKnownDecoy.set(file.path, canonicalCover);
+
+				const rawSerialized = computeSavedContent({
+					unlocked: true,
+					editorValue: "",
+					decoyBody: canonicalCover,
+					originalPayload: canonicalPayload,
+					pendingPayload: canonicalPayload,
+				});
+				const snapshotRevision = Math.max(
+					payloadRev,
+					coverRev,
+					authority.acceptedPayloadRevision,
+					1,
+				);
+				const snapshot: FrozenSafeSnapshot = {
+					file,
+					path: file.path,
+					revision: snapshotRevision,
+					decoyBody: canonicalCover,
+					payload: canonicalPayload,
+					rawSerialized,
+				};
+				this.frozenSnapshotsByFile.set(file, snapshot);
+				this.coordinator.freezeSafeSnapshot(this.app, snapshot);
+
+				for (const session of group.allSessions) {
+					this.runInternalSessionMutation(session, () => {
+						session.decoyBody = canonicalCover;
+						session.originalPayload = canonicalPayload;
+					});
+				}
+			} catch (error) {
+				errors.push(error);
+			}
+		}
 	}
 
 	/**
@@ -360,6 +1067,8 @@ export class SessionManager {
 			}
 		}
 
+		this.freezeCanonicalSnapshotsFromGroups(groupsByFile, errors);
+
 		if (options?.beforeWipe) {
 			try {
 				options.beforeWipe(groupsByFile);
@@ -407,7 +1116,9 @@ export class SessionManager {
 
 			session.state = "locked";
 			session.lockingPromise = null;
-			session.pendingPayload = null;
+			this.runInternalSessionMutation(session, () => {
+				session.pendingPayload = null;
+			});
 			session.realTitle = null;
 		}
 
@@ -443,6 +1154,303 @@ export class SessionManager {
 		};
 		this.retirementPreparation = preparation;
 		return preparation;
+	}
+
+	private invokeNativeSetter(
+		setter: NativeViewDataSetter,
+		view: MarkdownView,
+		fullRaw: string,
+	): void {
+		if (setter.length >= 3) {
+			(setter as (view: MarkdownView, data: string, clear: boolean) => void)(
+				view,
+				fullRaw,
+				true,
+			);
+			return;
+		}
+		(setter as (this: MarkdownView, data: string, clear: boolean) => void).call(
+			view,
+			fullRaw,
+			true,
+		);
+	}
+
+	private isViewProvenSafe(view: MarkdownView, expectedRaw: string): boolean {
+		try {
+			const hasEditor =
+				view.editor !== undefined &&
+				view.editor !== null &&
+				typeof view.editor.getValue === "function";
+			if (!hasEditor) {
+				return false;
+			}
+			const editorMatches = view.editor.getValue() === expectedRaw;
+			const backingMatches = (view as unknown as { data?: unknown }).data === expectedRaw;
+			return editorMatches && backingMatches;
+		} catch {
+			return false;
+		}
+	}
+
+	private installSaveBlockGuardOnView(view: MarkdownView, reason: unknown): void {
+		this.coordinator.markViewSaveBlocked(this.app, view);
+		const message =
+			reason instanceof Error
+				? `Veneer: refusing native save on a view whose sanitization failed (${reason.message})`
+				: "Veneer: refusing native save on a view whose sanitization failed";
+		try {
+			Object.defineProperty(view, "save", {
+				value: async (): Promise<void> => {
+					throw new Error(message);
+				},
+				writable: true,
+				configurable: true,
+				enumerable: false,
+			});
+		} catch {}
+	}
+
+	private applyDisplayedTitleIsolated(
+		session: ViewSession,
+		titleText: string,
+		errors: unknown[],
+		failures: ShutdownHandoffFailure[],
+	): void {
+		try {
+			const container = (session.view as unknown as { containerEl?: HTMLElement }).containerEl;
+			if (container) {
+				try {
+					const inlineEl = container.querySelector(".inline-title");
+					if (inlineEl) inlineEl.textContent = titleText;
+				} catch (error) {
+					errors.push(error);
+					failures.push({
+						file: session.file,
+						path: session.file.path,
+						view: session.view,
+						reason: error,
+						saveBlocked: false,
+					});
+				}
+				try {
+					const headerEl = container.querySelector(".view-header-title");
+					if (headerEl) headerEl.textContent = titleText;
+				} catch (error) {
+					errors.push(error);
+					failures.push({
+						file: session.file,
+						path: session.file.path,
+						view: session.view,
+						reason: error,
+						saveBlocked: false,
+					});
+				}
+			}
+		} catch (error) {
+			errors.push(error);
+			failures.push({
+				file: session.file,
+				path: session.file.path,
+				view: session.view,
+				reason: error,
+				saveBlocked: false,
+			});
+		}
+
+		try {
+			const leaf = (
+				session.view as unknown as { leaf?: { tabHeaderInnerTitleEl?: HTMLElement } }
+			).leaf;
+			if (leaf?.tabHeaderInnerTitleEl) {
+				leaf.tabHeaderInnerTitleEl.textContent = titleText;
+			}
+		} catch (error) {
+			errors.push(error);
+			failures.push({
+				file: session.file,
+				path: session.file.path,
+				view: session.view,
+				reason: error,
+				saveBlocked: false,
+			});
+		}
+	}
+
+	shutdownAndHandoff(nativeSetViewData?: NativeViewDataSetter): ShutdownHandoffResult {
+		if (nativeSetViewData !== undefined) {
+			this.capturedNativeSetViewData = nativeSetViewData;
+		}
+		if (this.handoffResult !== null) {
+			this.prepareRetirement();
+			return this.handoffResult;
+		}
+
+		const preparation = this.prepareRetirement();
+		const effectiveSetter = nativeSetViewData ?? this.capturedNativeSetViewData;
+		const errors: unknown[] = [...preparation.errors];
+		const failures: ShutdownHandoffFailure[] = [];
+		const viewOutcomes: ViewHydrationOutcome[] = [];
+		const saveBlockedViews: MarkdownView[] = [];
+		const processedViews = new Set<MarkdownView>();
+
+		this.isHydratingView = true;
+		try {
+			for (const [file, group] of preparation.groupsByFile) {
+				const disposition =
+					this.coordinator.getCommittedDisposition(this.app, file) ??
+					this.capturedDispositionsByFile.get(file) ??
+					null;
+				if (disposition !== null) {
+					this.capturedDispositionsByFile.set(file, disposition);
+				}
+
+				const snapshot = this.frozenSnapshotsByFile.get(file) ?? null;
+				const targetRaw =
+					disposition?.kind === "unprotected" && disposition.plaintextContent !== undefined
+						? disposition.plaintextContent
+						: snapshot?.rawSerialized;
+
+				for (const session of group.allSessions) {
+					const view = session.view;
+					if (processedViews.has(view)) {
+						continue;
+					}
+					processedViews.add(view);
+
+					let currentViewFile: TFile | null = null;
+					try {
+						currentViewFile = (view as unknown as { file?: TFile | null }).file ?? null;
+					} catch (error) {
+						errors.push(error);
+						currentViewFile = null;
+					}
+
+					if (currentViewFile !== file) {
+						viewOutcomes.push({
+							view,
+							file,
+							path: file.path,
+							status: "skipped-switched-file",
+						});
+						continue;
+					}
+
+					if (targetRaw === undefined) {
+						this.applyDisplayedTitleIsolated(session, file.basename, errors, failures);
+						continue;
+					}
+
+					let setterError: unknown = null;
+					let nativeSetterSucceeded = false;
+
+					if (effectiveSetter !== null) {
+						try {
+							this.invokeNativeSetter(effectiveSetter, view, targetRaw);
+							(view as unknown as { data: string }).data = targetRaw;
+							if (
+								view.editor &&
+								typeof view.editor.getValue === "function" &&
+								view.editor.getValue() !== targetRaw &&
+								typeof view.editor.setValue === "function"
+							) {
+								view.editor.setValue(targetRaw);
+							}
+							nativeSetterSucceeded = this.isViewProvenSafe(view, targetRaw);
+						} catch (error) {
+							setterError = error;
+							errors.push(error);
+							nativeSetterSucceeded = false;
+						}
+					} else {
+						setterError = new Error("No captured native setViewData setter available");
+						errors.push(setterError);
+					}
+
+					if (nativeSetterSucceeded) {
+						this.coordinator.clearViewSaveBlocked(this.app, view);
+						viewOutcomes.push({
+							view,
+							file,
+							path: file.path,
+							status: "hydrated",
+						});
+					} else {
+						let fallbackError: unknown = null;
+						try {
+							view.editor?.setValue?.(targetRaw);
+							(view as unknown as { data: string }).data = targetRaw;
+						} catch (error) {
+							fallbackError = error;
+							errors.push(error);
+						}
+
+						if (fallbackError === null && this.isViewProvenSafe(view, targetRaw)) {
+							this.coordinator.clearViewSaveBlocked(this.app, view);
+							viewOutcomes.push({
+								view,
+								file,
+								path: file.path,
+								status: "fallback-hydrated",
+								...(setterError !== null ? { error: setterError } : {}),
+							});
+						} else {
+							const blockReason =
+								fallbackError ??
+								setterError ??
+								new Error(`Failed to prove view safe for ${file.path}`);
+							this.installSaveBlockGuardOnView(view, blockReason);
+							if (!saveBlockedViews.includes(view)) {
+								saveBlockedViews.push(view);
+							}
+							failures.push({
+								file,
+								path: file.path,
+								view,
+								reason: blockReason,
+								saveBlocked: true,
+							});
+							viewOutcomes.push({
+								view,
+								file,
+								path: file.path,
+								status: "save-blocked",
+								error: blockReason,
+							});
+						}
+					}
+
+					this.applyDisplayedTitleIsolated(session, file.basename, errors, failures);
+				}
+			}
+		} finally {
+			this.isHydratingView = false;
+		}
+
+		const retirementSpecs: KeylessRetirementSpec[] = [];
+		for (const [file, snapshot] of this.frozenSnapshotsByFile) {
+			const disp = this.capturedDispositionsByFile.get(file);
+			if (disp?.kind === "unprotected" || disp?.kind === "destroyed") {
+				continue;
+			}
+			retirementSpecs.push({ snapshot });
+		}
+
+		const result: ShutdownHandoffResult = {
+			preparation,
+			capturedNativeSetViewData: effectiveSetter,
+			snapshotsByFile: this.frozenSnapshotsByFile,
+			dispositionsByFile: this.capturedDispositionsByFile,
+			pendingCommandsByFile: this.capturedPendingCommandsByFile,
+			retirementSpecs,
+			viewOutcomes,
+			saveBlockedViews,
+			hasSaveBlockedViews: saveBlockedViews.length > 0,
+			failures,
+			errors,
+		};
+		this.handoffResult = result;
+		return result;
 	}
 
 	private detachCapturedSessions(sessions: readonly ViewSession[]): void {
@@ -533,6 +1541,20 @@ export class SessionManager {
 		if (this.isDisposed() || startEpoch !== this.killEpoch) {
 			return Promise.resolve(false);
 		}
+		const stagedSnapshots: Array<{
+			file: TFile;
+			payload: PayloadV1;
+			decoyBody: string;
+		}> = [];
+		for (const [file, authority] of this.fileAuthorities) {
+			if (this.reservedPaths.has(file.path) && authority.stagedCommand !== null) {
+				stagedSnapshots.push({
+					file,
+					payload: authority.stagedCommand.payload ?? authority.acceptedPayload,
+					decoyBody: authority.stagedCommand.decoyBody ?? authority.acceptedDecoyBody,
+				});
+			}
+		}
 		const write = task();
 		const shadow = write.then(
 			() => undefined,
@@ -542,7 +1564,18 @@ export class SessionManager {
 		void shadow.then(() => {
 			this.reservationWrites.delete(shadow);
 		});
-		return write.then(() => true);
+		return write.then(() => {
+			if (this.killEpoch === startEpoch) {
+				for (const item of stagedSnapshots) {
+					this.publishCommandCommit(item.file, {
+						kind: "password",
+						payload: item.payload,
+						decoyBody: item.decoyBody,
+					});
+				}
+			}
+			return true;
+		});
 	}
 
 	/**
@@ -702,6 +1735,146 @@ export class SessionManager {
 		return out;
 	}
 
+	private createBoundViewSession(
+		view: MarkdownView,
+		file: TFile,
+		initialDecoyBody: string,
+		initialPayload: PayloadV1,
+	): ViewSession {
+		this.attachSequenceCounter += 1;
+		const meta: SessionInternalMeta = {
+			attachSeq: this.attachSequenceCounter,
+			loadedDecoyBody: initialDecoyBody,
+			decoyBody: initialDecoyBody,
+			originalPayload: initialPayload,
+			pendingPayload: null,
+			observedCoverText: null,
+			observedCoverRevision: 0,
+			internalMutationDepth: 0,
+		};
+
+		const session = {
+			view,
+			file,
+			state: "locked" as "locked" | "unlocked",
+			lockingPromise: null as Promise<void> | null,
+			killGeneration: 0,
+			dek: null as Uint8Array<ArrayBuffer> | null,
+			realTitle: null as string | null,
+			imageUrls: new Map<string, string>(),
+			backoff: new BackoffTracker(),
+			capture: new CaptureBuffer(this.triggerPrefix()),
+			reencryptTimer: null as ReturnType<typeof setTimeout> | null,
+			reencryptSeq: 0,
+			reencryptPromise: null as Promise<void> | null,
+			writePromise: null as Promise<void> | null,
+			stagedFilesByPayload: new WeakMap<PayloadV1, StagedFile[]>(),
+		} as ViewSession;
+
+		Object.defineProperties(session, {
+			decoyBody: {
+				get: (): string => meta.decoyBody,
+				set: (next: string): void => {
+					meta.decoyBody = next;
+					if (meta.internalMutationDepth > 0 || this.isDisposed()) {
+						return;
+					}
+					const authority = this.getOrCreateFileAuthority(
+						file,
+						meta.originalPayload,
+						meta.loadedDecoyBody,
+					);
+					if (this.isPathReserved(file.path)) {
+						if (next === authority.acceptedDecoyBody) {
+							if (authority.stagedCommand) {
+								delete authority.stagedCommand.decoyBody;
+								if (authority.stagedCommand.payload === undefined) {
+									authority.stagedCommand = null;
+								}
+							}
+						} else {
+							authority.stagedCommand = {
+								...(authority.stagedCommand ?? {}),
+								decoyBody: next,
+							};
+						}
+						return;
+					}
+					if (next !== authority.acceptedDecoyBody) {
+						this.observeCoverEdit(session, next);
+					}
+				},
+				enumerable: true,
+				configurable: true,
+			},
+			originalPayload: {
+				get: (): PayloadV1 => meta.originalPayload,
+				set: (next: PayloadV1): void => {
+					meta.originalPayload = next;
+					if (meta.internalMutationDepth > 0 || this.isDisposed()) {
+						return;
+					}
+					const authority = this.getOrCreateFileAuthority(
+						file,
+						next,
+						meta.decoyBody,
+					);
+					const knownRev = this.getPayloadRevision(file, next);
+					if (knownRev > 0) {
+						if (authority.stagedCommand) {
+							delete authority.stagedCommand.payload;
+							if (authority.stagedCommand.decoyBody === undefined) {
+								authority.stagedCommand = null;
+							}
+						}
+						return;
+					}
+					this.uncommittedStagedPayloads.add(next);
+					authority.stagedCommand = {
+						...(authority.stagedCommand ?? {}),
+						payload: next,
+					};
+				},
+				enumerable: true,
+				configurable: true,
+			},
+			pendingPayload: {
+				get: (): PayloadV1 | null => meta.pendingPayload,
+				set: (next: PayloadV1 | null): void => {
+					meta.pendingPayload = next;
+					if (meta.internalMutationDepth > 0 || this.isDisposed() || next === null) {
+						return;
+					}
+					if (this.uncommittedStagedPayloads.has(next)) {
+						return;
+					}
+					if (next === meta.originalPayload) {
+						return;
+					}
+					const authority = this.getOrCreateFileAuthority(
+						file,
+						meta.originalPayload,
+						meta.decoyBody,
+					);
+					let rev = this.getPayloadRevision(file, next);
+					if (rev === 0) {
+						rev = this.coordinator.nextFileRevision(this.app, file);
+						this.recordPayloadRevision(file, next, rev);
+					}
+					if (rev >= authority.acceptedPayloadRevision) {
+						authority.acceptedPayload = next;
+						authority.acceptedPayloadRevision = rev;
+					}
+				},
+				enumerable: true,
+				configurable: true,
+			},
+		});
+
+		this.sessionMeta.set(session, meta);
+		return session;
+	}
+
 	attachFromLoad(view: MarkdownView, file: TFile, parsed: ParsedFile): ViewSession {
 		if (this.isDisposed()) {
 			const inertSession: ViewSession = {
@@ -727,12 +1900,36 @@ export class SessionManager {
 			inertSession.capture.cancel();
 			return inertSession;
 		}
+		const authority = this.getOrCreateFileAuthority(file, parsed.payload, parsed.decoyBody);
+		const parsedRev = this.getPayloadRevision(file, parsed.payload);
+		if (parsedRev === 0) {
+			const nextRev = this.coordinator.nextFileRevision(this.app, file);
+			this.recordPayloadRevision(file, parsed.payload, nextRev);
+			if (nextRev >= authority.acceptedPayloadRevision) {
+				authority.acceptedPayload = parsed.payload;
+				authority.acceptedPayloadRevision = nextRev;
+				authority.acceptedDecoyBody = parsed.decoyBody;
+			}
+		}
+		const effectivePayload =
+			this.getPayloadRevision(file, parsed.payload) < authority.acceptedPayloadRevision
+				? authority.acceptedPayload
+				: parsed.payload;
+		const effectiveDecoy =
+			authority.acceptedCoverRevision > 0 ? authority.acceptedDecoyBody : parsed.decoyBody;
+
 		const existing = this.byView.get(view);
 		if (existing) {
 			if (existing.file === file) {
-				existing.decoyBody = parsed.decoyBody;
-				existing.originalPayload = parsed.payload;
-				this.rememberDecoy(file.path, parsed.decoyBody);
+				const meta = this.sessionMeta.get(existing);
+				if (meta) {
+					meta.loadedDecoyBody = effectiveDecoy;
+				}
+				this.runInternalSessionMutation(existing, () => {
+					existing.decoyBody = effectiveDecoy;
+					existing.originalPayload = effectivePayload;
+				});
+				this.rememberDecoy(file.path, effectiveDecoy);
 				if (existing.state === "unlocked") {
 					void this.lock(existing, "reload").catch((error) => {
 						console.warn("Veneer: lock on reload failed", error);
@@ -751,7 +1948,9 @@ export class SessionManager {
 					this.revokeImageUrls(existing);
 					existing.state = "locked";
 					existing.lockingPromise = null;
-					existing.pendingPayload = null;
+					this.runInternalSessionMutation(existing, () => {
+						existing.pendingPayload = null;
+					});
 					existing.realTitle = null;
 					existing.capture.cancel();
 					existing.reencryptSeq += 1;
@@ -765,29 +1964,15 @@ export class SessionManager {
 			this.removeFromPath(existing.file.path, existing);
 			this.byView.delete(view);
 		}
-		const session: ViewSession = {
+		const session = this.createBoundViewSession(
 			view,
 			file,
-			state: "locked",
-			lockingPromise: null,
-			killGeneration: 0,
-			decoyBody: parsed.decoyBody,
-			originalPayload: parsed.payload,
-			pendingPayload: null,
-			dek: null,
-			realTitle: null,
-			imageUrls: new Map<string, string>(),
-			backoff: new BackoffTracker(),
-			capture: new CaptureBuffer(this.triggerPrefix()),
-			reencryptTimer: null,
-			reencryptSeq: 0,
-			reencryptPromise: null,
-			writePromise: null,
-			stagedFilesByPayload: new WeakMap(),
-		};
+			effectiveDecoy,
+			effectivePayload,
+		);
 		this.byView.set(view, session);
 		this.addToPath(file.path, session);
-		this.rememberDecoy(file.path, parsed.decoyBody);
+		this.rememberDecoy(file.path, effectiveDecoy);
 		return session;
 	}
 
@@ -1053,6 +2238,7 @@ export class SessionManager {
 			return;
 		}
 		const text = session.view.editor.getValue();
+		const candidateRevision = this.coordinator.nextFileRevision(this.app, session.file);
 		const result = await this.stageEditorImages(session, text);
 		if (
 			!result ||
@@ -1084,6 +2270,7 @@ export class SessionManager {
 		) {
 			return;
 		}
+		this.acceptReencryptedPayload(session, nextPayload, candidateRevision);
 		let writeCommitted = false;
 		await this.enqueueWrite(session, async () => {
 			if (
@@ -1110,8 +2297,8 @@ export class SessionManager {
 		) {
 			return;
 		}
-		session.originalPayload = nextPayload;
-		session.pendingPayload = nextPayload;
+		this.commitSessionPayload(session, nextPayload, candidateRevision);
+		this.acceptReencryptedPayload(session, nextPayload, candidateRevision);
 		this.refreshPreviewImageUrls(session, result.staged);
 		if (this.isDisposed() || this.killEpoch !== startEpoch || session.killGeneration !== startGeneration) {
 			return;
@@ -1236,6 +2423,9 @@ export class SessionManager {
 		const sameFile = session.view.file === session.file;
 		let currentText = sameFile ? session.view.editor.getValue() : "";
 		let currentTitle = sameFile ? this.readEditedInlineTitle(session) : session.realTitle;
+		let candidateRevision = sameFile
+			? this.coordinator.nextFileRevision(this.app, session.file)
+			: 0;
 		const dek = session.dek ? new Uint8Array(session.dek) : null;
 		const releaseLocalDek = this.registerOwnedDek(dek);
 		const startGeneration = session.killGeneration;
@@ -1278,6 +2468,10 @@ export class SessionManager {
 						const postStageText = session.view.editor.getValue();
 						if (postStageText !== currentText && postStageText !== session.decoyBody) {
 							currentText = postStageText;
+							candidateRevision = this.coordinator.nextFileRevision(
+								this.app,
+								session.file,
+							);
 						}
 						currentTitle = this.readEditedInlineTitle(session);
 					}
@@ -1297,6 +2491,12 @@ export class SessionManager {
 					) {
 						return;
 					}
+					this.acceptReencryptedPayload(
+						session,
+						lockedPayload,
+						candidateRevision,
+						currentTitle,
+					);
 					if (
 						this.isAttached(session) &&
 						session.view.file === session.file &&
@@ -1307,6 +2507,10 @@ export class SessionManager {
 							currentText = latestText;
 							currentTitle = this.readEditedInlineTitle(session);
 							session.realTitle = currentTitle;
+							candidateRevision = this.coordinator.nextFileRevision(
+								this.app,
+								session.file,
+							);
 							lockedPayload = await reencryptRealText(
 								session.originalPayload,
 								dek,
@@ -1322,9 +2526,14 @@ export class SessionManager {
 							) {
 								return;
 							}
+							this.acceptReencryptedPayload(
+								session,
+								lockedPayload,
+								candidateRevision,
+								currentTitle,
+							);
 						}
 					}
-					session.pendingPayload = lockedPayload;
 					if (this.isDisposed() || this.isPathReserved(session.file.path)) return;
 					let writeCommitted = false;
 					await this.enqueueWrite(session, async () => {
@@ -1352,9 +2561,11 @@ export class SessionManager {
 					) {
 						return;
 					}
-					session.originalPayload = lockedPayload;
+					this.commitSessionPayload(session, lockedPayload, candidateRevision);
 					for (const peer of this.getAllByPath(session.file.path)) {
-						peer.originalPayload = lockedPayload;
+						this.runInternalSessionMutation(peer, () => {
+							peer.originalPayload = lockedPayload;
+						});
 					}
 					await deleteStagedVaultImages(
 						this.app,
@@ -1379,7 +2590,9 @@ export class SessionManager {
 					this.revokeImageUrls(session);
 					session.state = "locked";
 					session.lockingPromise = null;
-					session.pendingPayload = null;
+					this.runInternalSessionMutation(session, () => {
+						session.pendingPayload = null;
+					});
 					session.capture.cancel();
 					if (session.reencryptTimer !== null) {
 						clearTimeout(session.reencryptTimer);
@@ -1543,6 +2756,10 @@ export class SessionManager {
 					try {
 						const snapshotText = session.view.editor.getValue();
 						const snapshotTitle = this.readEditedInlineTitle(session);
+						const candidateRevision = this.coordinator.nextFileRevision(
+							this.app,
+							session.file,
+						);
 						const imageStage = await this.stageEditorImages(session, snapshotText);
 						if (
 							!imageStage ||
@@ -1578,8 +2795,15 @@ export class SessionManager {
 						) {
 							return;
 						}
-						session.realTitle = snapshotTitle;
-						session.pendingPayload = nextPayload;
+						const accepted = this.acceptReencryptedPayload(
+							session,
+							nextPayload,
+							candidateRevision,
+							snapshotTitle,
+						);
+						if (!accepted) {
+							return;
+						}
 						// Hold the staged source files until this payload is actually
 						// written to disk, so a failed save cannot delete them.
 						if (imageStage.staged.filesToDelete.length > 0) {
@@ -1653,6 +2877,9 @@ export class SessionManager {
 	 * `computeSavedContent` so a completed save can be matched to its images.
 	 */
 	savedPayloadFor(session: ViewSession): PayloadV1 {
+		if (session.state === "locked" && session.lockingPromise === null) {
+			this.observeCoverEdit(session);
+		}
 		return session.state === "unlocked"
 			? (session.pendingPayload ?? session.originalPayload)
 			: session.originalPayload;
@@ -1676,7 +2903,7 @@ export class SessionManager {
 		) {
 			return;
 		}
-		session.originalPayload = persisted;
+		this.commitSessionPayload(session, persisted);
 		const staged = session.stagedFilesByPayload.get(persisted);
 		if (!staged) return;
 		session.stagedFilesByPayload.delete(persisted);
