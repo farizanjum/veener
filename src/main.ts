@@ -115,7 +115,11 @@ export default class VeneerPlugin extends Plugin {
 		this.isShuttingDown = false;
 		this.teardownDone = false;
 		const coordinator = getSharedLifecycleCoordinator();
-		await coordinator.predecessorReady(this.app);
+		try {
+			await coordinator.predecessorReady(this.app);
+		} catch (error) {
+			console.warn("Veneer: predecessor retirement failed; continuing load", error);
+		}
 		if (!this.isLive()) return;
 
 		addIcon(
@@ -477,7 +481,15 @@ export default class VeneerPlugin extends Plugin {
 					destruction.releaseQuarantine(undefined, targetPath);
 				}
 			},
-			clearRegistry: () => this.registry.clear(),
+			clearRegistry: async (succeededPaths) => {
+				if (succeededPaths === undefined || succeededPaths.length === targets.length) {
+					await this.registry.clear();
+					return;
+				}
+				for (const succeededPath of succeededPaths) {
+					await this.registry.remove(succeededPath);
+				}
+			},
 		});
 		console.warn(
 			`Veneer: shred finished, ${report.processed}/${targets.length} destroyed, ${report.failures.length} failed`,
@@ -644,8 +656,12 @@ export default class VeneerPlugin extends Plugin {
 			new Notice("Veneer protects markdown notes only.");
 			return;
 		}
-		const coordinator = this.getCoordinator();
-		await coordinator.predecessorReady(this.app, file);
+		try {
+			await this.getCoordinator().predecessorReady(this.app, file);
+		} catch (error) {
+			console.warn("Veneer: predecessor retirement barrier failed", error);
+			return;
+		}
 		if (!this.isLive()) return;
 		const content = await this.app.vault.read(file);
 		if (!this.isLive()) return;
@@ -691,30 +707,57 @@ export default class VeneerPlugin extends Plugin {
 							this.sessions.attachFromLoad(view, file, { decoyBody: finalBody, payload });
 							view.setViewData(finalBody, true);
 						}
-						const admission = await this.sessions.enqueueCoordinatedWrite(
-							file,
-							async () => {
-								await this.app.vault.modify(file, fileContent);
-							},
-							{
-								epoch: startEpoch,
-								kind: "normal",
-								commandId: cmdId,
-								onCommitted: async () => {
-									this.sessions.publishCommandCommit(file, {
-										kind: "protect",
-										payload,
-										decoyBody: finalBody,
-									});
-									await this.registry.add(file.path, {
-										noteId: payload.note_id,
-										addedAt: Date.now(),
-										mode: "portable",
-									});
+						const restorePreProtectViewIfLive = (): void => {
+							if (!this.isLive()) {
+								return;
+							}
+							if (view && view.file === file) {
+								const attached = this.sessions.get(view);
+								if (attached) {
+									this.sessions.discardAndDetach(attached);
+								}
+								view.setViewData(content, true);
+							}
+							this.sessions.clearFileAuthority(file);
+						};
+						let committedAcrossRetirement = false;
+						let writeRes: { status: "committed" | "declined" };
+						try {
+							writeRes = await this.sessions.enqueueCoordinatedWrite(
+								file,
+								async () => {
+									await this.app.vault.modify(file, fileContent);
 								},
-							},
-						);
-						if (admission.status !== "committed") return;
+								{
+									epoch: startEpoch,
+									kind: "normal",
+									commandId: cmdId,
+									onCommitted: async () => {
+										committedAcrossRetirement = true;
+										this.sessions.publishCommandCommit(file, {
+											kind: "protect",
+											payload,
+											decoyBody: finalBody,
+										});
+										await this.registry.add(file.path, {
+											noteId: payload.note_id,
+											addedAt: Date.now(),
+											mode: "portable",
+										});
+									},
+								},
+							);
+						} catch (error) {
+							if (!committedAcrossRetirement) {
+								restorePreProtectViewIfLive();
+							}
+							console.warn("Veneer: protectFile could not write the note", error);
+							return;
+						}
+						if (!committedAcrossRetirement && writeRes.status !== "committed") {
+							restorePreProtectViewIfLive();
+							return;
+						}
 						if (!this.isLive() || this.sessions.currentKillEpoch() !== startEpoch) {
 							return;
 						}
@@ -751,8 +794,12 @@ export default class VeneerPlugin extends Plugin {
 	/** Generates and persists a fresh decoy cover for an already-protected note. */
 	private async refreshDecoy(file: TFile): Promise<void> {
 		if (!this.isLive()) return;
-		const coordinator = this.getCoordinator();
-		await coordinator.predecessorReady(this.app, file);
+		try {
+			await this.getCoordinator().predecessorReady(this.app, file);
+		} catch (error) {
+			console.warn("Veneer: predecessor retirement barrier failed", error);
+			return;
+		}
 		if (!this.isLive()) return;
 		const startEpoch = this.sessions.currentKillEpoch();
 		try {
@@ -894,7 +941,12 @@ export default class VeneerPlugin extends Plugin {
 		const view = this.app.workspace.getActiveViewOfType(MarkdownView);
 		if (!view || !view.file) return;
 		const targetFile = view.file;
-		await this.getCoordinator().predecessorReady(this.app, targetFile);
+		try {
+			await this.getCoordinator().predecessorReady(this.app, targetFile);
+		} catch (error) {
+			console.warn("Veneer: predecessor retirement barrier failed", error);
+			return;
+		}
 		if (!this.isLive() || view.file !== targetFile) return;
 		let session = this.sessions.get(view);
 		if (!session) {
@@ -918,7 +970,12 @@ export default class VeneerPlugin extends Plugin {
 		if (!this.isLive()) return;
 		const file = this.app.workspace.getActiveFile();
 		if (!file) return;
-		await this.getCoordinator().predecessorReady(this.app, file);
+		try {
+			await this.getCoordinator().predecessorReady(this.app, file);
+		} catch (error) {
+			console.warn("Veneer: predecessor retirement barrier failed", error);
+			return;
+		}
 		if (!this.isLive()) return;
 		const startEpoch = this.sessions.currentKillEpoch();
 		try {
@@ -1043,7 +1100,12 @@ export default class VeneerPlugin extends Plugin {
 		if (!this.isLive()) return;
 		const file = this.app.workspace.getActiveFile();
 		if (!file) return;
-		await this.getCoordinator().predecessorReady(this.app, file);
+		try {
+			await this.getCoordinator().predecessorReady(this.app, file);
+		} catch (error) {
+			console.warn("Veneer: predecessor retirement barrier failed", error);
+			return;
+		}
 		if (!this.isLive()) return;
 		const startEpoch = this.sessions.currentKillEpoch();
 		try {

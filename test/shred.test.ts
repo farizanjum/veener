@@ -9,10 +9,16 @@ import {
 } from "../src/shred/duress";
 import { createFile, parseFileContent } from "../src/crypto/payload";
 
-function makeDeps(failOn?: string): { deps: ShredDeps; calls: string[] } {
+function makeDeps(failOn?: string): {
+	deps: ShredDeps;
+	calls: string[];
+	registered: Set<string>;
+} {
 	const calls: string[] = [];
+	const registered = new Set<string>(["a.md", "b.md", "b.enc"]);
 	return {
 		calls,
+		registered,
 		deps: {
 			zeroSessions: () => calls.push("zero"),
 			rewritePortable: async (path) => {
@@ -23,8 +29,13 @@ function makeDeps(failOn?: string): { deps: ShredDeps; calls: string[] } {
 				if (path === failOn) throw new Error("disk busy");
 				calls.push(`delete:${path}`);
 			},
-			clearRegistry: async () => {
+			clearRegistry: async (succeededPaths) => {
 				calls.push("registry");
+				if (succeededPaths) {
+					for (const p of succeededPaths) registered.delete(p);
+				} else {
+					registered.clear();
+				}
 			},
 		},
 	};
@@ -69,7 +80,7 @@ describe("executeShred", () => {
 	});
 
 	it("continues past a failing file", async () => {
-		const { deps, calls } = makeDeps("a.md");
+		const { deps, calls, registered } = makeDeps("a.md");
 		const report = await executeShred(
 			[
 				{ path: "a.md", mode: "portable" },
@@ -82,6 +93,8 @@ describe("executeShred", () => {
 		expect(report.failures).toHaveLength(1);
 		expect(report.failures[0].path).toBe("a.md");
 		expect(calls[calls.length - 1]).toBe("registry");
+		expect(registered.has("a.md")).toBe(true);
+		expect(registered.has("b.md")).toBe(false);
 		expect(report.steps).toEqual([
 			"zero-memory",
 			"failed:a.md",

@@ -19,7 +19,7 @@ export interface ShredDeps {
 	rewritePortable: (path: string) => Promise<void>;
 	/** Stealth mode: delete the external payload store file. */
 	deleteStealth: (path: string) => Promise<void>;
-	clearRegistry: () => Promise<void>;
+	clearRegistry: (succeededPaths?: readonly string[]) => Promise<void>;
 }
 
 export interface ShredReport {
@@ -35,6 +35,7 @@ export async function executeShred(
 ): Promise<ShredReport> {
 	const steps: string[] = [];
 	const failures: { path: string; error: string }[] = [];
+	const succeededPaths: string[] = [];
 
 	await deps.zeroSessions();
 	steps.push("zero-memory");
@@ -43,9 +44,11 @@ export async function executeShred(
 		try {
 			if (target.mode === "portable") {
 				await deps.rewritePortable(target.path);
+				succeededPaths.push(target.path);
 				steps.push(`rewrite:${target.path}`);
 			} else {
 				await deps.deleteStealth(target.path);
+				succeededPaths.push(target.path);
 				steps.push(`delete:${target.path}`);
 			}
 		} catch (error) {
@@ -54,7 +57,7 @@ export async function executeShred(
 		}
 	}
 
-	await deps.clearRegistry();
+	await deps.clearRegistry(succeededPaths);
 	steps.push("clear-registry");
 
 	return { processed: targets.length - failures.length, failures, steps };

@@ -1100,15 +1100,12 @@ describe("VeneerPlugin.onunload and registered cleanup lifecycle regressions (Is
 		}
 
 		{
-			const harness = createPluginUnloadHarness(VeneerPlugin, {
-				defaultNativeSaveMode: "backing-data",
-			});
+			const harness = createPluginUnloadHarness(VeneerPlugin);
 			activeHarness = harness;
 
 			const { file, pane, session, initialFileContent } = await harness.seedProtectedNote({
 				path: "ShreddedCoverEdit.md",
 				realText: SECRET_P0,
-				saveMode: "backing-data",
 			});
 			await harness.plugin.registry.add(file.path, {
 				noteId: session.originalPayload.note_id,
@@ -1116,13 +1113,18 @@ describe("VeneerPlugin.onunload and registered cleanup lifecycle regressions (Is
 				mode: "portable",
 			});
 
+			const untrackedPane = harness.createPane(file, DEFAULT_DECOY, "backing-data");
+			(untrackedPane.view as unknown as { data: string }).data = initialFileContent;
+
 			await (harness.plugin as unknown as { runShred: () => Promise<void> }).runShred();
 			expect(harness.disk.get(file.path)).toBe(`${DEFAULT_DECOY}\n`);
 
-			(pane.view as unknown as { data: string }).data = initialFileContent;
-			await pane.view.save();
+			await untrackedPane.view.save();
 			expect(parseFileContent(harness.disk.get(file.path) ?? "")).toBeNull();
 			expect(harness.disk.get(file.path)).toBe(`${DEFAULT_DECOY}\n`);
+			expect(
+				getSharedLifecycleCoordinator().getCommittedDisposition(harness.app, file),
+			).toBeNull();
 
 			const newCoverEdits = `${EDITED_DECOY}\n- oat milk`;
 			pane.typeInEditor(newCoverEdits);
@@ -1130,6 +1132,39 @@ describe("VeneerPlugin.onunload and registered cleanup lifecycle regressions (Is
 
 			expect(harness.disk.get(file.path)).toBe(newCoverEdits);
 			expect(parseFileContent(harness.disk.get(file.path) ?? "")).toBeNull();
+
+			let reprotectCallback:
+				| ((res: { decoy: string; password: string }) => Promise<void>)
+				| null = null;
+			vi.spyOn(ProtectWizard.prototype, "open").mockImplementationOnce(function (
+				this: ProtectWizard,
+			) {
+				const deps = (
+					this as unknown as {
+						deps: {
+							onProtect: (res: { decoy: string; password: string }) => Promise<void>;
+						};
+					}
+				).deps;
+				reprotectCallback = deps.onProtect;
+			});
+
+			await (
+				harness.plugin as unknown as { protectFile: (f: typeof file) => Promise<void> }
+			).protectFile(file);
+			expect(reprotectCallback).not.toBeNull();
+			await reprotectCallback!({
+				decoy: `# Shredded CoverEdit\n\n${DEFAULT_DECOY}`,
+				password: NEXT_TEST_PASSWORD,
+			});
+
+			const reprotectedDisk = harness.disk.get(file.path) ?? "";
+			const inspectedReprotected = await inspectSavedFile(
+				reprotectedDisk,
+				NEXT_TEST_PASSWORD,
+			);
+			expect(inspectedReprotected.isProtected).toBe(true);
+			expect(inspectedReprotected.realText).toBe(newCoverEdits);
 
 			harness.restorePrototype();
 			activeHarness = null;

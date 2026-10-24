@@ -1,5 +1,5 @@
 import { MarkdownView, type App, type TFile } from "obsidian";
-import { parseFileContent, stripDraftCacheBlocks, type PayloadV1 } from "../crypto/payload";
+import { parseFileContent, type PayloadV1 } from "../crypto/payload";
 import { computeSavedContent } from "./saveDecision";
 
 /**
@@ -409,6 +409,7 @@ export class ViewLifecycleCoordinator {
 		const scope = this.getOrCreateVaultScope(app);
 		const record = this.getOrCreateFileRecord(scope, file);
 		record.reconciledUnprotectedViews.add(view);
+		this.releaseTerminalDispositionIfSettled(scope, record);
 	}
 
 	/**
@@ -597,6 +598,7 @@ export class ViewLifecycleCoordinator {
 			cmd.settled = true;
 			record.pendingCommands.delete(commandId);
 		}
+		this.releaseTerminalDispositionIfSettled(scope, record);
 		this.pruneIfIdle(scope, record);
 	}
 
@@ -809,6 +811,7 @@ export class ViewLifecycleCoordinator {
 			const next = record.queue.shift();
 			if (!next) {
 				record.processing = false;
+				this.releaseTerminalDispositionIfSettled(scope, record);
 				this.pruneIfIdle(scope, record);
 				return;
 			}
@@ -1214,6 +1217,7 @@ export class ViewLifecycleCoordinator {
 					if (rec) {
 						rec.quarantinedForDestruction = false;
 						rec.frozenSnapshot = null;
+						this.releaseTerminalDispositionIfSettled(scope, rec);
 					}
 				}
 				if (path !== undefined) {
@@ -1222,6 +1226,7 @@ export class ViewLifecycleCoordinator {
 					if (rec) {
 						rec.quarantinedForDestruction = false;
 						rec.frozenSnapshot = null;
+						this.releaseTerminalDispositionIfSettled(scope, rec);
 					}
 				}
 				if (scope.activeDestructionPromise === drainPromise) {
@@ -1256,6 +1261,7 @@ export class ViewLifecycleCoordinator {
 				rawSetViewData.call(view, record.disposition.plaintextContent, clear);
 				(view as unknown as { data: string }).data = record.disposition.plaintextContent;
 				record.reconciledUnprotectedViews.add(view);
+				this.releaseTerminalDispositionIfSettled(scope, record);
 				return true;
 			}
 			return false;
@@ -1350,9 +1356,7 @@ export class ViewLifecycleCoordinator {
 					const target = hasPayload
 						? record.disposition.decoyBody !== undefined
 							? `${record.disposition.decoyBody}\n`
-							: stripDraftCacheBlocks(
-									parseFileContent(editorText) !== null ? editorText : backingText,
-								)
+							: ""
 						: editorText;
 					if (syncViewData) {
 						syncViewData(view, target);
@@ -1440,6 +1444,7 @@ export class ViewLifecycleCoordinator {
 					const waiters = record.barrierWaiters.splice(0);
 					for (const w of waiters) w.resolve();
 				}
+				this.releaseTerminalDispositionIfSettled(scope, record);
 				this.pruneIfIdle(scope, record);
 				return res;
 			},
@@ -1672,9 +1677,7 @@ export class ViewLifecycleCoordinator {
 			if (record.disposition.decoyBody !== undefined) {
 				return `${record.disposition.decoyBody}\n`;
 			}
-			return fallbackEditorText !== undefined
-				? stripDraftCacheBlocks(fallbackEditorText)
-				: null;
+			return "";
 		}
 		if (record.frozenSnapshot !== null) {
 			if (fallbackEditorText !== undefined) {
@@ -1792,6 +1795,93 @@ export class ViewLifecycleCoordinator {
 			}
 		}
 		return true;
+	}
+
+	/**
+	 * Returns true when every open `MarkdownView` in `scope.app.workspace` for `record.file`
+	 * holds payload-free editor and backing text (and for `"unprotected"`, has been marked
+	 * reconciled in `reconciledUnprotectedViews`).
+	 */
+	private areAllWorkspaceViewsSanitized(
+		scope: VaultScopeRecord,
+		record: FileQueueRecord,
+	): boolean {
+		const ws = (
+			scope.app as {
+				workspace?: {
+					iterateAllLeaves?: (cb: (leaf: { view?: unknown }) => void) => void;
+				};
+			}
+		).workspace;
+		if (!ws || typeof ws.iterateAllLeaves !== "function") {
+			return false;
+		}
+		let allSanitized = true;
+		try {
+			ws.iterateAllLeaves((leaf) => {
+				if (!allSanitized) return;
+				const v = leaf.view as MarkdownView | undefined;
+				if (!v || (v as unknown as { file?: TFile | null }).file !== record.file) {
+					return;
+				}
+				if (scope.saveBlockedViews.has(v)) {
+					return;
+				}
+				const editorText =
+					v.editor && typeof v.editor.getValue === "function"
+						? v.editor.getValue()
+						: "";
+				const backingText = (v as unknown as { data?: string }).data ?? "";
+				if (
+					parseFileContent(editorText) !== null ||
+					parseFileContent(backingText) !== null
+				) {
+					allSanitized = false;
+					return;
+				}
+				if (
+					record.disposition?.kind === "unprotected" &&
+					!record.reconciledUnprotectedViews.has(v)
+				) {
+					allSanitized = false;
+				}
+			});
+		} catch {
+			return false;
+		}
+		return allSanitized;
+	}
+
+	/**
+	 * Releases temporary `"unprotected"` or `"destroyed"` dispositions once all earlier
+	 * writes have drained and every open view for `record.file` is sanitized or save-blocked.
+	 */
+	private releaseTerminalDispositionIfSettled(
+		scope: VaultScopeRecord,
+		record: FileQueueRecord,
+	): void {
+		if (
+			record.disposition?.kind !== "unprotected" &&
+			record.disposition?.kind !== "destroyed"
+		) {
+			return;
+		}
+		if (
+			record.quarantinedForDestruction ||
+			record.processing ||
+			record.activePromise !== null ||
+			record.barrierStatus === "draining" ||
+			record.barrierStatus === "failed" ||
+			record.queue.some((entry) => !entry.cancelledBeforeSubmit)
+		) {
+			return;
+		}
+		if (!this.areAllWorkspaceViewsSanitized(scope, record)) {
+			return;
+		}
+		record.disposition = null;
+		record.frozenSnapshot = null;
+		this.pruneIfIdle(scope, record);
 	}
 
 	/**
