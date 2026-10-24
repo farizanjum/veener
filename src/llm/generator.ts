@@ -41,6 +41,7 @@ export class DecoyGenerator {
 	private idleTimer: ReturnType<typeof setTimeout> | null = null;
 	private activeOperations = 0;
 	private unloadEpoch = 0;
+	private retired = false;
 	private runtimeTouchedSinceUnload = false;
 	private operationQueue: Promise<void> = Promise.resolve();
 	private unloadBarrier: Promise<void> = Promise.resolve();
@@ -60,7 +61,7 @@ export class DecoyGenerator {
 		seed: number,
 		extras?: PromptExtras,
 	): Promise<GeneratedDecoy> {
-		if (!this.deps.runtime) {
+		if (this.retired || !this.deps.runtime) {
 			return { text: this.deps.fallbackTemplate(seed), source: "template", attempts: 0 };
 		}
 		const runtime = this.deps.runtime;
@@ -68,7 +69,7 @@ export class DecoyGenerator {
 			const tokenBudget = Math.max(this.maxTokens, maxTokensFor(kind, extras));
 			let lastError = "";
 			for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
-				if (this.unloadEpoch !== epoch) {
+				if (this.retired || this.unloadEpoch !== epoch) {
 					lastError = "generator unloaded";
 					break;
 				}
@@ -78,7 +79,7 @@ export class DecoyGenerator {
 						buildDecoyPrompt(interests, kind, extras),
 						tokenBudget,
 					);
-					if (this.unloadEpoch !== epoch) {
+					if (this.retired || this.unloadEpoch !== epoch) {
 						lastError = "generator unloaded";
 						break;
 					}
@@ -111,12 +112,12 @@ export class DecoyGenerator {
 
 	/** Preloads the LLM runtime in the background and arms the idle unload timer once ready. */
 	warmup(): void {
-		if (!this.deps.runtime) {
+		if (this.retired || !this.deps.runtime) {
 			return;
 		}
 		const runtime = this.deps.runtime;
 		void this.enqueueOperation(async (epoch) => {
-			if (this.unloadEpoch !== epoch || !this.deps.runtime) {
+			if (this.retired || this.unloadEpoch !== epoch || !this.deps.runtime) {
 				return;
 			}
 			try {
@@ -129,13 +130,17 @@ export class DecoyGenerator {
 	}
 
 	/** Cancels any pending idle timer, invalidates in-flight generations, and unloads the runtime. */
-	async unload(): Promise<void> {
+	async unload(retire = false): Promise<void> {
+		if (retire) {
+			this.retired = true;
+		}
 		this.unloadEpoch += 1;
 		this.runtimeTouchedSinceUnload = false;
 		this.clearIdleTimer();
 		if (this.deps.runtime) {
+			const previousUnload = this.unloadBarrier;
 			const unloadPromise = this.deps.runtime.unload();
-			this.unloadBarrier = unloadPromise.then(
+			this.unloadBarrier = Promise.all([previousUnload, unloadPromise]).then(
 				() => undefined,
 				() => undefined,
 			);

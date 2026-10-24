@@ -1499,7 +1499,7 @@ describe("VeneerPlugin.onunload and registered cleanup lifecycle regressions (Is
 			expect(buildGeneratorSpy).toHaveBeenCalledTimes(1);
 			expect(warmupSpy).not.toHaveBeenCalled();
 
-			plugin.rebuildGenerator();
+			await plugin.rebuildGenerator();
 			expect(unloadSpy).toHaveBeenCalledTimes(1);
 			expect(buildGeneratorSpy).toHaveBeenCalledTimes(2);
 			expect(warmupSpy).not.toHaveBeenCalled();

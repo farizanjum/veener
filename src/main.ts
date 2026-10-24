@@ -60,6 +60,7 @@ export default class VeneerPlugin extends Plugin {
 	private dots!: StatusDots;
 	private wordCounter!: WordCounter;
 	private generator!: DecoyGenerator;
+	private generatorRebuildPromise: Promise<void> | null = null;
 	private isShuttingDown = false;
 	private teardownDone = false;
 	private modelDeletionInFlight = false;
@@ -1518,15 +1519,39 @@ export default class VeneerPlugin extends Plugin {
 		await this.app.vault.adapter.remove(rel);
 	}
 
-	/** Unloads the current decoy generator and constructs a replacement without warming it up. */
+	/** Unloads and retires the current decoy generator, publishing a replacement once unload succeeds. */
 	rebuildGenerator(): Promise<void> {
 		if (!this.isLive()) return Promise.resolve();
+		if (this.generatorRebuildPromise) return this.generatorRebuildPromise;
 		const prevGenerator = this.generator;
-		this.generator = this.buildGenerator();
-		if (!prevGenerator) return Promise.resolve();
-		return Promise.resolve(prevGenerator.unload()).catch((error) => {
-			console.warn("Veneer: generator unload failed", error);
-		});
+		if (!prevGenerator) {
+			this.generator = this.buildGenerator();
+			return Promise.resolve();
+		}
+		const rebuildPromise = Promise.resolve(prevGenerator.unload(true)).then(
+			() => {
+				if (this.isLive() && this.generator === prevGenerator) {
+					this.generator = this.buildGenerator();
+				}
+			},
+			(error) => {
+				console.warn("Veneer: generator unload failed", error);
+			},
+		);
+		this.generatorRebuildPromise = rebuildPromise;
+		void rebuildPromise.then(
+			() => {
+				if (this.generatorRebuildPromise === rebuildPromise) {
+					this.generatorRebuildPromise = null;
+				}
+			},
+			() => {
+				if (this.generatorRebuildPromise === rebuildPromise) {
+					this.generatorRebuildPromise = null;
+				}
+			},
+		);
+		return rebuildPromise;
 	}
 
 	/** Copies a local `.gguf` file into the models directory, computes its SHA-256 digest, and activates it. */
