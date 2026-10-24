@@ -15,6 +15,7 @@ export interface GeneratorDeps {
 	maxAttempts?: number;
 	maxTokens?: number;
 	idleTimeoutMs?: number;
+	initialUnloadBarrier?: Promise<void>;
 }
 
 export interface GeneratedDecoy {
@@ -51,6 +52,12 @@ export class DecoyGenerator {
 		this.maxAttempts = deps.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
 		this.maxTokens = deps.maxTokens ?? DEFAULT_MAX_TOKENS;
 		this.idleTimeoutMs = deps.idleTimeoutMs ?? DEFAULT_IDLE_UNLOAD_MS;
+		this.unloadBarrier = deps.initialUnloadBarrier
+			? deps.initialUnloadBarrier.then(
+					() => undefined,
+					() => undefined,
+				)
+			: Promise.resolve();
 	}
 
 	/** Generates a validated decoy cover string, falling back to a deterministic template on failure. */
@@ -189,6 +196,14 @@ export class DecoyGenerator {
 			if (this.activeOperations === 0 && this.unloadEpoch === scheduledEpoch) {
 				void this.unload().catch((error) => {
 					console.warn("Veneer: idle model unload failed", error);
+					if (
+						!this.retired &&
+						this.activeOperations === 0 &&
+						this.unloadEpoch === scheduledEpoch + 1 &&
+						this.deps.runtime
+					) {
+						this.armIdleTimer();
+					}
 				});
 			}
 		}, this.idleTimeoutMs);

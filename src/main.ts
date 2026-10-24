@@ -60,7 +60,6 @@ export default class VeneerPlugin extends Plugin {
 	private dots!: StatusDots;
 	private wordCounter!: WordCounter;
 	private generator!: DecoyGenerator;
-	private generatorRebuildPromise: Promise<void> | null = null;
 	private isShuttingDown = false;
 	private teardownDone = false;
 	private modelDeletionInFlight = false;
@@ -1336,7 +1335,7 @@ export default class VeneerPlugin extends Plugin {
 	}
 
 	/** Constructs a `DecoyGenerator` wired to the active local LLM runtime and fallback templates. */
-	private buildGenerator(): DecoyGenerator {
+	private buildGenerator(initialUnloadBarrier?: Promise<void>): DecoyGenerator {
 		const runtime = this.settings.modelDownloaded ? this.buildRuntime() : null;
 		return new DecoyGenerator({
 			runtime,
@@ -1350,6 +1349,7 @@ export default class VeneerPlugin extends Plugin {
 					seed,
 				});
 			},
+			...(initialUnloadBarrier ? { initialUnloadBarrier } : {}),
 		});
 	}
 
@@ -1519,39 +1519,19 @@ export default class VeneerPlugin extends Plugin {
 		await this.app.vault.adapter.remove(rel);
 	}
 
-	/** Unloads and retires the current decoy generator, publishing a replacement once unload succeeds. */
+	/** Retires and unloads the current decoy generator and synchronously publishes a replacement gated on the unload barrier. */
 	rebuildGenerator(): Promise<void> {
 		if (!this.isLive()) return Promise.resolve();
-		if (this.generatorRebuildPromise) return this.generatorRebuildPromise;
 		const prevGenerator = this.generator;
 		if (!prevGenerator) {
 			this.generator = this.buildGenerator();
 			return Promise.resolve();
 		}
-		const rebuildPromise = Promise.resolve(prevGenerator.unload(true)).then(
-			() => {
-				if (this.isLive() && this.generator === prevGenerator) {
-					this.generator = this.buildGenerator();
-				}
-			},
-			(error) => {
-				console.warn("Veneer: generator unload failed", error);
-			},
-		);
-		this.generatorRebuildPromise = rebuildPromise;
-		void rebuildPromise.then(
-			() => {
-				if (this.generatorRebuildPromise === rebuildPromise) {
-					this.generatorRebuildPromise = null;
-				}
-			},
-			() => {
-				if (this.generatorRebuildPromise === rebuildPromise) {
-					this.generatorRebuildPromise = null;
-				}
-			},
-		);
-		return rebuildPromise;
+		const unloadTask = Promise.resolve(prevGenerator.unload(true)).catch((error) => {
+			console.warn("Veneer: generator unload failed", error);
+		});
+		this.generator = this.buildGenerator(unloadTask);
+		return unloadTask;
 	}
 
 	/** Copies a local `.gguf` file into the models directory, computes its SHA-256 digest, and activates it. */
