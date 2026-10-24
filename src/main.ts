@@ -1433,6 +1433,9 @@ export default class VeneerPlugin extends Plugin {
 		const adapter = this.app.vault.adapter as unknown as { getBasePath?: () => string };
 		const root = adapter.getBasePath?.() ?? "";
 		const abs = `${root}/${this.app.vault.configDir}/plugins/deocy/models/${fileName}`;
+		if (wasActiveModel && this.modelDeletionInFlight) {
+			return false;
+		}
 		if (wasActiveModel) {
 			this.modelDeletionInFlight = true;
 			this.modelDeletionEpoch += 1;

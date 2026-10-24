@@ -1817,7 +1817,6 @@ export class SessionManager {
 			return Promise.resolve({ status: "declined" });
 		}
 		const capturedEpoch = options?.epoch ?? this.killEpoch;
-		let declinedInsideTask = false;
 		const promise = this.coordinator
 			.enqueueFileWrite<T>(this.app, {
 				file,
@@ -1829,25 +1828,16 @@ export class SessionManager {
 						throw new DeclinedByManagerError();
 					}
 					if (options?.canCommit && !options.canCommit()) {
-						declinedInsideTask = true;
-						return undefined as unknown as T;
+						throw new DeclinedByManagerError();
 					}
 					return task();
 				},
-				...(options?.onCommitted
-					? {
-							onCommitted: async (val: T) => {
-								if (declinedInsideTask) return;
-								await options.onCommitted?.(val);
-							},
-						}
-					: {}),
+				...(options?.onCommitted ? { onCommitted: options.onCommitted } : {}),
 				...(options?.dispositionOnCommit
 					? { dispositionOnCommit: options.dispositionOnCommit }
 					: {}),
 				...(options?.commandId ? { commandId: options.commandId } : {}),
 			})
-			.then((res) => (declinedInsideTask ? { status: "declined" as const } : res))
 			.catch((err: unknown) => {
 				if (err instanceof DeclinedByManagerError) {
 					return { status: "declined" as const };
