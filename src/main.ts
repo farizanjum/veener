@@ -62,6 +62,8 @@ export default class VeneerPlugin extends Plugin {
 	private generator!: DecoyGenerator;
 	private isShuttingDown = false;
 	private teardownDone = false;
+	private modelDeletionInFlight = false;
+	private modelDeletionEpoch = 0;
 	private activeModals?: Set<ClosableModal>;
 
 	/** Returns the shared `ViewLifecycleCoordinator` from the active session manager or global singleton. */
@@ -181,7 +183,6 @@ export default class VeneerPlugin extends Plugin {
 		this.patchController = controller;
 		this.viewPatchController = controller;
 		this.generator = this.buildGenerator();
-		this.generator.warmup();
 		this.lockEngine = new LockEngine(this, this.app.workspace, this.sessions, () => this.settings);
 		this.lockEngine.start();
 		void this.attachAlreadyOpenViews();
@@ -811,8 +812,17 @@ export default class VeneerPlugin extends Plugin {
 	/** Generates and persists a fresh decoy cover for an already-protected note. */
 	private async refreshDecoy(file: TFile): Promise<void> {
 		if (!this.isLive()) return;
+		const deletionEpoch = this.modelDeletionEpoch;
+		if (this.modelDeletionInFlight) {
+			new Notice("The model is being deleted. Try again after deletion finishes.");
+			return;
+		}
 		if (!(await this.awaitPredecessor(file, true))) return;
 		if (!this.isLive()) return;
+		if (this.modelDeletionInFlight || this.modelDeletionEpoch !== deletionEpoch) {
+			new Notice("The model is being deleted. Try again after deletion finishes.");
+			return;
+		}
 		const startEpoch = this.sessions.currentKillEpoch();
 		try {
 			for (const session of this.sessions.getAllByPath(file.path)) {
@@ -831,6 +841,10 @@ export default class VeneerPlugin extends Plugin {
 			new Notice("Not a protected note.");
 			return;
 		}
+		if (this.modelDeletionInFlight || this.modelDeletionEpoch !== deletionEpoch) {
+			new Notice("The model is being deleted. Try again after deletion finishes.");
+			return;
+		}
 		const result = await this.generator.generate(
 			"auto",
 			this.settings.interests,
@@ -843,6 +857,10 @@ export default class VeneerPlugin extends Plugin {
 			},
 		);
 		if (!this.isLive() || this.sessions.currentKillEpoch() !== startEpoch) return;
+		if (this.modelDeletionInFlight || this.modelDeletionEpoch !== deletionEpoch) {
+			new Notice("The model is being deleted. Try again after deletion finishes.");
+			return;
+		}
 		const { title: rawTitle, body: decoyBody } = splitTitleFromBody(result.text.trim());
 		const finalBody = decoyBody.length > 0 ? decoyBody : result.text.trim();
 		try {
@@ -868,6 +886,10 @@ export default class VeneerPlugin extends Plugin {
 		try {
 			const latest = parseFileContent(await this.app.vault.read(file));
 			if (!this.isLive() || this.sessions.currentKillEpoch() !== startEpoch) return;
+			if (this.modelDeletionInFlight || this.modelDeletionEpoch !== deletionEpoch) {
+				new Notice("The model is being deleted. Try again after deletion finishes.");
+				return;
+			}
 			if (!latest) {
 				new Notice("Not a protected note.");
 				return;
@@ -886,6 +908,8 @@ export default class VeneerPlugin extends Plugin {
 				{
 					file,
 					commandId: cmdId,
+					canCommit: () =>
+						!this.modelDeletionInFlight && this.modelDeletionEpoch === deletionEpoch,
 					onCommitted: () => {
 						this.sessions.publishCommandCommit(file, {
 							kind: "refresh",
@@ -1397,22 +1421,85 @@ export default class VeneerPlugin extends Plugin {
 		return results;
 	}
 
-	/** Deletes the active model file and any partial download artifacts, then rebuilds the generator. */
-	async deleteModelFile(): Promise<void> {
-		const model = activeModel(this.settings);
+	/**
+	 * Unloads any active LLM runtime so file handles are released on Windows, deletes the
+	 * specified (or active) `.gguf` model file and partial artifacts, updates settings, and
+	 * rebuilds the generator without warming it up.
+	 */
+	async deleteModelFile(targetFileName?: string): Promise<boolean> {
+		const activeFile = activeModel(this.settings).file;
+		const fileName = targetFileName ?? activeFile;
+		const wasActiveModel = fileName === activeFile;
 		const adapter = this.app.vault.adapter as unknown as { getBasePath?: () => string };
 		const root = adapter.getBasePath?.() ?? "";
-		const abs = `${root}/${this.app.vault.configDir}/plugins/deocy/models/${model.file}`;
-		try {
-			if (fs.existsSync(abs)) fs.unlinkSync(abs);
-			clearPartial(abs);
-		} catch (error) {
-			console.warn("Veneer: model delete skipped", error);
+		const abs = `${root}/${this.app.vault.configDir}/plugins/deocy/models/${fileName}`;
+		if (wasActiveModel) {
+			this.modelDeletionInFlight = true;
+			this.modelDeletionEpoch += 1;
 		}
-		this.settings.modelDownloaded = false;
-		this.settings.modelVerified = false;
-		await this.saveSettings();
-		this.rebuildGenerator();
+		try {
+			if (wasActiveModel) {
+				try {
+					await this.generator?.unload();
+				} catch (error) {
+					console.warn("Veneer: generator unload before model delete failed", error);
+					return false;
+				}
+			}
+			let deleted = false;
+			try {
+				if (fs.existsSync(abs)) {
+					fs.unlinkSync(abs);
+				}
+				clearPartial(abs);
+				deleted = !fs.existsSync(abs);
+			} catch (error) {
+				console.warn("Veneer: model delete skipped", error);
+				deleted = false;
+			}
+			const prevModelId = this.settings.modelId;
+			const prevCustomFile = this.settings.customModel?.file ?? null;
+			const prevDownloaded = this.settings.modelDownloaded;
+			const disk = this.modelFileStatus();
+			if (disk.exists) {
+				this.settings.modelDownloaded = true;
+			} else {
+				const remaining = this.downloadedModels();
+				const next = remaining[0];
+				if (next) {
+					if (next.modelId === "custom") {
+						this.settings.modelId = "custom";
+						this.settings.customModel = {
+							file: next.fileName,
+							url: null,
+							sizeBytes: next.sizeBytes,
+							label: next.fileName,
+						};
+					} else {
+						this.settings.modelId = next.modelId;
+						this.settings.customModel = null;
+					}
+					this.settings.modelDownloaded = true;
+					this.settings.modelVerified = false;
+				} else {
+					this.settings.modelDownloaded = false;
+					this.settings.modelVerified = false;
+				}
+			}
+			await this.saveSettings();
+			const selectionOrAvailabilityChanged =
+				this.settings.modelId !== prevModelId ||
+				(this.settings.customModel?.file ?? null) !== prevCustomFile ||
+				this.settings.modelDownloaded !== prevDownloaded;
+			if (wasActiveModel || selectionOrAvailabilityChanged) {
+				await this.rebuildGenerator();
+			}
+			return deleted;
+		} finally {
+			if (wasActiveModel) {
+				this.modelDeletionInFlight = false;
+			}
+		}
 	}
 
 	/** Ensures the plugin models directory exists and returns its absolute and vault-relative paths. */
@@ -1428,14 +1515,15 @@ export default class VeneerPlugin extends Plugin {
 		await this.app.vault.adapter.remove(rel);
 	}
 
-	/** Unloads the current decoy generator and constructs a warmed-up replacement when the plugin is live. */
-	rebuildGenerator(): void {
-		if (!this.isLive()) return;
-		void this.generator?.unload()?.catch((error) => {
+	/** Unloads the current decoy generator and constructs a replacement without warming it up. */
+	rebuildGenerator(): Promise<void> {
+		if (!this.isLive()) return Promise.resolve();
+		const prevGenerator = this.generator;
+		this.generator = this.buildGenerator();
+		if (!prevGenerator) return Promise.resolve();
+		return Promise.resolve(prevGenerator.unload()).catch((error) => {
 			console.warn("Veneer: generator unload failed", error);
 		});
-		this.generator = this.buildGenerator();
-		this.generator.warmup();
 	}
 
 	/** Copies a local `.gguf` file into the models directory, computes its SHA-256 digest, and activates it. */
@@ -1466,6 +1554,9 @@ export default class VeneerPlugin extends Plugin {
 
 	/** Generates a short sample decoy cover using the active generator to verify model readiness. */
 	async testModelFlow(): Promise<string> {
+		if (this.modelDeletionInFlight) {
+			return "The model is being deleted. Try again after deletion finishes.";
+		}
 		const result = await this.generator.generate(
 			"auto",
 			this.settings.interests,

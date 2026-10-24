@@ -1709,6 +1709,7 @@ export class SessionManager {
 			readonly commandId?: symbol;
 			readonly dispositionOnCommit?: CommittedDisposition;
 			readonly onCommitted?: () => void | Promise<void>;
+			readonly canCommit?: () => boolean;
 		},
 	): Promise<boolean> {
 		if (this.isDisposed() || startEpoch !== this.killEpoch) {
@@ -1746,6 +1747,7 @@ export class SessionManager {
 					...(options?.dispositionOnCommit
 						? { dispositionOnCommit: options.dispositionOnCommit }
 						: {}),
+					...(options?.canCommit ? { canCommit: options.canCommit } : {}),
 					onCommitted: async () => {
 						if (this.killEpoch === startEpoch) {
 							for (const item of stagedSnapshots) {
@@ -1760,6 +1762,10 @@ export class SessionManager {
 					},
 				},
 			).then((res) => res.status === "committed");
+		}
+
+		if (options?.canCommit && !options.canCommit()) {
+			return Promise.resolve(false);
 		}
 
 		const write = task();
@@ -1800,6 +1806,7 @@ export class SessionManager {
 			readonly onCommitted?: (value: T) => void | Promise<void>;
 			readonly dispositionOnCommit?: CommittedDisposition;
 			readonly commandId?: symbol;
+			readonly canCommit?: () => boolean;
 		},
 	): Promise<WriteAdmissionResult<T>> {
 		const kind: WriteJobKind = options?.kind ?? "normal";
@@ -1810,28 +1817,43 @@ export class SessionManager {
 			return Promise.resolve({ status: "declined" });
 		}
 		const capturedEpoch = options?.epoch ?? this.killEpoch;
-		const promise = this.coordinator.enqueueFileWrite<T>(this.app, {
-			file,
-			owner: this.owner,
-			epoch: this.owner.killEpoch,
-			kind,
-			task: async () => {
-				if (kind === "normal" && (this.isDisposed() || capturedEpoch !== this.killEpoch)) {
-					throw new DeclinedByManagerError();
+		let declinedInsideTask = false;
+		const promise = this.coordinator
+			.enqueueFileWrite<T>(this.app, {
+				file,
+				owner: this.owner,
+				epoch: this.owner.killEpoch,
+				kind,
+				task: async () => {
+					if (kind === "normal" && (this.isDisposed() || capturedEpoch !== this.killEpoch)) {
+						throw new DeclinedByManagerError();
+					}
+					if (options?.canCommit && !options.canCommit()) {
+						declinedInsideTask = true;
+						return undefined as unknown as T;
+					}
+					return task();
+				},
+				...(options?.onCommitted
+					? {
+							onCommitted: async (val: T) => {
+								if (declinedInsideTask) return;
+								await options.onCommitted?.(val);
+							},
+						}
+					: {}),
+				...(options?.dispositionOnCommit
+					? { dispositionOnCommit: options.dispositionOnCommit }
+					: {}),
+				...(options?.commandId ? { commandId: options.commandId } : {}),
+			})
+			.then((res) => (declinedInsideTask ? { status: "declined" as const } : res))
+			.catch((err: unknown) => {
+				if (err instanceof DeclinedByManagerError) {
+					return { status: "declined" as const };
 				}
-				return task();
-			},
-			...(options?.onCommitted ? { onCommitted: options.onCommitted } : {}),
-			...(options?.dispositionOnCommit
-				? { dispositionOnCommit: options.dispositionOnCommit }
-				: {}),
-			...(options?.commandId ? { commandId: options.commandId } : {}),
-		}).catch((err: unknown) => {
-			if (err instanceof DeclinedByManagerError) {
-				return { status: "declined" as const };
-			}
-			throw err;
-		});
+				throw err;
+			});
 
 		const shadow = promise.then(
 			() => undefined,
