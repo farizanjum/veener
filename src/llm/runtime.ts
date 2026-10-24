@@ -31,11 +31,37 @@ export class WllamaRuntime implements LlmRuntime {
 	private loading: Promise<void> | null = null;
 	private loadEpoch = 0;
 	private readonly exitedEngines = new WeakSet<object>();
+	private readonly pendingCleanupEngines = new Set<Wllama>();
+	private readonly cleanupPromises = new WeakMap<Wllama, Promise<void>>();
 
 	constructor(
 		private readonly modelPath: string,
 		private readonly wasmPath: string,
 	) {}
+
+	/** Deduplicates and tracks worker exit for `engine`, retaining failed engines for retry on subsequent unloads. */
+	private cleanupEngine(engine: Wllama): Promise<void> {
+		if (this.exitedEngines.has(engine)) {
+			this.pendingCleanupEngines.delete(engine);
+			return Promise.resolve();
+		}
+		const existing = this.cleanupPromises.get(engine);
+		if (existing) return existing;
+		const cleanup = (async (): Promise<void> => {
+			try {
+				await engine.exit();
+				this.exitedEngines.add(engine);
+				this.pendingCleanupEngines.delete(engine);
+			} catch (error) {
+				this.pendingCleanupEngines.add(engine);
+				throw error;
+			} finally {
+				this.cleanupPromises.delete(engine);
+			}
+		})();
+		this.cleanupPromises.set(engine, cleanup);
+		return cleanup;
+	}
 
 	/** Returns true when the wllama engine is loaded and ready for inference. */
 	isReady(): boolean {
@@ -86,10 +112,7 @@ export class WllamaRuntime implements LlmRuntime {
 					flash_attn: false,
 				});
 			} catch (loadError) {
-				if (!this.exitedEngines.has(engine)) {
-					this.exitedEngines.add(engine);
-					await engine.exit().catch(() => undefined);
-				}
+				await this.cleanupEngine(engine).catch(() => undefined);
 				throw loadError;
 			} finally {
 				if (this.loadingEngine === engine) {
@@ -97,10 +120,7 @@ export class WllamaRuntime implements LlmRuntime {
 				}
 			}
 			if (this.loadEpoch !== epoch) {
-				if (!this.exitedEngines.has(engine)) {
-					this.exitedEngines.add(engine);
-					await engine.exit().catch(() => undefined);
-				}
+				await this.cleanupEngine(engine).catch(() => undefined);
 				throw new Error("wllama runtime unloaded during startup");
 			}
 			this.engine = engine;
@@ -140,13 +160,10 @@ export class WllamaRuntime implements LlmRuntime {
 		} catch (generationError) {
 			if (this.engine === engine) {
 				this.engine = null;
-				if (!this.exitedEngines.has(engine)) {
-					this.exitedEngines.add(engine);
-					try {
-						await engine.exit();
-					} catch (cleanupError) {
-						throw new WllamaRecoveryError(generationError, cleanupError);
-					}
+				try {
+					await this.cleanupEngine(engine);
+				} catch (cleanupError) {
+					throw new WllamaRecoveryError(generationError, cleanupError);
 				}
 			}
 			throw generationError;
@@ -162,18 +179,27 @@ export class WllamaRuntime implements LlmRuntime {
 		this.loadingEngine = null;
 		const pendingLoad = this.loading;
 		this.loading = null;
+		const cleanupEngines = new Set<Wllama>(this.pendingCleanupEngines);
+		if (currentEngine) {
+			cleanupEngines.add(currentEngine);
+		}
+		if (inFlightEngine && inFlightEngine !== currentEngine) {
+			cleanupEngines.add(inFlightEngine);
+		}
+		for (const engine of cleanupEngines) {
+			this.pendingCleanupEngines.add(engine);
+		}
 		try {
-			if (currentEngine && !this.exitedEngines.has(currentEngine)) {
-				this.exitedEngines.add(currentEngine);
-				await currentEngine.exit();
-			}
-			if (
-				inFlightEngine &&
-				inFlightEngine !== currentEngine &&
-				!this.exitedEngines.has(inFlightEngine)
-			) {
-				this.exitedEngines.add(inFlightEngine);
-				await inFlightEngine.exit().catch(() => undefined);
+			for (const engine of cleanupEngines) {
+				if (this.exitedEngines.has(engine)) {
+					this.pendingCleanupEngines.delete(engine);
+					continue;
+				}
+				if (engine === inFlightEngine && engine !== currentEngine) {
+					await this.cleanupEngine(engine).catch(() => undefined);
+				} else {
+					await this.cleanupEngine(engine);
+				}
 			}
 		} finally {
 			if (pendingLoad) {

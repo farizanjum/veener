@@ -144,14 +144,20 @@ export class DecoyGenerator {
 		this.unloadEpoch += 1;
 		this.runtimeTouchedSinceUnload = false;
 		this.clearIdleTimer();
-		if (this.deps.runtime) {
-			const previousUnload = this.unloadBarrier;
-			const unloadPromise = this.deps.runtime.unload();
-			this.unloadBarrier = Promise.all([previousUnload, unloadPromise]).then(
-				() => undefined,
-				() => undefined,
-			);
+		const previousUnload = this.unloadBarrier;
+		if (!this.deps.runtime) {
+			await previousUnload;
+			return;
+		}
+		const unloadPromise = this.deps.runtime.unload();
+		this.unloadBarrier = Promise.all([previousUnload, unloadPromise]).then(
+			() => undefined,
+			() => undefined,
+		);
+		try {
 			await unloadPromise;
+		} finally {
+			await previousUnload;
 		}
 	}
 
