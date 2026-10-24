@@ -189,17 +189,28 @@ export class WllamaRuntime implements LlmRuntime {
 		for (const engine of cleanupEngines) {
 			this.pendingCleanupEngines.add(engine);
 		}
+		let cleanupFailed = false;
+		let firstCleanupError: unknown;
 		try {
 			for (const engine of cleanupEngines) {
 				if (this.exitedEngines.has(engine)) {
 					this.pendingCleanupEngines.delete(engine);
 					continue;
 				}
-				if (engine === inFlightEngine && engine !== currentEngine) {
-					await this.cleanupEngine(engine).catch(() => undefined);
-				} else {
+				try {
 					await this.cleanupEngine(engine);
+				} catch (error) {
+					if (engine === inFlightEngine && engine !== currentEngine) {
+						continue;
+					}
+					if (!cleanupFailed) {
+						cleanupFailed = true;
+						firstCleanupError = error;
+					}
 				}
+			}
+			if (cleanupFailed) {
+				throw firstCleanupError;
 			}
 		} finally {
 			if (pendingLoad) {
