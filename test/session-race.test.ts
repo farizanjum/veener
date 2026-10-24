@@ -790,7 +790,6 @@ describe("SessionManager race conditions (Issue #2)", () => {
 				},
 				deleteStealth: async () => undefined,
 				clearRegistry: async () => undefined,
-				clearWebStorage: () => undefined,
 			});
 		});
 

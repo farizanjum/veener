@@ -12,10 +12,11 @@ A note on disk is a **normal-looking Markdown file**. Its visible body is meanin
 
 - Opening the note shows the decoy. Obsidian renders it natively, it *is* a normal note.
 - Typing a secret password inline (default: at the start of any line, after a silent trigger prefix) swaps the editor to the real text.
-- Editing works normally; every auto-save re-encrypts and writes back *decoy + ciphertext*, never plaintext.
+- Editing works normally; while unlocked, edits re-encrypt in memory on a 600 ms debounce, and every auto-save writes back *decoy + newest completed ciphertext*, never plaintext.
 - On inactivity, window blur, tab switch, screen lock, or a panic hotkey, the note instantly re-masks to the decoy.
+- On plugin disable, reload, or update, Veneer synchronously sanitizes every open protected view (wiping owned DEK byte arrays, editor undo history, capture state, and preview URLs, and restoring cover titles) and hands the newest already-completed encrypted snapshot back to Obsidian's native editor before `onunload()` returns.
 
-**The one architectural rule everything else serves:** plaintext must never enter Obsidian's native save, search-index, or file-recovery pipelines. Every design decision below follows from this.
+**The one architectural rule everything else serves:** plaintext must never enter Obsidian's native save, search-index, or file-recovery pipelines, including when the plugin is disabled, reloaded, or updated while notes are open. Every design decision below follows from this.
 
 ---
 
@@ -91,7 +92,7 @@ Default to **portable**; stealth is a per-note setting for users who accept the 
 | Key hierarchy | Per-note random **DEK** (256-bit), wrapped by a **KEK** = Argon2id(password, salt) | Password change = re-wrap DEK only (no bulk re-encrypt). Per-note passwords supported naturally. |
 | AAD (authenticated data) | `note_id` only | **Amended in implementation:** binding AAD to the decoy body made legitimate cover edits permanently break unlock (a design bug caught while mapping the save flow). The GCM tag still protects the real text; the decoy needs no integrity guarantee. |
 | Length hiding | PKCS#7-pad plaintext up to the next **4 KB** before encryption | Prevents the ciphertext length from leaking the real text's length (a 50-word decoy vs 10,000-word real text would otherwise be an obvious anomaly). |
-| Memory hygiene | Keys and plaintext buffers in `Uint8Array`; `.fill(0)` on lock | JS strings are immutable and GC is non-deterministic, never hold key material in strings longer than the KDF call requires. |
+| Memory hygiene | Owned key buffers in `Uint8Array`; `.fill(0)` on lock, retirement, and late KDF continuation | Veneer tracks and zeroes the `Uint8Array` DEK arrays it owns (session keys, lock copies, and command-derived keys, plus `finally` cleanup) and clears editor undo history. JavaScript strings and internal WebCrypto `CryptoKey` objects are garbage-collected and cannot be deterministically erased from a plugin, and OS swap, hibernation, and crash dumps remain outside its control. |
 
 **Why not honey encryption:** honey encryption requires *every* wrong key to produce a plausible plaintext. With a fixed covertext, a brute-forcer finds exactly two valid keys (decoy, real) and millions of garbage decryptions, they immediately know a two-key system is in use. Our design is *deniable by display* (the adversary never sees ciphertext unless they inspect raw bytes), not *deniable by cryptography*. We do not advertise cryptographic deniability.
 
@@ -102,18 +103,32 @@ Default to **portable**; stealth is a per-note setting for users who accept the 
 We follow the **Meld Encrypt pattern** (verified as the only architecture that keeps plaintext out of Obsidian's pipelines):
 
 ```text
-MarkdownView prototype patches (installed at plugin load, removed on unload)
+MarkdownView prototype patches & shared lifecycle coordinator (src/view/patch.ts, src/view/lifecycle.ts)
 ├─ setViewData(data, clear): a file carrying a payload loads as its decoy only;
-│    the payload comment never enters the editor document
-├─ getViewData(): always returns decoy + (pending or original) ciphertext
+│    the payload block never enters the editor document while Veneer is active
+├─ getViewData(): returns decoy + (newest completed pending or original) ciphertext
 │    via computeSavedContent, synchronous, so crypto never runs in the save path
 ├─ save(): syncs this.data through the patched getViewData before delegating,
-│    covering every Obsidian save-path variant
+│    routing writes through the per-vault, per-file lifecycle coordinator
 ├─ unlock: Argon2id → unwrap DEK → decrypt → setViewData(realText, clear=true)
-│    (fresh editor state, no undo history); ciphertext re-computed on a 250 ms debounce
-└─ lock: final re-encrypt → vault.modify(decoy + ciphertext) →
-     setViewData(decoyBody, clear=true) → zero DEK → capture buffer reset
+│    (fresh editor state, no undo history); ciphertext re-computed on a 600 ms debounce
+├─ lock: final re-encrypt → coordinated vault.modify(decoy + ciphertext) →
+│    setViewData(decoyBody, clear=true) → zero owned DEK arrays → capture buffer reset
+└─ unload / reload handoff (onunload & registered patch cleanup, idempotent):
+     freeze canonical completed snapshot per TFile → cancel capture & timers →
+     zero all tracked owned DEK Uint8Arrays → revoke preview blob: URLs →
+     restore cover titles → nativeSetViewData(fullRaw, true) + view.data = fullRaw →
+     retain keyless save/load guards until already-submitted writes & retirement drain settle
 ```
+
+### 5.1 Synchronous unload handoff & durability boundary
+
+When Obsidian disables, reloads, or updates Veneer, `onunload()` cannot `await` asynchronous WebCrypto or disk operations before Obsidian restores native editor behavior. Veneer solves this with a two-part handoff:
+
+1. **Synchronous confidential state retirement:** Before `onunload()` returns, Veneer marks its owner token retiring, cancels `;;` capture buffers and re-encryption timers, zeroes every tracked owned DEK `Uint8Array` (and wipes any late in-flight Argon2id/KDF result on its first continuation), revokes active `blob:` image URLs, restores cover titles, and hydrates every open protected pane (both locked and unlocked) with the full serialized `decoy + newest already-completed ciphertext` via the captured native `setViewData(fullRaw, true)` and `view.data = fullRaw`. Passing `clear = true` wipes CodeMirror undo history so `Ctrl+Z` cannot recover plaintext after disable. If both the native setter and editor fallback fail to prove a view holds the safe document, Veneer marks that view save-blocked rather than permitting an unverified native save.
+2. **Keyless cross-reload write barrier:** A shared coordinator (`Symbol.for("veneer.viewLifecycle.v1")`, scoped by `App`/vault and `TFile`) orders any already-submitted host write ahead of the frozen retirement snapshot and subsequent native saves. A newly loaded plugin instance awaits `predecessorReady` before reading or attaching views.
+3. **Ordinary unload is not destruction:** Disabling or reloading Veneer never strips encrypted payloads, never clears the protected-note registry, and never deletes staged source images.
+4. **Strict durability boundary (unencrypted tail & force quit):** Because no new encryption starts during synchronous unload, edits that have not yet finished encryption at the moment of unload may be lost. Normally that window is the **600 ms** re-encryption debounce; it can be longer if encryption or image staging stalled or failed. If your newest edits matter before you intentionally disable, reload, or update Veneer, run `Veneer: Mask this note (return to cover)` or `Veneer: Panic: mask all protected notes` (`Ctrl+Shift+X`) and confirm masking completed without a failure notice first. Veneer also does not guarantee that a brand-new disk write completes if Obsidian or the OS is force-killed.
 
 Consequences that fall out of this design:
 
@@ -162,7 +177,7 @@ EditorState.transactionFilter.of(tr => {
 | Window blur | **On** | `window.onblur`, you alt-tab away, the note masks |
 | Tab / note switch | **On** | `active-leaf-change`, `file-open` workspace events |
 | Screen lock / sleep | **On** | Electron `powerMonitor` (`lock-screen`, `suspend`, `resume`) via `remote` |
-| App quit | Always | `before-quit` → maskAll (best effort; force-quit may skip, covered by nothing-ever-saved-plaintext) |
+| App quit | Always | `before-quit` → `maskAll` (best effort; force-quit cannot guarantee a new disk write completes or save an unencrypted debounce tail, though plaintext never touches disk) |
 | Panic chord | **Ctrl/Cmd+Shift+X** | instant mask of ALL open protected notes |
 
 **On lock, in order:** force save (encrypt current content) → swap editor content to decoy with `addToHistory:false` → wipe CM6 undo history → `DEK.fill(0)` → clear tainted clipboard → drop capture buffer.
@@ -301,8 +316,8 @@ What the plugin **can** achieve, "forensic-resistant": real content cryptographi
 Adapted from GrapheneOS's duress credential: theirs crypto-shreds hardware-bound keys in the Titan M2 secure element; ours crypto-shreds the wrapped DEKs. Same principle (NIST SP 800-88 Rev. 1 §2.6): destroy the small key, and every ciphertext copy anywhere, SSD over-provisioned blocks, Volume Shadow Copies, OneDrive history, git, becomes computationally unrecoverable. Overwriting files on modern SSDs is snake oil (wear leveling, TRIM is advisory); destroying keys is mathematics.
 
 - **Scope:** vault-wide. Duress is a whole-context event, one PIN shreds every protected note.
-- **Trigger:** typed via the same `;;` inline mechanism, at any note, in any state (locked or unlocked). Silent by design.
-- **Execution order (critical):** (1) zero all CM6 editor states, in-memory plaintexts, and DEK buffers, and kill the auto-save loop **first**; (2) then disk I/O, delete the external payload store (stealth mode) or rewrite each `.md` stripping payload comments (portable mode), and scrub the plugin's protected-note registry; (3) clear Chromium storage (`session.clearCache()` + `clearStorageData()` for localstorage/indexeddb/cachestorage); (4) the UI response is **byte-identical to a wrong password**, no dialog, no progress bar, nothing. An observer sees a failed unlock.
+- **Trigger:** typed via the same `;;` inline mechanism (`;;!PIN`), at any note, in any state (locked or unlocked). Silent by design.
+- **Execution order (critical):** (1) advance the lifecycle coordinator's destruction generation, quarantine guarded native saves, zero all owned DEK `Uint8Array` buffers, reset CM6 editor states to cover-only with cleared undo history, kill the auto-save/re-encryption loop, and wait for any already-submitted host writes to settle **first**; (2) then perform disk I/O through destruction-authorized queue entries, rewriting each protected `.md` file to cover-only (portable mode) and fencing/deleting stealth payload targets (even though stealth mode is not reachable in the current release), followed by scrubbing Veneer's protected-note registry; (3) **do not touch host-wide storage:** Veneer stores no secrets in browser web storage and never calls Electron's `clearCache()` or `clearStorageData()`, leaving Electron application caches, shared Chromium storage, Obsidian's workspace state, other community plugins' data, and other vaults untouched; (4) the UI response is **byte-identical to a wrong password**, no dialog, no progress bar, nothing. An observer sees a failed unlock.
 - **Setup safeguards:** PIN typed twice at setup; explicit, unavoidable legal warning. **Amended in implementation:** the PIN is 4-8 digits, numeric only, stored as salted SHA-256 and verified before any Argon2 attempt. Format separation is the collision guard (word passphrases can never equal a numeric PIN); the original edit-distance check was dropped because real passwords are never stored, leaving nothing to compare against.
 - **Guarantees (forward secrecy):** with the wrapped DEKs destroyed and the password uncompromised, no surviving ciphertext copy is recoverable, including copies made before the shred (pre-imaged disk, cloud history).
 - **What it cannot hide, the event:** the NTFS USN journal/MFT records deletions at that moment, and cloud history preserves the prior payload-bearing versions (existence, not content). Stated plainly in docs.
@@ -321,8 +336,8 @@ Adapted from GrapheneOS's duress credential: theirs crypto-shreds hardware-bound
 | `pagefile.sys` / `hiberfil.sys` (RAM residue) | No (OS-level) | Guidance: disable hibernation; BitLocker encrypts the pagefile |
 | Windows Search **AutoSummary** (first 1 KB of indexed files cached in plaintext in `Windows.db`) | Guidance | Hygiene Check walks the user through excluding the vault from indexing |
 | Windows Recall (Copilot+ OCR screenshots) | Yes | `setContentProtection(true)` while unlocked; recommend excluding Obsidian in Recall settings |
-| Electron Crashpad dumps (crash while unlocked) | Partial | Hygiene warning; duress clears; documented |
-| Chromium LevelDB `.log` (uncompressed transaction logs) | Partial | `clearStorageData()` on duress and on vault close |
+| Electron Crashpad dumps (crash while unlocked) | No (OS/process-level) | Hygiene warning; documented |
+| Chromium LevelDB `.log` / shared web storage | Not used by Veneer | Veneer stores no keys or plaintext in `localStorage` or `IndexedDB` and never calls `clearStorageData()` or `clearCache()`, leaving Obsidian and other plugins' storage untouched |
 | `workspace.json` / third-party plugin caches (Omnisearch etc.) | No (shared process) | Hygiene Check warns; recommend a minimal plugin set |
 | LNK files, jump lists, thumbnail cache | No (OS-level) | Documented |
 | USN journal shred-timing | No | Accepted: forward secrecy ≠ event deniability |
@@ -421,10 +436,10 @@ veener/
 | **5, Decoy system (templates)** | Template bank, topic weaving, protect wizard | Wizard E2E on sample notes |
 | **5b, LLM generator** | wllama runtime, consent + download + SHA-256 verify flow, generation + output validation, offline sandbox | QA: zero network calls after download, overlap-rejection test fires on seeded echo, 400-token / 30 s caps enforced, template fallback works with no model downloaded |
 | **6, Hardening** | Onboarding checklist, export guard, content protection, Hygiene Check, settings | Checklist gate works; PDF export blocked while unlocked |
-| **6b, Duress** | Destruction PIN capture (silent, wrong-password-identical UI), RAM-first shred ordering, registry scrub, `clearStorageData`, legal-warning setup flow | QA: post-shred disk grep finds no payload and no plaintext; shred UI indistinguishable from failed unlock; edit-distance rule blocks typo-PINs |
+| **6b, Duress** | Destruction PIN capture (silent, wrong-password-identical UI), RAM-first shred ordering, protected-file cover-only rewrite, scoped registry scrub (no global Electron cache or web-storage wipe), legal-warning setup flow | QA: post-shred disk grep finds no payload and no plaintext; shred UI indistinguishable from failed unlock; shared Electron storage and other plugins remain untouched |
 | **7, Release prep** | Full edge-case test matrix (§10), README with honest threat model, license | Every P0/P1 row has a passing test or a documented acceptance |
 
-**Hard rules for every phase:** no `as any`, no `@ts-ignore`; plaintext must never appear in a log line; every save path test asserts the disk bytes contain no plaintext.
+**Hard rules for every phase:** no `as any`, no `@ts-ignore`; plaintext must never appear in a log line; every save path test asserts the disk bytes contain no plaintext; plugin unload must synchronously sanitize open views and hand off the newest completed encrypted snapshot without retaining keys or stripping payloads; duress cleanup must remain strictly scoped to Veneer's own sessions, protected files, and registry.
 
 ---
 

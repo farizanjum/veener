@@ -35,6 +35,7 @@ export class ProtectWizard extends Modal {
 	private decoyText = "";
 	private busy = false;
 
+	/** Creates a protect-note wizard modal initialized to local generation when an LLM is available. */
 	constructor(
 		app: App,
 		private readonly deps: WizardDeps,
@@ -43,11 +44,13 @@ export class ProtectWizard extends Modal {
 		this.source = deps.llmAvailable ? "generate" : "template";
 	}
 
+	/** Weaves the initial template cover and renders the wizard UI when the modal opens. */
 	onOpen(): void {
 		this.decoyText = this.weaveCurrentTemplate();
 		this.render();
 	}
 
+	/** Weaves the currently selected decoy template using the configured interests and cover names. */
 	private weaveCurrentTemplate(): string {
 		const template =
 			DECOY_TEMPLATES.find((t) => t.id === this.templateId) ?? DECOY_TEMPLATES[0];
@@ -59,6 +62,7 @@ export class ProtectWizard extends Modal {
 		});
 	}
 
+	/** Renders the cover selection controls, live cover preview, and password confirmation fields. */
 	private render(): void {
 		const { contentEl } = this;
 		contentEl.empty();
@@ -246,7 +250,23 @@ export class ProtectWizard extends Modal {
 		);
 	}
 
+	/** Synchronously closes the protection wizard modal during plugin teardown. */
+	cancelAndClose(): void {
+		try {
+			if (typeof this.close === "function") {
+				this.close();
+			} else {
+				this.onClose();
+			}
+		} catch {
+			try {
+				this.onClose();
+			} catch {}
+		}
+	}
+
+	/** Clears the wizard DOM container when the modal closes. */
 	onClose(): void {
-		this.contentEl.empty();
+		this.contentEl?.empty?.();
 	}
 }

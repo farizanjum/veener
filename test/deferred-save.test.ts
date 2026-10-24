@@ -133,7 +133,6 @@ describe("installViewPatches deferred save replay", () => {
 					},
 					deleteStealth: async () => undefined,
 					clearRegistry: async () => undefined,
-					clearWebStorage: () => undefined,
 				},
 			).then((report) => {
 				shredSettled = true;

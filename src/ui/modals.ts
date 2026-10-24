@@ -5,6 +5,7 @@ import { isValidPinFormat, PIN_MAX_LENGTH, PIN_MIN_LENGTH } from "../shred/pin";
 export class PasswordModal extends Modal {
 	private resolve: ((value: string | null) => void) | null = null;
 
+	/** Creates a masked password prompt modal with the given heading. */
 	constructor(
 		app: App,
 		private readonly heading: string,
@@ -12,13 +13,17 @@ export class PasswordModal extends Modal {
 		super(app);
 	}
 
+	/** Opens the modal and resolves with the submitted password or `null` if cancelled. */
 	ask(): Promise<string | null> {
 		return new Promise((resolve) => {
 			this.resolve = resolve;
-			this.open();
+			if (typeof this.open === "function") {
+				this.open();
+			}
 		});
 	}
 
+	/** Renders the password input form and action buttons when the modal opens. */
 	onOpen(): void {
 		const { contentEl } = this;
 		contentEl.empty();
@@ -52,14 +57,34 @@ export class PasswordModal extends Modal {
 		input!.focus();
 	}
 
+	/** Resolves the pending password prompt with `value` and closes the modal. */
 	private submit(value: string | null): void {
 		this.resolve?.(value);
 		this.resolve = null;
 		this.close();
 	}
 
+	/** Synchronously resolves any pending prompt with `null` and closes the modal. */
+	cancelAndClose(): void {
+		const pending = this.resolve;
+		this.resolve = null;
+		pending?.(null);
+		try {
+			if (typeof this.close === "function") {
+				this.close();
+			} else {
+				this.onClose();
+			}
+		} catch {
+			try {
+				this.onClose();
+			} catch {}
+		}
+	}
+
+	/** Clears modal DOM content and resolves any unsettled prompt with `null`. */
 	onClose(): void {
-		this.contentEl.empty();
+		this.contentEl?.empty?.();
 		this.resolve?.(null);
 		this.resolve = null;
 	}
@@ -69,17 +94,40 @@ export class PasswordModal extends Modal {
 export class DuressPinModal extends Modal {
 	private resolve: ((value: string | null) => void) | null = null;
 
+	/** Creates a destruction PIN setup modal for `app`. */
 	constructor(app: App) {
 		super(app);
 	}
 
+	/** Opens the modal and resolves with the confirmed numeric PIN or `null` if cancelled. */
 	ask(): Promise<string | null> {
 		return new Promise((resolve) => {
 			this.resolve = resolve;
-			this.open();
+			if (typeof this.open === "function") {
+				this.open();
+			}
 		});
 	}
 
+	/** Synchronously resolves any pending PIN prompt with `null` and closes the modal. */
+	cancelAndClose(): void {
+		const pending = this.resolve;
+		this.resolve = null;
+		pending?.(null);
+		try {
+			if (typeof this.close === "function") {
+				this.close();
+			} else {
+				this.onClose();
+			}
+		} catch {
+			try {
+				this.onClose();
+			} catch {}
+		}
+	}
+
+	/** Renders the dual-entry destruction PIN setup form when the modal opens. */
 	onOpen(): void {
 		const { contentEl } = this;
 		contentEl.empty();
@@ -139,8 +187,9 @@ export class DuressPinModal extends Modal {
 		).addButton((button) => button.setButtonText("Set PIN").setCta().onClick(submit));
 	}
 
+	/** Clears modal DOM content and resolves any unsettled PIN prompt with `null`. */
 	onClose(): void {
-		this.contentEl.empty();
+		this.contentEl?.empty?.();
 		this.resolve?.(null);
 		this.resolve = null;
 	}

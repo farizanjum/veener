@@ -9,10 +9,16 @@ import {
 } from "../src/shred/duress";
 import { createFile, parseFileContent } from "../src/crypto/payload";
 
-function makeDeps(failOn?: string): { deps: ShredDeps; calls: string[] } {
+function makeDeps(failOn?: string): {
+	deps: ShredDeps;
+	calls: string[];
+	registered: Set<string>;
+} {
 	const calls: string[] = [];
+	const registered = new Set<string>(["a.md", "b.md", "b.enc"]);
 	return {
 		calls,
+		registered,
 		deps: {
 			zeroSessions: () => calls.push("zero"),
 			rewritePortable: async (path) => {
@@ -23,10 +29,14 @@ function makeDeps(failOn?: string): { deps: ShredDeps; calls: string[] } {
 				if (path === failOn) throw new Error("disk busy");
 				calls.push(`delete:${path}`);
 			},
-			clearRegistry: async () => {
+			clearRegistry: async (succeededPaths) => {
 				calls.push("registry");
+				if (succeededPaths) {
+					for (const p of succeededPaths) registered.delete(p);
+				} else {
+					registered.clear();
+				}
 			},
-			clearWebStorage: () => calls.push("webstorage"),
 		},
 	};
 }
@@ -34,7 +44,7 @@ function makeDeps(failOn?: string): { deps: ShredDeps; calls: string[] } {
 describe("executeShred", () => {
 	it("zeroes memory before any disk operation (RAM-first ordering)", async () => {
 		const { deps, calls } = makeDeps();
-		await executeShred(
+		const report = await executeShred(
 			[
 				{ path: "a.md", mode: "portable" },
 				{ path: "b.enc", mode: "stealth" },
@@ -43,7 +53,15 @@ describe("executeShred", () => {
 		);
 		expect(calls[0]).toBe("zero");
 		expect(calls.indexOf("registry")).toBeGreaterThan(calls.indexOf("rewrite:a.md"));
-		expect(calls.indexOf("webstorage")).toBeGreaterThan(calls.indexOf("registry"));
+		expect(calls.indexOf("registry")).toBeGreaterThan(calls.indexOf("delete:b.enc"));
+		expect(calls).toEqual(["zero", "rewrite:a.md", "delete:b.enc", "registry"]);
+		expect(report.steps).toEqual([
+			"zero-memory",
+			"rewrite:a.md",
+			"delete:b.enc",
+			"clear-registry",
+		]);
+		expect(report.steps).not.toContain("clear-webstorage");
 	});
 
 	it("rewrites portable targets and deletes stealth targets", async () => {
@@ -62,7 +80,7 @@ describe("executeShred", () => {
 	});
 
 	it("continues past a failing file", async () => {
-		const { deps, calls } = makeDeps("a.md");
+		const { deps, calls, registered } = makeDeps("a.md");
 		const report = await executeShred(
 			[
 				{ path: "a.md", mode: "portable" },
@@ -74,7 +92,15 @@ describe("executeShred", () => {
 		expect(report.processed).toBe(1);
 		expect(report.failures).toHaveLength(1);
 		expect(report.failures[0].path).toBe("a.md");
-		expect(calls[calls.length - 1]).toBe("webstorage");
+		expect(calls[calls.length - 1]).toBe("registry");
+		expect(registered.has("a.md")).toBe(true);
+		expect(registered.has("b.md")).toBe(false);
+		expect(report.steps).toEqual([
+			"zero-memory",
+			"failed:a.md",
+			"rewrite:b.md",
+			"clear-registry",
+		]);
 	});
 });
 
