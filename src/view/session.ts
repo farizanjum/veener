@@ -1257,7 +1257,7 @@ export class SessionManager {
 	 * Clears editor undo/redo history on `view` during fallback hydration so `Ctrl+Z`
 	 * cannot recover decrypted plaintext when `nativeSetViewData(fullRaw, true)` fails.
 	 */
-	private clearFallbackUndoHistory(view: MarkdownView, targetRaw: string): void {
+	private clearFallbackUndoHistory(view: MarkdownView): void {
 		try {
 			const viewWithClear = view as unknown as {
 				clear?: () => void;
@@ -1274,23 +1274,12 @@ export class SessionManager {
 			const editorWithHistory = view.editor as unknown as {
 				clearHistory?: () => void;
 				undoHistory?: unknown[];
-				cm?: {
-					state?: {
-						constructor?: { create?: (config: { doc: string }) => unknown };
-					};
-					setState?: (state: unknown) => void;
-				};
 			};
 			if (typeof editorWithHistory?.clearHistory === "function") {
 				editorWithHistory.clearHistory();
 			}
 			if (Array.isArray(editorWithHistory?.undoHistory)) {
 				editorWithHistory.undoHistory.length = 0;
-			}
-			const cm = editorWithHistory?.cm;
-			const stateCtor = cm?.state?.constructor;
-			if (cm && typeof cm.setState === "function" && stateCtor && typeof stateCtor.create === "function") {
-				cm.setState(stateCtor.create({ doc: targetRaw }));
 			}
 		} catch {}
 	}
@@ -1537,10 +1526,10 @@ export class SessionManager {
 					} else {
 						let fallbackError: unknown = null;
 						try {
-							this.clearFallbackUndoHistory(view, targetRaw);
+							this.clearFallbackUndoHistory(view);
 							view.editor?.setValue?.(targetRaw);
 							(view as unknown as { data: string }).data = targetRaw;
-							this.clearFallbackUndoHistory(view, targetRaw);
+							this.clearFallbackUndoHistory(view);
 							view.editor?.setValue?.(targetRaw);
 							(view as unknown as { data: string }).data = targetRaw;
 						} catch (error) {
