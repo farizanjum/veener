@@ -24,6 +24,7 @@ import {
 
 const EVIDENCE_DIR = path.resolve(process.cwd(), ".omo", "evidence", "issue-13");
 
+/** Ensures the `.omo/evidence/issue-13` output directory exists before writing evidence files. */
 function ensureEvidenceDir(): void {
 	fs.mkdirSync(EVIDENCE_DIR, { recursive: true });
 }

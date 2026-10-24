@@ -306,6 +306,7 @@ export default class VeneerPlugin extends Plugin {
 
 	private recoveryWarningShown = false;
 
+	/** Displays a one-time notice when Obsidian's File Recovery core plugin blocks unlocking. */
 	private warnFileRecoveryOnce(): void {
 		if (!this.isLive()) return;
 		if (this.recoveryWarningShown) return;
@@ -350,6 +351,7 @@ export default class VeneerPlugin extends Plugin {
 		}
 	}
 
+	/** Refreshes the status bar word counter for the currently active protected markdown view. */
 	private updateWordCounter(): void {
 		if (!this.isLive()) return;
 		const view = this.app.workspace.getActiveViewOfType(MarkdownView);
@@ -366,6 +368,7 @@ export default class VeneerPlugin extends Plugin {
 		this.wordCounter?.update(text, session.state);
 	}
 
+	/** Resolves the workspace `MarkdownView` owning the given CodeMirror `EditorState`, if any. */
 	private resolveMarkdownView(state: EditorState): MarkdownView | null {
 		if (!this.isLive()) return null;
 		const found: { view: MarkdownView | null } = { view: null };
@@ -481,6 +484,7 @@ export default class VeneerPlugin extends Plugin {
 		);
 	}
 
+	/** Registers all command palette actions and hotkeys for Veneer. */
 	private registerCommands(): void {
 		this.addCommand({
 			id: "panic-mask",
@@ -567,6 +571,7 @@ export default class VeneerPlugin extends Plugin {
 		});
 	}
 
+	/** Registers the file explorer context menu item for protecting markdown notes. */
 	private registerFileMenu(): void {
 		this.registerEvent(
 			this.app.workspace.on("file-menu", (menu, file) => {
@@ -585,6 +590,7 @@ export default class VeneerPlugin extends Plugin {
 		);
 	}
 
+	/** Registers workspace and vault event listeners for editor changes, renames, deletions, and active leaf changes. */
 	private registerFileTracking(): void {
 		this.registerEvent(
 			this.app.workspace.on("editor-change", (_editor, info) => {
@@ -733,6 +739,7 @@ export default class VeneerPlugin extends Plugin {
 		wizard.open();
 	}
 
+	/** Shows `notice` and returns true if `file` currently has an unlocked or locking session. */
 	private abortIfLiveSession(file: TFile, notice: string): boolean {
 		if (!this.sessions.hasLiveSession(file.path)) return false;
 		if (this.isLive()) {
@@ -1125,36 +1132,50 @@ export default class VeneerPlugin extends Plugin {
 											}
 										});
 									} catch {}
+									const coordinator = this.getCoordinator();
 									for (const v of matchingViews) {
 										try {
 											const currentText =
 												v.editor && typeof v.editor.getValue === "function"
 													? v.editor.getValue()
 													: ((v as unknown as { data?: string }).data ?? "");
+											const backingText =
+												(v as unknown as { data?: string }).data ?? "";
 											if (
-												parseFileContent(currentText) !== null ||
-												currentText.length === 0
+												coordinator.isViewUnprotectReconciled(
+													this.app,
+													file,
+													v,
+												) &&
+												parseFileContent(currentText) === null &&
+												parseFileContent(backingText) === null
 											) {
-												if (rawSet.length >= 3) {
-													(
-														rawSet as (
-															view: MarkdownView,
-															data: string,
-															clear: boolean,
-														) => void
-													)(v, plaintextWithNewline, true);
-												} else {
-													(
-														rawSet as (
-															this: MarkdownView,
-															data: string,
-															clear: boolean,
-														) => void
-													).call(v, plaintextWithNewline, true);
-												}
-												(v as unknown as { data: string }).data =
-													plaintextWithNewline;
+												continue;
 											}
+											if (rawSet.length >= 3) {
+												(
+													rawSet as (
+														view: MarkdownView,
+														data: string,
+														clear: boolean,
+													) => void
+												)(v, plaintextWithNewline, true);
+											} else {
+												(
+													rawSet as (
+														this: MarkdownView,
+														data: string,
+														clear: boolean,
+													) => void
+												).call(v, plaintextWithNewline, true);
+											}
+											(v as unknown as { data: string }).data =
+												plaintextWithNewline;
+											coordinator.markViewUnprotectReconciled(
+												this.app,
+												file,
+												v,
+											);
 										} catch {}
 									}
 								};
@@ -1188,6 +1209,11 @@ export default class VeneerPlugin extends Plugin {
 					const detached = this.sessions.discardAndDetach(session);
 					if (detached === true && session.view.file === file) {
 						session.view.setViewData(realText, true);
+						this.getCoordinator().markViewUnprotectReconciled(
+							this.app,
+							file,
+							session.view,
+						);
 					}
 				}
 				this.sessions.clearFileAuthority(file);
@@ -1209,6 +1235,7 @@ export default class VeneerPlugin extends Plugin {
 		}
 	}
 
+	/** Derives and persists a new salted hash record for the destruction PIN. */
 	async setDuressPin(pin: string): Promise<void> {
 		const record = await newPinRecord(pin);
 		if (!this.isLive()) return;
@@ -1217,12 +1244,14 @@ export default class VeneerPlugin extends Plugin {
 		await this.saveSettings();
 	}
 
+	/** Clears any configured destruction PIN salt and hash from plugin settings. */
 	async clearDuressPin(): Promise<void> {
 		this.settings.duressPinSalt = null;
 		this.settings.duressPinHash = null;
 		await this.saveSettings();
 	}
 
+	/** Constructs a `DecoyGenerator` wired to the active local LLM runtime and fallback templates. */
 	private buildGenerator(): DecoyGenerator {
 		const runtime = this.settings.modelDownloaded ? this.buildRuntime() : null;
 		return new DecoyGenerator({
@@ -1240,6 +1269,7 @@ export default class VeneerPlugin extends Plugin {
 		});
 	}
 
+	/** Selects and constructs the preferred local LLM runtime (`NativeRuntime` or `WllamaRuntime`). */
 	private buildRuntime(): LlmRuntime {
 		const model = activeModel(this.settings);
 		const adapter = this.app.vault.adapter as unknown as { getBasePath?: () => string };
@@ -1261,6 +1291,7 @@ export default class VeneerPlugin extends Plugin {
 		return selectRuntime(process.platform, executableExists, native, wllama);
 	}
 
+	/** Checks on-disk existence, byte size, and partial download progress for the active model file. */
 	modelFileStatus(): {
 		exists: boolean;
 		sizeBytes: number;
@@ -1283,6 +1314,7 @@ export default class VeneerPlugin extends Plugin {
 		return { exists, sizeBytes, fileName: model.file, partial: exists ? null : partialProgress(abs) };
 	}
 
+	/** Lists all non-empty `.gguf` model files currently present in the plugin models directory. */
 	downloadedModels(): { fileName: string; sizeBytes: number; modelId: ModelId | "custom" }[] {
 		const adapter = this.app.vault.adapter as unknown as { getBasePath?: () => string };
 		const root = adapter.getBasePath?.() ?? "";
@@ -1306,6 +1338,7 @@ export default class VeneerPlugin extends Plugin {
 		return results;
 	}
 
+	/** Deletes the active model file and any partial download artifacts, then rebuilds the generator. */
 	async deleteModelFile(): Promise<void> {
 		const model = activeModel(this.settings);
 		const adapter = this.app.vault.adapter as unknown as { getBasePath?: () => string };
@@ -1323,6 +1356,7 @@ export default class VeneerPlugin extends Plugin {
 		this.rebuildGenerator();
 	}
 
+	/** Ensures the plugin models directory exists and returns its absolute and vault-relative paths. */
 	async modelsDir(): Promise<{ abs: string; rel: string }> {
 		const rel = `${this.app.vault.configDir}/plugins/deocy/models`;
 		await this.app.vault.adapter.mkdir(rel);
@@ -1330,10 +1364,12 @@ export default class VeneerPlugin extends Plugin {
 		return { abs: `${adapter.getBasePath?.() ?? ""}/${rel}`, rel };
 	}
 
+	/** Removes a model file at the given vault-relative path via the vault adapter. */
 	async removeModelFile(rel: string): Promise<void> {
 		await this.app.vault.adapter.remove(rel);
 	}
 
+	/** Unloads the current decoy generator and constructs a warmed-up replacement when the plugin is live. */
 	rebuildGenerator(): void {
 		if (!this.isLive()) return;
 		void this.generator?.unload()?.catch((error) => {
@@ -1343,6 +1379,7 @@ export default class VeneerPlugin extends Plugin {
 		this.generator.warmup();
 	}
 
+	/** Copies a local `.gguf` file into the models directory, computes its SHA-256 digest, and activates it. */
 	async importLocalModelFlow(
 		sourcePath: string,
 	): Promise<{ ok: boolean; sha256: string | null; error: string | null }> {
@@ -1368,6 +1405,7 @@ export default class VeneerPlugin extends Plugin {
 		}
 	}
 
+	/** Generates a short sample decoy cover using the active generator to verify model readiness. */
 	async testModelFlow(): Promise<string> {
 		const result = await this.generator.generate(
 			"auto",
@@ -1383,12 +1421,14 @@ export default class VeneerPlugin extends Plugin {
 		return `[${result.source}] ${result.text.trim().slice(0, 400)}`;
 	}
 
+	/** Loads persisted plugin settings while stripping the registry `entries` map. */
 	async loadSettings(): Promise<void> {
 		const raw = (await this.loadData()) as (Partial<VeneerSettings> & { entries?: unknown }) | null;
 		const { entries: _entries, ...rest } = raw ?? {};
 		this.settings = { ...DEFAULT_SETTINGS, ...rest };
 	}
 
+	/** Persists plugin settings together with the current protected note registry entries. */
 	async saveSettings(): Promise<void> {
 		await this.saveData({
 			...this.settings,

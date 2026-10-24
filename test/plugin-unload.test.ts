@@ -51,6 +51,7 @@ import {
 
 const EVIDENCE_DIR = path.resolve(process.cwd(), ".omo", "evidence", "issue-13");
 
+/** Ensures the `.omo/evidence/issue-13` output directory exists before writing evidence files. */
 function ensureEvidenceDir(): void {
 	fs.mkdirSync(EVIDENCE_DIR, { recursive: true });
 }
@@ -923,6 +924,10 @@ describe("VeneerPlugin.onunload and registered cleanup lifecycle regressions (Is
 			expect(harness.disk.get(file.path)).toBe(editedOrdinaryLive);
 			expect(parseFileContent(harness.disk.get(file.path) ?? "")).toBeNull();
 
+			pane.typeInEditor("");
+			await pane.view.save();
+			expect(harness.disk.get(file.path)).toBe("");
+
 			harness.restorePrototype();
 			activeHarness = null;
 		}
@@ -981,6 +986,10 @@ describe("VeneerPlugin.onunload and registered cleanup lifecycle regressions (Is
 
 			expect(harness.disk.get(file.path)).toBe(editedOrdinaryAfterUnload);
 			expect(parseFileContent(harness.disk.get(file.path) ?? "")).toBeNull();
+
+			pane.typeInEditor("");
+			await pane.view.save();
+			expect(harness.disk.get(file.path)).toBe("");
 
 			harness.restorePrototype();
 			activeHarness = null;
@@ -1091,12 +1100,15 @@ describe("VeneerPlugin.onunload and registered cleanup lifecycle regressions (Is
 		}
 
 		{
-			const harness = createPluginUnloadHarness(VeneerPlugin);
+			const harness = createPluginUnloadHarness(VeneerPlugin, {
+				defaultNativeSaveMode: "backing-data",
+			});
 			activeHarness = harness;
 
-			const { file, pane, session } = await harness.seedProtectedNote({
+			const { file, pane, session, initialFileContent } = await harness.seedProtectedNote({
 				path: "ShreddedCoverEdit.md",
 				realText: SECRET_P0,
+				saveMode: "backing-data",
 			});
 			await harness.plugin.registry.add(file.path, {
 				noteId: session.originalPayload.note_id,
@@ -1105,6 +1117,11 @@ describe("VeneerPlugin.onunload and registered cleanup lifecycle regressions (Is
 			});
 
 			await (harness.plugin as unknown as { runShred: () => Promise<void> }).runShred();
+			expect(harness.disk.get(file.path)).toBe(`${DEFAULT_DECOY}\n`);
+
+			(pane.view as unknown as { data: string }).data = initialFileContent;
+			await pane.view.save();
+			expect(parseFileContent(harness.disk.get(file.path) ?? "")).toBeNull();
 			expect(harness.disk.get(file.path)).toBe(`${DEFAULT_DECOY}\n`);
 
 			const newCoverEdits = `${EDITED_DECOY}\n- oat milk`;

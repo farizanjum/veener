@@ -233,6 +233,7 @@ export class SessionManager {
 	 */
 	private readonly ownedDeks = new Set<Uint8Array>();
 
+	/** Creates a `SessionManager` bound to `app` and registered with the shared `ViewLifecycleCoordinator`. */
 	constructor(
 		private readonly app: App,
 		private readonly hooks: SessionHooks,
@@ -1473,6 +1474,12 @@ export class SessionManager {
 					}
 
 					if (nativeSetterSucceeded) {
+						if (
+							disposition?.kind === "unprotected" &&
+							disposition.plaintextContent !== undefined
+						) {
+							this.coordinator.markViewUnprotectReconciled(this.app, file, view);
+						}
 						this.coordinator.clearViewSaveBlocked(this.app, view);
 						viewOutcomes.push({
 							view,
@@ -1491,6 +1498,12 @@ export class SessionManager {
 						}
 
 						if (fallbackError === null && this.isViewProvenSafe(view, targetRaw)) {
+							if (
+								disposition?.kind === "unprotected" &&
+								disposition.plaintextContent !== undefined
+							) {
+								this.coordinator.markViewUnprotectReconciled(this.app, file, view);
+							}
 							this.coordinator.clearViewSaveBlocked(this.app, view);
 							viewOutcomes.push({
 								view,
@@ -3153,7 +3166,9 @@ export class SessionManager {
 	}
 }
 
+/** Sentinel error thrown internally when a queued task is declined by a retired or epoch-fenced manager. */
 class DeclinedByManagerError extends Error {
+	/** Initializes the sentinel error message for a declined manager task. */
 	constructor() {
 		super("Declined by retired or epoch-fenced SessionManager");
 	}

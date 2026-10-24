@@ -167,6 +167,7 @@ interface FileQueueRecord {
 	}>;
 	quarantinedForDestruction: boolean;
 	revisionCounter: number;
+	reconciledUnprotectedViews: WeakSet<MarkdownView>;
 	readonly pendingCommands: Map<symbol, PendingCommandRecord>;
 }
 
@@ -255,6 +256,7 @@ export class ViewLifecycleCoordinator {
 				barrierWaiters: [],
 				quarantinedForDestruction: scope.destructionTargetFiles.has(file) || scope.destructionTargetPaths.has(file.path),
 				revisionCounter: 0,
+				reconciledUnprotectedViews: new WeakSet<MarkdownView>(),
 				pendingCommands: new Map<symbol, PendingCommandRecord>(),
 			};
 			scope.filesByRef.set(file, record);
@@ -374,6 +376,9 @@ export class ViewLifecycleCoordinator {
 			record.revisionCounter = disposition.revision;
 		}
 		record.disposition = disposition;
+		if (disposition.kind === "protected" || disposition.kind === "unprotected") {
+			record.reconciledUnprotectedViews = new WeakSet<MarkdownView>();
+		}
 		if (
 			record.frozenSnapshot !== null &&
 			disposition.kind === "protected" &&
@@ -393,6 +398,27 @@ export class ViewLifecycleCoordinator {
 			record.frozenSnapshot = null;
 		}
 		return true;
+	}
+
+	/**
+	 * Marks `view` as having been reconciled with the unprotected plaintext for `file`,
+	 * so subsequent user edits (including clearing the note to empty string) are never
+	 * overwritten with the initial unprotect snapshot.
+	 */
+	markViewUnprotectReconciled(app: object, file: TFile, view: MarkdownView): void {
+		const scope = this.getOrCreateVaultScope(app);
+		const record = this.getOrCreateFileRecord(scope, file);
+		record.reconciledUnprotectedViews.add(view);
+	}
+
+	/**
+	 * Returns true once `view` has already been hydrated with the unprotected plaintext for `file`.
+	 */
+	isViewUnprotectReconciled(app: object, file: TFile, view: MarkdownView): boolean {
+		const scope = this.vaultMap.get(app);
+		if (!scope) return false;
+		const record = scope.filesByRef.get(file);
+		return record ? record.reconciledUnprotectedViews.has(view) : false;
 	}
 
 	/**
@@ -452,6 +478,7 @@ export class ViewLifecycleCoordinator {
 		const record = scope.filesByRef.get(file);
 		if (!record) return;
 		record.disposition = null;
+		record.reconciledUnprotectedViews = new WeakSet<MarkdownView>();
 		if (record.barrierStatus !== "draining") {
 			record.frozenSnapshot = null;
 		}
@@ -1222,9 +1249,16 @@ export class ViewLifecycleCoordinator {
 		if (!record) return false;
 
 		if (record.disposition?.kind === "unprotected" && record.disposition.plaintextContent !== undefined) {
-			rawSetViewData.call(view, record.disposition.plaintextContent, clear);
-			(view as unknown as { data: string }).data = record.disposition.plaintextContent;
-			return true;
+			if (
+				!record.reconciledUnprotectedViews.has(view) ||
+				parseFileContent(options.incomingData) !== null
+			) {
+				rawSetViewData.call(view, record.disposition.plaintextContent, clear);
+				(view as unknown as { data: string }).data = record.disposition.plaintextContent;
+				record.reconciledUnprotectedViews.add(view);
+				return true;
+			}
+			return false;
 		}
 
 		if (
@@ -1305,20 +1339,25 @@ export class ViewLifecycleCoordinator {
 					return;
 				}
 				if (record.disposition?.kind === "destroyed") {
-					const currentText =
-						view.editor && typeof view.editor.getValue === "function"
-							? view.editor.getValue()
-							: (view as unknown as { data?: string }).data ?? "";
-					if (parseFileContent(currentText) !== null) {
-						const sanitized =
-							record.disposition.decoyBody !== undefined
-								? `${record.disposition.decoyBody}\n`
-								: stripDraftCacheBlocks(currentText);
-						if (syncViewData) {
-							syncViewData(view, sanitized);
-						} else {
-							(view as unknown as { data: string }).data = sanitized;
-						}
+					const hasEditor = view.editor && typeof view.editor.getValue === "function";
+					const editorText = hasEditor
+						? view.editor.getValue()
+						: ((view as unknown as { data?: string }).data ?? "");
+					const backingText = (view as unknown as { data?: string }).data ?? "";
+					const hasPayload =
+						parseFileContent(editorText) !== null ||
+						parseFileContent(backingText) !== null;
+					const target = hasPayload
+						? record.disposition.decoyBody !== undefined
+							? `${record.disposition.decoyBody}\n`
+							: stripDraftCacheBlocks(
+									parseFileContent(editorText) !== null ? editorText : backingText,
+								)
+						: editorText;
+					if (syncViewData) {
+						syncViewData(view, target);
+					} else {
+						(view as unknown as { data: string }).data = target;
 					}
 					await rawSave.call(view, clear);
 					const hasPendingGuardedSaves = record.queue.some(
@@ -1333,19 +1372,24 @@ export class ViewLifecycleCoordinator {
 					record.disposition?.kind === "unprotected" &&
 					record.disposition.plaintextContent !== undefined
 				) {
-					const editorText =
-						view.editor && typeof view.editor.getValue === "function"
-							? view.editor.getValue()
-							: ((view as unknown as { data?: string }).data ?? "");
-					const target =
-						parseFileContent(editorText) !== null || editorText.length === 0
-							? record.disposition.plaintextContent
-							: editorText;
+					const hasEditor = view.editor && typeof view.editor.getValue === "function";
+					const editorText = hasEditor
+						? view.editor.getValue()
+						: ((view as unknown as { data?: string }).data ?? "");
+					const backingText = (view as unknown as { data?: string }).data ?? "";
+					const needsInitialReconcile =
+						!record.reconciledUnprotectedViews.has(view) ||
+						parseFileContent(editorText) !== null ||
+						parseFileContent(backingText) !== null;
+					const target = needsInitialReconcile
+						? record.disposition.plaintextContent
+						: editorText;
 					if (syncViewData) {
 						syncViewData(view, target);
 					} else {
 						(view as unknown as { data: string }).data = target;
 					}
+					record.reconciledUnprotectedViews.add(view);
 					await rawSave.call(view, clear);
 					const hasPendingGuardedSaves = record.queue.some(
 						(entry) => !entry.cancelledBeforeSubmit && entry.kind === "native-save-guard",
@@ -1615,7 +1659,6 @@ export class ViewLifecycleCoordinator {
 		if (record.disposition?.kind === "unprotected" && record.disposition.plaintextContent !== undefined) {
 			if (
 				fallbackEditorText !== undefined &&
-				fallbackEditorText.length > 0 &&
 				parseFileContent(fallbackEditorText) === null
 			) {
 				return fallbackEditorText;

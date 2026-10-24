@@ -15,6 +15,7 @@ export class LockEngine {
 	private stopped = false;
 	readonly clipboard = new ClipboardGuard();
 
+	/** Creates a `LockEngine` governing automatic masking triggers and clipboard protection for `sessions`. */
 	constructor(
 		private readonly plugin: Plugin,
 		private readonly workspace: Workspace,

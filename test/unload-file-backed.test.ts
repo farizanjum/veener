@@ -100,10 +100,12 @@ interface FailureInjectionRecord {
 const fileBackedOutcomes: FileBackedVerificationRecord[] = [];
 const failureOutcomes: FailureInjectionRecord[] = [];
 
+/** Computes the hex-encoded SHA-256 digest of `content`. */
 function sha256Hex(content: string | Buffer): string {
 	return crypto.createHash("sha256").update(content).digest("hex");
 }
 
+/** Checks whether `raw` contains any plaintext body, real title, or dirty tail sentinel strings. */
 function containsAnySentinel(raw: string): {
 	readonly hasPlaintext: boolean;
 	readonly hasTitle: boolean;
@@ -143,6 +145,7 @@ interface FileBackedHarness {
 	readonly cleanup: () => void;
 }
 
+/** Creates a `PluginUnloadHarness` backed by real files inside `tempDir` on the OS filesystem. */
 function createFileBackedPluginHarness(
 	tempDir: string,
 	options?: PluginUnloadHarnessOptions,

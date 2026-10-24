@@ -21,10 +21,12 @@ import {
 
 const EVIDENCE_DIR = path.resolve(process.cwd(), ".omo", "evidence", "issue-13");
 
+/** Ensures the `.omo/evidence/issue-13` output directory exists before writing evidence files. */
 function ensureEvidenceDir(): void {
 	fs.mkdirSync(EVIDENCE_DIR, { recursive: true });
 }
 
+/** Asserts that `arr` is a non-empty `Uint8Array` whose bytes have all been zeroed. */
 function assertAllBytesZero(arr: Uint8Array | null | undefined, label: string): void {
 	expect(arr, `${label} must be defined`).toBeDefined();
 	expect(arr, `${label} must not be null`).not.toBeNull();

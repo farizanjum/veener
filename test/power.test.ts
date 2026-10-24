@@ -31,6 +31,7 @@ interface MockElectronBridge {
 	readonly restore: () => void;
 }
 
+/** Installs a configurable `electron` CJS module mock and returns spies and storage sentinels. */
 function installElectronMock(options?: {
 	readonly mode?: "working" | "absent-module" | "absent-remote" | "no-remove-listener";
 	readonly throwOnContentProtection?: boolean;

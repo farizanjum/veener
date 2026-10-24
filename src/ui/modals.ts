@@ -5,6 +5,7 @@ import { isValidPinFormat, PIN_MAX_LENGTH, PIN_MIN_LENGTH } from "../shred/pin";
 export class PasswordModal extends Modal {
 	private resolve: ((value: string | null) => void) | null = null;
 
+	/** Creates a masked password prompt modal with the given heading. */
 	constructor(
 		app: App,
 		private readonly heading: string,
@@ -56,6 +57,7 @@ export class PasswordModal extends Modal {
 		input!.focus();
 	}
 
+	/** Resolves the pending password prompt with `value` and closes the modal. */
 	private submit(value: string | null): void {
 		this.resolve?.(value);
 		this.resolve = null;
@@ -92,6 +94,7 @@ export class PasswordModal extends Modal {
 export class DuressPinModal extends Modal {
 	private resolve: ((value: string | null) => void) | null = null;
 
+	/** Creates a destruction PIN setup modal for `app`. */
 	constructor(app: App) {
 		super(app);
 	}
