@@ -64,16 +64,19 @@ export default class VeneerPlugin extends Plugin {
 	private teardownDone = false;
 	private activeModals?: Set<ClosableModal>;
 
+	/** Returns the shared `ViewLifecycleCoordinator` from the active session manager or global singleton. */
 	private getCoordinator(): ViewLifecycleCoordinator {
 		return this.sessions ? this.sessions.getCoordinator() : getSharedLifecycleCoordinator();
 	}
 
+	/** Returns true while this plugin instance is active and has not entered teardown or session disposal. */
 	private isLive(): boolean {
 		if (this.isShuttingDown || this.teardownDone) return false;
 		if (this.sessions && this.sessions.isDisposed()) return false;
 		return true;
 	}
 
+	/** Tracks an open modal so it can be synchronously cancelled and closed during plugin teardown. */
 	private trackModal<T extends ClosableModal>(modal: T): T {
 		if (!this.activeModals) {
 			this.activeModals = new Set<ClosableModal>();
@@ -87,6 +90,7 @@ export default class VeneerPlugin extends Plugin {
 		return modal;
 	}
 
+	/** Synchronously cancels and closes all currently tracked open modals during teardown. */
 	private closeTrackedModals(): void {
 		if (!this.activeModals || this.activeModals.size === 0) return;
 		const openModals = [...this.activeModals];
@@ -106,6 +110,7 @@ export default class VeneerPlugin extends Plugin {
 		}
 	}
 
+	/** Initializes plugin state, lifecycle coordination, view patches, lock engine, and commands. */
 	async onload(): Promise<void> {
 		this.isShuttingDown = false;
 		this.teardownDone = false;
@@ -208,6 +213,10 @@ export default class VeneerPlugin extends Plugin {
 		this.addSettingTab(new VeneerSettingTab(this.app, this));
 	}
 
+	/**
+	 * Synchronously retires sessions, hands off open views to safe snapshots, closes modals,
+	 * and stops timers and background resources. Idempotent across repeated calls.
+	 */
 	teardown(): ShutdownHandoffResult | null {
 		this.isShuttingDown = true;
 
@@ -290,6 +299,7 @@ export default class VeneerPlugin extends Plugin {
 		return handoff;
 	}
 
+	/** Obsidian lifecycle hook invoked when the plugin is disabled or unloaded. */
 	onunload(): void {
 		this.teardown();
 	}
@@ -303,6 +313,7 @@ export default class VeneerPlugin extends Plugin {
 		new Notice("Veneer: unlock blocked. Disable the File Recovery core plugin first (Settings > Core plugins).");
 	}
 
+	/** Attaches locked sessions to any already-open markdown views once predecessor retirement settles. */
 	private async attachAlreadyOpenViews(): Promise<void> {
 		if (!this.isLive()) return;
 		const coordinator = this.getCoordinator();
@@ -368,6 +379,7 @@ export default class VeneerPlugin extends Plugin {
 		return found.view;
 	}
 
+	/** Handles an in-editor captured trigger candidate, routing `!` prefixes to duress verification or unlocking the session. */
 	private async handleCandidate(
 		session: ViewSession,
 		secret: string,
@@ -391,6 +403,7 @@ export default class VeneerPlugin extends Plugin {
 		await this.sessions.unlock(session, secret);
 	}
 
+	/** Executes emergency duress destruction across all registered protected notes. */
 	private async runShred(): Promise<void> {
 		const coordinator = this.getCoordinator();
 		const targets: ShredTarget[] = this.registry
@@ -618,6 +631,7 @@ export default class VeneerPlugin extends Plugin {
 		);
 	}
 
+	/** Opens the protection wizard for `file` and encrypts its content behind a decoy cover. */
 	private async protectFile(file: TFile): Promise<void> {
 		if (!this.isLive()) return;
 		if (file.extension !== "md") {
@@ -727,6 +741,7 @@ export default class VeneerPlugin extends Plugin {
 		return true;
 	}
 
+	/** Generates and persists a fresh decoy cover for an already-protected note. */
 	private async refreshDecoy(file: TFile): Promise<void> {
 		if (!this.isLive()) return;
 		const coordinator = this.getCoordinator();
@@ -850,6 +865,7 @@ export default class VeneerPlugin extends Plugin {
 		}
 	}
 
+	/** Renames `file` to match `rawTitle` (sanitized), appending a numeric suffix on collision. */
 	private async retitleToFile(file: TFile, rawTitle: string): Promise<void> {
 		if (!this.isLive()) return;
 		const title = sanitizeTitle(rawTitle, "Cover note");
@@ -865,6 +881,7 @@ export default class VeneerPlugin extends Plugin {
 		}
 	}
 
+	/** Prompts for a password via modal and unlocks the active markdown view's session. */
 	private async unlockViaModal(): Promise<void> {
 		if (!this.isLive()) return;
 		const view = this.app.workspace.getActiveViewOfType(MarkdownView);
@@ -889,6 +906,7 @@ export default class VeneerPlugin extends Plugin {
 		await this.sessions.unlock(session, password);
 	}
 
+	/** Prompts for current and new passwords via modal and rotates the note's KEK wrapper. */
 	private async changePasswordViaModal(): Promise<void> {
 		if (!this.isLive()) return;
 		const file = this.app.workspace.getActiveFile();
@@ -1013,6 +1031,7 @@ export default class VeneerPlugin extends Plugin {
 		}
 	}
 
+	/** Permanently decrypts a protected note, restores its embedded images, and detaches its sessions. */
 	private async unprotectViaModal(): Promise<void> {
 		if (!this.isLive()) return;
 		const file = this.app.workspace.getActiveFile();
@@ -1085,11 +1104,11 @@ export default class VeneerPlugin extends Plugin {
 							commandId: cmdId,
 							onCommitted: async () => {
 								committedAcrossRetirement = true;
-								this.sessions.publishCommandCommit(file, {
-									kind: "unprotect",
-									plaintextContent: plaintextWithNewline,
-								});
 								if (!this.isLive()) {
+									this.sessions.publishCommandCommit(file, {
+										kind: "unprotect",
+										plaintextContent: plaintextWithNewline,
+									});
 									const rawSet = this.sessions.getCapturedNativeSetViewData();
 									if (rawSet) {
 										const matchingViews = new Set<MarkdownView>();
@@ -1130,6 +1149,8 @@ export default class VeneerPlugin extends Plugin {
 											} catch {}
 										}
 									}
+								} else {
+									this.sessions.clearFileAuthority(file);
 								}
 								await this.registry.remove(file.path);
 							},
@@ -1156,6 +1177,7 @@ export default class VeneerPlugin extends Plugin {
 						session.view.setViewData(realText, true);
 					}
 				}
+				this.sessions.clearFileAuthority(file);
 			} finally {
 				releasePath();
 				this.sessions.finishCommand(file, cmdId);

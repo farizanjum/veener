@@ -22,10 +22,12 @@ export class LockEngine {
 		private readonly settings: () => VeneerSettings,
 	) {}
 
+	/** Returns true once this lock engine has been stopped or its session manager is disposed. */
 	isStopped(): boolean {
 		return this.stopped || this.sessions.isDisposed();
 	}
 
+	/** Registers DOM/workspace mask listeners, power monitoring, and the initial idle timer. */
 	start(): void {
 		if (this.sessions.isDisposed()) return;
 		this.stopped = false;
@@ -67,6 +69,7 @@ export class LockEngine {
 		this.armIdleTimer();
 	}
 
+	/** Stops idle timers, removes OS power listeners, and disables OS content protection. */
 	stop(): void {
 		this.stopped = true;
 		if (this.idleTimer !== null) {
@@ -78,6 +81,7 @@ export class LockEngine {
 		setContentProtection(false);
 	}
 
+	/** Resets the inactivity countdown timer that masks all sessions upon expiration. */
 	armIdleTimer(): void {
 		if (this.isStopped()) return;
 		if (this.idleTimer !== null) clearTimeout(this.idleTimer);
@@ -88,6 +92,7 @@ export class LockEngine {
 		}, timeoutMs);
 	}
 
+	/** Masks all unlocked sessions, clears any tainted clipboard content, and updates content protection. */
 	async maskAll(reason: string): Promise<void> {
 		if (this.isStopped()) return;
 		const hadUnlocked = this.sessions.all().some((s) => s.state === "unlocked");
@@ -112,12 +117,14 @@ export class LockEngine {
 		void this.maskAll("panic");
 	}
 
+	/** Rearms the idle timer and enables window content protection when a session unlocks. */
 	onSessionUnlocked(): void {
 		if (this.isStopped()) return;
 		this.armIdleTimer();
 		this.applyContentProtection();
 	}
 
+	/** Synchronizes OS-level screenshot/window capture protection with current session state. */
 	private applyContentProtection(): void {
 		if (this.isStopped()) {
 			setContentProtection(false);

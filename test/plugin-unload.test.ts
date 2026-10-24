@@ -895,4 +895,286 @@ describe("VeneerPlugin.onunload and registered cleanup lifecycle regressions (Is
 			"utf8",
 		);
 	}, 20000);
+
+	it("releases terminal dispositions after unprotect/shred, reconciles frozen P1 over committed P0 on successor attach, avoids outer-wrapper recursion across reloads, and orders guarded save behind in-flight enqueueWrite", async () => {
+		{
+			const harness = createPluginUnloadHarness(VeneerPlugin);
+			activeHarness = harness;
+
+			const { file, pane } = await harness.seedProtectedNote({
+				path: "LiveUnprotectEdit.md",
+				realText: SECRET_P0,
+			});
+			await harness.plugin.registry.add(file.path, {
+				noteId: "note-live-unprotect",
+				addedAt: 1,
+				mode: "portable",
+			});
+			vi.spyOn(PasswordModal.prototype, "ask").mockResolvedValueOnce(TEST_PASSWORD);
+
+			await (
+				harness.plugin as unknown as { unprotectViaModal: () => Promise<void> }
+			).unprotectViaModal();
+
+			const editedOrdinaryLive = `${SECRET_P0}\n\nNew ordinary paragraph after live unprotect.`;
+			pane.typeInEditor(editedOrdinaryLive);
+			await pane.view.save();
+
+			expect(harness.disk.get(file.path)).toBe(editedOrdinaryLive);
+			expect(parseFileContent(harness.disk.get(file.path) ?? "")).toBeNull();
+
+			harness.restorePrototype();
+			activeHarness = null;
+		}
+
+		{
+			const unprotectGate = createDeferred<void>();
+			const unprotectStarted = createDeferred<void>();
+			let holdModify = true;
+
+			const harness = createPluginUnloadHarness(VeneerPlugin, {
+				onModifyStart: (targetPath) => {
+					if (targetPath === "UnloadUnprotectEdit.md" && holdModify) {
+						unprotectStarted.resolve();
+					}
+				},
+				modifyGateForPath: (targetPath) => {
+					if (targetPath === "UnloadUnprotectEdit.md" && holdModify) {
+						holdModify = false;
+						return unprotectGate.promise;
+					}
+					return null;
+				},
+			});
+			activeHarness = harness;
+
+			const { file, pane } = await harness.seedProtectedNote({
+				path: "UnloadUnprotectEdit.md",
+				realText: SECRET_P0,
+			});
+			await harness.plugin.registry.add(file.path, {
+				noteId: "note-unload-unprotect",
+				addedAt: 1,
+				mode: "portable",
+			});
+			vi.spyOn(PasswordModal.prototype, "ask").mockResolvedValueOnce(TEST_PASSWORD);
+
+			const unprotectPromise = (
+				harness.plugin as unknown as { unprotectViaModal: () => Promise<void> }
+			).unprotectViaModal();
+			await unprotectStarted.promise;
+
+			harness.unloadPlugin("onunload-first");
+			unprotectGate.resolve();
+			await unprotectPromise;
+			await harness.patchController.drainPromise();
+
+			await pane.view.save();
+			expect(harness.disk.get(file.path)).toBe(`${SECRET_P0}\n`);
+
+			const editedOrdinaryAfterUnload = `${SECRET_P0}\n\nNew ordinary paragraph after unload unprotect.`;
+			pane.typeInEditor(editedOrdinaryAfterUnload);
+			await pane.view.save();
+
+			expect(harness.disk.get(file.path)).toBe(editedOrdinaryAfterUnload);
+			expect(parseFileContent(harness.disk.get(file.path) ?? "")).toBeNull();
+
+			harness.restorePrototype();
+			activeHarness = null;
+		}
+
+		{
+			const harness = createPluginUnloadHarness(VeneerPlugin);
+			activeHarness = harness;
+
+			const { file, pane, session } = await harness.seedProtectedNote({
+				path: "ShreddedCoverEdit.md",
+				realText: SECRET_P0,
+			});
+			await harness.plugin.registry.add(file.path, {
+				noteId: session.originalPayload.note_id,
+				addedAt: 1,
+				mode: "portable",
+			});
+
+			await (harness.plugin as unknown as { runShred: () => Promise<void> }).runShred();
+			expect(harness.disk.get(file.path)).toBe(`${DEFAULT_DECOY}\n`);
+
+			const newCoverEdits = `${EDITED_DECOY}\n- oat milk`;
+			pane.typeInEditor(newCoverEdits);
+			await pane.view.save();
+
+			expect(harness.disk.get(file.path)).toBe(newCoverEdits);
+			expect(parseFileContent(harness.disk.get(file.path) ?? "")).toBeNull();
+
+			harness.restorePrototype();
+			activeHarness = null;
+		}
+
+		{
+			const harness = createPluginUnloadHarness(VeneerPlugin);
+			activeHarness = harness;
+
+			const { file, pane, session } = await harness.seedProtectedNote({
+				path: "CommittedP0FrozenP1.md",
+				realText: SECRET_P0,
+			});
+			expect(await harness.sessions.unlock(session, TEST_PASSWORD)).toBe("ok");
+
+			await pane.view.save();
+			const coordinator = getSharedLifecycleCoordinator();
+			expect(coordinator.getCommittedDisposition(harness.app, file)?.kind).toBe("protected");
+
+			await harness.stageCompletedPendingPayload(session, SECRET_P1);
+			const diskStillP0 = harness.disk.get(file.path) ?? "";
+			expect((await inspectSavedFile(diskStillP0, TEST_PASSWORD)).realText).toBe(SECRET_P0);
+
+			harness.unloadPlugin("onunload-first");
+			expect(coordinator.getFrozenSnapshot(harness.app, file)).not.toBeNull();
+
+			const sessions2 = new SessionManager(
+				harness.app,
+				{
+					onUnlocked: () => undefined,
+					onLocked: () => undefined,
+					onUnlockBlocked: () => undefined,
+				},
+				() => ";;",
+				() => null,
+				coordinator,
+			);
+			const parsedStaleDisk = parseFileContent(diskStillP0);
+			expect(parsedStaleDisk).not.toBeNull();
+			const successorSession = sessions2.attachFromLoad(pane.view, file, parsedStaleDisk!);
+
+			expect(await sessions2.unlock(successorSession, TEST_PASSWORD)).toBe("ok");
+			expect(pane.getEditorText()).toBe(SECRET_P1);
+
+			harness.restorePrototype();
+			activeHarness = null;
+		}
+
+		{
+			const harness = createPluginUnloadHarness(VeneerPlugin);
+			activeHarness = harness;
+
+			const { pane } = await harness.seedProtectedNote({
+				path: "OuterWrapperReload.md",
+				realText: SECRET_P0,
+			});
+
+			const proto = MarkdownView.prototype as unknown as {
+				save: (this: MarkdownView, clear?: boolean) => Promise<void>;
+			};
+			const veneeredSave = proto.save;
+			let outerCallCount = 0;
+			const outerWrapper = async function (this: MarkdownView, clear?: boolean): Promise<void> {
+				outerCallCount += 1;
+				if (outerCallCount > 5) {
+					throw new Error("Infinite recursion detected in outerWrapper");
+				}
+				await veneeredSave.call(this, clear);
+			};
+			proto.save = outerWrapper;
+
+			harness.unloadPlugin("onunload-first");
+			await harness.patchController.drainPromise();
+
+			const coordinator = getSharedLifecycleCoordinator();
+			const sessions2 = new SessionManager(
+				harness.app,
+				{
+					onUnlocked: () => undefined,
+					onLocked: () => undefined,
+					onUnlockBlocked: () => undefined,
+				},
+				() => ";;",
+				() => null,
+				coordinator,
+			);
+			const cleanups2: Array<() => void> = [];
+			const controller2 = installViewPatches(sessions2, (fn) => cleanups2.push(fn));
+
+			await pane.view.save();
+			expect(outerCallCount).toBe(1);
+
+			controller2.retireAndHandoff();
+			await controller2.drainPromise();
+			for (const fn of cleanups2) fn();
+
+			harness.restorePrototype();
+			activeHarness = null;
+		}
+
+		{
+			const gateP0 = createDeferred<void>();
+			const startedP0 = createDeferred<void>();
+			const orderTrace: string[] = [];
+			let holdFirstModify = true;
+
+			const harness = createPluginUnloadHarness(VeneerPlugin, {
+				onModifyStart: (targetPath) => {
+					if (targetPath === "EnqueueWriteOrder.md" && holdFirstModify) {
+						orderTrace.push("enqueueWrite:P0:start");
+						startedP0.resolve();
+					}
+				},
+				modifyGateForPath: (targetPath) => {
+					if (targetPath === "EnqueueWriteOrder.md" && holdFirstModify) {
+						holdFirstModify = false;
+						return gateP0.promise.then(() => {
+							orderTrace.push("enqueueWrite:P0:commit");
+						});
+					}
+					return null;
+				},
+				onNativeSaveStart: ({ path: targetPath }) => {
+					if (targetPath === "EnqueueWriteOrder.md") {
+						orderTrace.push("guardedSave:P1:start");
+					}
+				},
+			});
+			activeHarness = harness;
+
+			const { file, pane, session, initialFileContent } = await harness.seedProtectedNote({
+				path: "EnqueueWriteOrder.md",
+				realText: SECRET_P0,
+			});
+			expect(await harness.sessions.unlock(session, TEST_PASSWORD)).toBe("ok");
+
+			const inFlightP0 = harness.sessions.enqueueWrite(session, async () => {
+				await harness.app.vault.modify(file, initialFileContent);
+			});
+			await startedP0.promise;
+
+			await harness.stageCompletedPendingPayload(session, SECRET_P1);
+			harness.unloadPlugin("onunload-first");
+
+			const guardedSaveP1 = pane.view.save().then(() => {
+				orderTrace.push("guardedSave:P1:commit");
+			});
+
+			await Promise.resolve();
+			expect(orderTrace).toEqual(["enqueueWrite:P0:start"]);
+
+			gateP0.resolve();
+			await inFlightP0;
+			await guardedSaveP1;
+
+			expect(orderTrace).toEqual([
+				"enqueueWrite:P0:start",
+				"enqueueWrite:P0:commit",
+				"guardedSave:P1:start",
+				"guardedSave:P1:commit",
+			]);
+
+			const finalDisk = harness.disk.get(file.path) ?? "";
+			const inspectedFinal = await inspectSavedFile(finalDisk, TEST_PASSWORD);
+			expect(inspectedFinal.isProtected).toBe(true);
+			expect(inspectedFinal.realText).toBe(SECRET_P1);
+
+			harness.restorePrototype();
+			activeHarness = null;
+		}
+	}, 20000);
 });

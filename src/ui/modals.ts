@@ -12,6 +12,7 @@ export class PasswordModal extends Modal {
 		super(app);
 	}
 
+	/** Opens the modal and resolves with the submitted password or `null` if cancelled. */
 	ask(): Promise<string | null> {
 		return new Promise((resolve) => {
 			this.resolve = resolve;
@@ -21,6 +22,7 @@ export class PasswordModal extends Modal {
 		});
 	}
 
+	/** Renders the password input form and action buttons when the modal opens. */
 	onOpen(): void {
 		const { contentEl } = this;
 		contentEl.empty();
@@ -60,6 +62,7 @@ export class PasswordModal extends Modal {
 		this.close();
 	}
 
+	/** Synchronously resolves any pending prompt with `null` and closes the modal. */
 	cancelAndClose(): void {
 		const pending = this.resolve;
 		this.resolve = null;
@@ -77,6 +80,7 @@ export class PasswordModal extends Modal {
 		}
 	}
 
+	/** Clears modal DOM content and resolves any unsettled prompt with `null`. */
 	onClose(): void {
 		this.contentEl?.empty?.();
 		this.resolve?.(null);
@@ -92,6 +96,7 @@ export class DuressPinModal extends Modal {
 		super(app);
 	}
 
+	/** Opens the modal and resolves with the confirmed numeric PIN or `null` if cancelled. */
 	ask(): Promise<string | null> {
 		return new Promise((resolve) => {
 			this.resolve = resolve;
@@ -101,6 +106,7 @@ export class DuressPinModal extends Modal {
 		});
 	}
 
+	/** Synchronously resolves any pending PIN prompt with `null` and closes the modal. */
 	cancelAndClose(): void {
 		const pending = this.resolve;
 		this.resolve = null;
@@ -118,6 +124,7 @@ export class DuressPinModal extends Modal {
 		}
 	}
 
+	/** Renders the dual-entry destruction PIN setup form when the modal opens. */
 	onOpen(): void {
 		const { contentEl } = this;
 		contentEl.empty();
@@ -177,6 +184,7 @@ export class DuressPinModal extends Modal {
 		).addButton((button) => button.setButtonText("Set PIN").setCta().onClick(submit));
 	}
 
+	/** Clears modal DOM content and resolves any unsettled PIN prompt with `null`. */
 	onClose(): void {
 		this.contentEl?.empty?.();
 		this.resolve?.(null);

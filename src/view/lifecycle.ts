@@ -1,5 +1,5 @@
 import { MarkdownView, type App, type TFile } from "obsidian";
-import { parseFileContent, type PayloadV1 } from "../crypto/payload";
+import { parseFileContent, stripDraftCacheBlocks, type PayloadV1 } from "../crypto/payload";
 import { computeSavedContent } from "./saveDecision";
 
 /**
@@ -213,6 +213,9 @@ export class ViewLifecycleCoordinator {
 	private readonly activeVaults = new Set<VaultScopeRecord>();
 	private prototypeChain: PrototypeChainState | null = null;
 
+	/**
+	 * Looks up or initializes the per-vault coordinator state for `app`.
+	 */
 	private getOrCreateVaultScope(app: object): VaultScopeRecord {
 		let scope = this.vaultMap.get(app);
 		if (!scope) {
@@ -233,6 +236,9 @@ export class ViewLifecycleCoordinator {
 		return scope;
 	}
 
+	/**
+	 * Looks up or initializes the per-file queue and barrier record for `file` within `scope`.
+	 */
 	private getOrCreateFileRecord(scope: VaultScopeRecord, file: TFile): FileQueueRecord {
 		let record = scope.filesByRef.get(file);
 		if (!record) {
@@ -348,7 +354,12 @@ export class ViewLifecycleCoordinator {
 		const scope = this.getOrCreateVaultScope(app);
 		const record = this.getOrCreateFileRecord(scope, file);
 		if (record.disposition !== null) {
-			if (record.disposition.kind === "destroyed" && disposition.kind !== "destroyed") {
+			if (
+				record.disposition.kind === "destroyed" &&
+				disposition.kind !== "destroyed" &&
+				(record.quarantinedForDestruction ||
+					disposition.revision <= record.disposition.revision)
+			) {
 				return false;
 			}
 			if (
@@ -427,6 +438,57 @@ export class ViewLifecycleCoordinator {
 		const record = scope.filesByRef.get(file);
 		if (!record || record.barrierStatus === "draining") return;
 		record.frozenSnapshot = null;
+		this.pruneIfIdle(scope, record);
+	}
+
+	/**
+	 * Clears the committed disposition (and any non-draining frozen snapshot) for `file`
+	 * once an unprotect or destruction transition has settled, returning the file to
+	 * ordinary unguarded view/save handling.
+	 */
+	clearCommittedDisposition(app: object, file: TFile): void {
+		const scope = this.vaultMap.get(app);
+		if (!scope) return;
+		const record = scope.filesByRef.get(file);
+		if (!record) return;
+		record.disposition = null;
+		if (record.barrierStatus !== "draining") {
+			record.frozenSnapshot = null;
+		}
+		this.pruneIfIdle(scope, record);
+	}
+
+	/**
+	 * Returns true when a detached view for `file` requires guarded native save handling
+	 * (active/queued write, draining/failed barrier, destruction quarantine, frozen retirement
+	 * snapshot, or pending unprotect transition reconciliation).
+	 */
+	shouldGuardDetachedSave(app: object, file: TFile | null | undefined): boolean {
+		if (!file) return false;
+		const scope = this.vaultMap.get(app);
+		if (!scope) return false;
+		const record = scope.filesByRef.get(file);
+		if (
+			!record &&
+			!scope.destructionTargetFiles.has(file) &&
+			!scope.destructionTargetPaths.has(file.path)
+		) {
+			return false;
+		}
+		if (scope.destructionTargetFiles.has(file) || scope.destructionTargetPaths.has(file.path)) {
+			return true;
+		}
+		if (!record) return false;
+		return (
+			record.quarantinedForDestruction ||
+			record.barrierStatus === "draining" ||
+			record.barrierStatus === "failed" ||
+			record.processing ||
+			record.activePromise !== null ||
+			record.queue.length > 0 ||
+			record.frozenSnapshot !== null ||
+			record.disposition?.kind === "unprotected"
+		);
 	}
 
 	/**
@@ -592,6 +654,9 @@ export class ViewLifecycleCoordinator {
 		return { status: "committed", value };
 	}
 
+	/**
+	 * Checks whether a write request can be admitted to the per-file queue at enqueue time.
+	 */
 	private canAdmitAtEnqueue<T>(
 		scope: VaultScopeRecord,
 		record: FileQueueRecord,
@@ -611,9 +676,6 @@ export class ViewLifecycleCoordinator {
 		) {
 			return false;
 		}
-		if (record.disposition?.kind === "destroyed") {
-			return false;
-		}
 		if (options.kind === "normal") {
 			if (!options.owner || options.owner.phase !== "active") {
 				return false;
@@ -628,7 +690,10 @@ export class ViewLifecycleCoordinator {
 				}
 			}
 		} else if (options.kind === "retirement-commit") {
-			if (record.disposition?.kind === "unprotected") {
+			if (
+				record.disposition?.kind === "unprotected" ||
+				record.disposition?.kind === "destroyed"
+			) {
 				return false;
 			}
 			if (options.owner && options.owner.phase === "retired") {
@@ -642,6 +707,9 @@ export class ViewLifecycleCoordinator {
 		return true;
 	}
 
+	/**
+	 * Re-verifies whether a queued write entry may still execute when dequeued.
+	 */
 	private canExecuteAtDequeue(
 		scope: VaultScopeRecord,
 		record: FileQueueRecord,
@@ -664,9 +732,6 @@ export class ViewLifecycleCoordinator {
 		) {
 			return false;
 		}
-		if (record.disposition?.kind === "destroyed") {
-			return false;
-		}
 		if (entry.kind === "normal") {
 			if (!entry.owner || entry.owner.phase !== "active") {
 				return false;
@@ -675,7 +740,10 @@ export class ViewLifecycleCoordinator {
 				return false;
 			}
 		} else if (entry.kind === "retirement-commit") {
-			if (record.disposition?.kind === "unprotected") {
+			if (
+				record.disposition?.kind === "unprotected" ||
+				record.disposition?.kind === "destroyed"
+			) {
 				return false;
 			}
 		} else if (entry.kind === "native-save-guard") {
@@ -686,15 +754,33 @@ export class ViewLifecycleCoordinator {
 		return true;
 	}
 
+	/**
+	 * Drains the per-file write queue sequentially, waiting for any externally tracked
+	 * active host write before starting the next queued entry.
+	 */
 	private pumpFileQueue(scope: VaultScopeRecord, record: FileQueueRecord): void {
 		if (record.processing) return;
 		record.processing = true;
 
 		const step = (): void => {
+			const peeked = record.queue[0];
+			if (
+				peeked &&
+				record.activePromise !== null &&
+				(peeked.kind !== "normal" || !peeked.owner || peeked.owner.phase !== "active")
+			) {
+				const pendingActive = record.activePromise;
+				void pendingActive.finally(() => {
+					if (record.activePromise === pendingActive) {
+						record.activePromise = null;
+					}
+					step();
+				});
+				return;
+			}
 			const next = record.queue.shift();
 			if (!next) {
 				record.processing = false;
-				record.activePromise = null;
 				this.pruneIfIdle(scope, record);
 				return;
 			}
@@ -742,6 +828,9 @@ export class ViewLifecycleCoordinator {
 			void settledShadow.finally(() => {
 				if (ownerRuntime) {
 					ownerRuntime.activeSubmittedPromises.delete(settledShadow);
+				}
+				if (record.activePromise === settledShadow) {
+					record.activePromise = null;
 				}
 				step();
 			});
@@ -1212,10 +1301,28 @@ export class ViewLifecycleCoordinator {
 				if ((view as unknown as { file?: TFile | null }).file !== capturedFile) {
 					return;
 				}
-				if (
-					record.quarantinedForDestruction ||
-					record.disposition?.kind === "destroyed"
-				) {
+				if (record.quarantinedForDestruction) {
+					return;
+				}
+				if (record.disposition?.kind === "destroyed") {
+					const currentText =
+						view.editor && typeof view.editor.getValue === "function"
+							? view.editor.getValue()
+							: (view as unknown as { data?: string }).data ?? "";
+					if (parseFileContent(currentText) !== null) {
+						const sanitized =
+							record.disposition.decoyBody !== undefined
+								? `${record.disposition.decoyBody}\n`
+								: stripDraftCacheBlocks(currentText);
+						if (syncViewData) {
+							syncViewData(view, sanitized);
+						} else {
+							(view as unknown as { data: string }).data = sanitized;
+						}
+					}
+					record.disposition = null;
+					record.frozenSnapshot = null;
+					await rawSave.call(view, clear);
 					return;
 				}
 				if (
@@ -1228,6 +1335,8 @@ export class ViewLifecycleCoordinator {
 						(view as unknown as { data: string }).data = record.disposition.plaintextContent;
 					}
 					await rawSave.call(view, clear);
+					record.disposition = null;
+					record.frozenSnapshot = null;
 					return;
 				}
 				const effectiveSafe =
@@ -1240,25 +1349,26 @@ export class ViewLifecycleCoordinator {
 					) ??
 					record.frozenSnapshot?.rawSerialized ??
 					capturedSnapshot?.rawSerialized;
-				if (effectiveSafe !== undefined) {
-					if (syncViewData) {
-						syncViewData(view, effectiveSafe);
-					} else {
-						(view as unknown as { data: string }).data = effectiveSafe;
-					}
+				if (effectiveSafe === undefined) {
+					throw new Error(
+						"Veneer: refusing guarded native save without a verified safe snapshot",
+					);
+				}
+				if (syncViewData) {
+					syncViewData(view, effectiveSafe);
+				} else {
+					(view as unknown as { data: string }).data = effectiveSafe;
 				}
 				await rawSave.call(view, clear);
-				if (effectiveSafe !== undefined) {
-					const parsedSaved = parseFileContent(effectiveSafe);
-					if (parsedSaved !== null) {
-						this.publishCommittedDisposition(app, capturedFile, {
-							kind: "protected",
-							revision: this.nextFileRevision(app, capturedFile),
-							payload: parsedSaved.payload,
-							decoyBody: parsedSaved.decoyBody,
-							rawSerialized: effectiveSafe,
-						});
-					}
+				const parsedSaved = parseFileContent(effectiveSafe);
+				if (parsedSaved !== null) {
+					this.publishCommittedDisposition(app, capturedFile, {
+						kind: "protected",
+						revision: this.nextFileRevision(app, capturedFile),
+						payload: parsedSaved.payload,
+						decoyBody: parsedSaved.decoyBody,
+						rawSerialized: effectiveSafe,
+					});
 				}
 			},
 		}).then(
@@ -1272,6 +1382,7 @@ export class ViewLifecycleCoordinator {
 					const waiters = record.barrierWaiters.splice(0);
 					for (const w of waiters) w.resolve();
 				}
+				this.pruneIfIdle(scope, record);
 				return res;
 			},
 			(err) => {
@@ -1280,6 +1391,7 @@ export class ViewLifecycleCoordinator {
 					const waiters = record.barrierWaiters.splice(0);
 					for (const w of waiters) w.resolve();
 				}
+				this.pruneIfIdle(scope, record);
 				throw err;
 			},
 		);
@@ -1329,32 +1441,39 @@ export class ViewLifecycleCoordinator {
 				getViewData: targetProto.getViewData,
 				save: targetProto.save,
 			};
-		} else {
-			const setChanged = targetProto.setViewData !== chain.installedWrappers.setViewData;
-			const getChanged = targetProto.getViewData !== chain.installedWrappers.getViewData;
-			const saveChanged = targetProto.save !== chain.installedWrappers.save;
-			if (setChanged || getChanged || saveChanged) {
-				chain.capturedPredecessors = {
-					setViewData: setChanged
+		} else if (
+			targetProto.setViewData !== chain.installedWrappers.setViewData ||
+			targetProto.getViewData !== chain.installedWrappers.getViewData ||
+			targetProto.save !== chain.installedWrappers.save
+		) {
+			chain.capturedPredecessors = {
+				setViewData:
+					targetProto.setViewData !== chain.installedWrappers.setViewData
 						? targetProto.setViewData
 						: chain.capturedPredecessors.setViewData,
-					getViewData: getChanged
+				getViewData:
+					targetProto.getViewData !== chain.installedWrappers.getViewData
 						? targetProto.getViewData
 						: chain.capturedPredecessors.getViewData,
-					save: saveChanged ? targetProto.save : chain.capturedPredecessors.save,
-				};
-				if (setChanged && getChanged && saveChanged) {
-					chain.installedWrappers = null;
-				}
-			}
+				save:
+					targetProto.save !== chain.installedWrappers.save
+						? targetProto.save
+						: chain.capturedPredecessors.save,
+			};
+			chain.installedWrappers = null;
 		}
 
 		chain.activeOwnerHandlers.set(owner.id, handlers);
 		chain.ownerOrder = chain.ownerOrder.filter((id) => id !== owner.id);
 		chain.ownerOrder.push(owner.id);
 
+		const boundPredecessors: NativeMethodsSnapshot = {
+			...chain.capturedPredecessors,
+		};
+
 		if (chain.installedWrappers === null) {
 			const currentChain = chain;
+			let wrapperSet!: NativeMethodsSnapshot;
 			const resolveCurrentHandler = (): PrototypeWrapperHandlers | null => {
 				for (let i = currentChain.ownerOrder.length - 1; i >= 0; i -= 1) {
 					const id = currentChain.ownerOrder[i];
@@ -1371,38 +1490,45 @@ export class ViewLifecycleCoordinator {
 				data: string,
 				clear: boolean,
 			): void {
-				const h = resolveCurrentHandler();
-				if (h) {
-					h.setViewData.call(this, data, clear);
-					return;
+				if (currentChain.installedWrappers === wrapperSet) {
+					const h = resolveCurrentHandler();
+					if (h) {
+						h.setViewData.call(this, data, clear);
+						return;
+					}
 				}
-				currentChain.capturedPredecessors.setViewData.call(this, data, clear);
+				boundPredecessors.setViewData.call(this, data, clear);
 			};
 
 			const getViewDataWrapper = function (this: MarkdownView): string {
-				const h = resolveCurrentHandler();
-				if (h) {
-					return h.getViewData.call(this);
+				if (currentChain.installedWrappers === wrapperSet) {
+					const h = resolveCurrentHandler();
+					if (h) {
+						return h.getViewData.call(this);
+					}
 				}
-				return currentChain.capturedPredecessors.getViewData.call(this);
+				return boundPredecessors.getViewData.call(this);
 			};
 
 			const saveWrapper = function (
 				this: MarkdownView,
 				clear?: boolean,
 			): Promise<void> {
-				const h = resolveCurrentHandler();
-				if (h) {
-					return h.save.call(this, clear);
+				if (currentChain.installedWrappers === wrapperSet) {
+					const h = resolveCurrentHandler();
+					if (h) {
+						return h.save.call(this, clear);
+					}
 				}
-				return Promise.resolve(currentChain.capturedPredecessors.save.call(this, clear));
+				return Promise.resolve(boundPredecessors.save.call(this, clear));
 			};
 
-			currentChain.installedWrappers = {
+			wrapperSet = {
 				setViewData: setViewDataWrapper,
 				getViewData: getViewDataWrapper,
 				save: saveWrapper,
 			};
+			currentChain.installedWrappers = wrapperSet;
 
 			targetProto.setViewData = setViewDataWrapper;
 			targetProto.getViewData = getViewDataWrapper;
@@ -1412,7 +1538,7 @@ export class ViewLifecycleCoordinator {
 		const currentChainRef = chain;
 		return {
 			owner,
-			baseOriginals: currentChainRef.capturedPredecessors,
+			baseOriginals: boundPredecessors,
 			isTopMostOnPrototype: () => {
 				const w = currentChainRef.installedWrappers;
 				if (!w) return false;
@@ -1432,6 +1558,11 @@ export class ViewLifecycleCoordinator {
 		};
 	}
 
+	/**
+	 * Returns true when `app` still holds active writes, queued operations, draining/failed
+	 * retirement barriers, destruction quarantine, frozen retirement snapshots, or pending
+	 * unprotect dispositions that require the prototype wrappers to remain active.
+	 */
 	hasRetainedGuards(app: object): boolean {
 		const scope = this.vaultMap.get(app);
 		if (!scope) return false;
@@ -1444,7 +1575,7 @@ export class ViewLifecycleCoordinator {
 				record.barrierStatus === "draining" ||
 				record.barrierStatus === "failed" ||
 				record.quarantinedForDestruction ||
-				record.disposition !== null ||
+				record.disposition?.kind === "unprotected" ||
 				record.frozenSnapshot !== null
 			) {
 				return true;
@@ -1453,6 +1584,10 @@ export class ViewLifecycleCoordinator {
 		return false;
 	}
 
+	/**
+	 * Computes the safe serialized content to return from `getViewData` or persist in a
+	 * guarded native save when a view is detached from an active session.
+	 */
 	getGuardEffectiveContent(
 		app: object,
 		file: TFile | null | undefined,
@@ -1467,10 +1602,15 @@ export class ViewLifecycleCoordinator {
 			return record.disposition.plaintextContent;
 		}
 		if (record.disposition?.kind === "destroyed") {
+			if (fallbackEditorText !== undefined && parseFileContent(fallbackEditorText) === null) {
+				return null;
+			}
 			if (record.disposition.decoyBody !== undefined) {
 				return `${record.disposition.decoyBody}\n`;
 			}
-			return null;
+			return fallbackEditorText !== undefined
+				? stripDraftCacheBlocks(fallbackEditorText)
+				: null;
 		}
 		if (record.frozenSnapshot !== null) {
 			if (fallbackEditorText !== undefined) {
@@ -1503,6 +1643,10 @@ export class ViewLifecycleCoordinator {
 		return null;
 	}
 
+	/**
+	 * Removes `owner` from the prototype wrapper handler chain once its vault has no retained
+	 * guards and restores `MarkdownView.prototype` if all owners and guards have drained.
+	 */
 	private releaseOwnerFromPrototypeIfDrained(owner: OwnerToken): void {
 		if (!this.prototypeChain) return;
 		const ownerVaultHasGuards = Array.from(this.activeVaults).some(
@@ -1586,6 +1730,10 @@ export class ViewLifecycleCoordinator {
 		return true;
 	}
 
+	/**
+	 * Deletes `record` from `scope` when no active write, queued job, pending command,
+	 * barrier, quarantine, disposition, or frozen snapshot remains.
+	 */
 	private pruneIfIdle(scope: VaultScopeRecord, record: FileQueueRecord): void {
 		if (
 			!record.processing &&
@@ -1605,6 +1753,10 @@ export class ViewLifecycleCoordinator {
 		}
 	}
 
+	/**
+	 * Prunes retired owners and idle file records from `scope`, removing `scope` from
+	 * `activeVaults` when completely empty.
+	 */
 	private pruneVaultScope(scope: VaultScopeRecord): void {
 		for (const [id, ownerRuntime] of scope.owners) {
 			if (
@@ -1627,6 +1779,23 @@ export class ViewLifecycleCoordinator {
 		}
 	}
 
+	/**
+	 * Releases the file-level active write gate when a mid-lock session is explicitly
+	 * detached from its view before unload, while retaining owner-level drain tracking.
+	 */
+	releaseFileActivePromise(app: object, file: TFile): void {
+		const scope = this.vaultMap.get(app);
+		if (!scope) return;
+		const record = scope.filesByRef.get(file);
+		if (record && !record.processing) {
+			record.activePromise = null;
+		}
+	}
+
+	/**
+	 * Tracks an already-submitted host I/O promise for `owner` and `file` so retirement,
+	 * destruction, and queued coordinator writes wait for it to settle.
+	 */
 	trackSubmittedOwnerPromise(
 		app: object,
 		owner: OwnerToken,
@@ -1658,10 +1827,17 @@ export class ViewLifecycleCoordinator {
 			if (record.activePromise === combined) {
 				record.activePromise = null;
 			}
+			if (record.queue.length > 0 && !record.processing) {
+				this.pumpFileQueue(scope, record);
+				return;
+			}
 			this.pruneIfIdle(scope, record);
 		};
 	}
 
+	/**
+	 * Resets all active vault scopes and prototype chain state on this coordinator instance.
+	 */
 	resetAllState(): void {
 		this.activeVaults.clear();
 		this.prototypeChain = null;

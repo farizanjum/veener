@@ -246,6 +246,7 @@ export class ProtectWizard extends Modal {
 		);
 	}
 
+	/** Synchronously closes the protection wizard modal during plugin teardown. */
 	cancelAndClose(): void {
 		try {
 			if (typeof this.close === "function") {
@@ -260,6 +261,7 @@ export class ProtectWizard extends Modal {
 		}
 	}
 
+	/** Clears the wizard DOM container when the modal closes. */
 	onClose(): void {
 		this.contentEl?.empty?.();
 	}

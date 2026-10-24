@@ -37,6 +37,9 @@ export function installViewPatches(
 
 	let lease!: OwnedPrototypeLease;
 
+	/**
+	 * Reloads and re-attaches a view from disk once an in-flight retirement barrier settles.
+	 */
 	const refreshAfterBarrier = async (view: MarkdownView, file: TFile): Promise<void> => {
 		if (sessions.isDisposed() || !coordinator.isOwnerActive(owner)) return;
 		if (view.file !== file) return;
@@ -54,6 +57,10 @@ export function installViewPatches(
 		}
 	};
 
+	/**
+	 * Intercepts `MarkdownView.prototype.setViewData` to strip payload comments on load,
+	 * attach protected sessions, and guard against stale disk reloads during barrier drain.
+	 */
 	const setViewDataHandler = function (
 		this: MarkdownView,
 		data: string,
@@ -113,6 +120,10 @@ export function installViewPatches(
 		rawSet.call(this, stripDraftCacheBlocks(data), clear);
 	};
 
+	/**
+	 * Intercepts `MarkdownView.prototype.getViewData` so protected views always serialize
+	 * decoy + ciphertext while active or retiring.
+	 */
 	const getViewDataHandler = function (this: MarkdownView): string {
 		const rawGet = lease.baseOriginals.getViewData;
 		const session = sessions.get(this);
@@ -139,6 +150,10 @@ export function installViewPatches(
 		return rawEditorValue;
 	};
 
+	/**
+	 * Intercepts `MarkdownView.prototype.save` to serialize active session writes and
+	 * route detached protected or transitioning saves through the lifecycle coordinator.
+	 */
 	const saveHandler = async function (this: MarkdownView, clear?: boolean): Promise<void> {
 		const rawSave = lease.baseOriginals.save;
 
@@ -182,10 +197,9 @@ export function installViewPatches(
 		const currentFile = this.file ?? null;
 		if (
 			currentFile &&
-			(coordinator.getFrozenSnapshot(app, currentFile) !== null ||
-				coordinator.getCommittedDisposition(app, currentFile) !== null ||
-				retired ||
-				sessions.isDisposed())
+			(coordinator.shouldGuardDetachedSave(app, currentFile) ||
+				((retired || sessions.isDisposed()) &&
+					coordinator.getFrozenSnapshot(app, currentFile) !== null))
 		) {
 			await coordinator.executeGuardedNativeSave({
 				app,
@@ -218,6 +232,9 @@ export function installViewPatches(
 
 	sessions.setCapturedNativeSetViewData(lease.baseOriginals.setViewData);
 
+	/**
+	 * Performs synchronous view sanitization and owner retirement handoff on plugin unload.
+	 */
 	const retireAndHandoff = (): ShutdownHandoffResult => {
 		const handoff = sessions.shutdownAndHandoff(lease.baseOriginals.setViewData);
 		if (!retired) {

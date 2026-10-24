@@ -245,6 +245,7 @@ export class SessionManager {
 		this.owner = owner ?? this.coordinator.registerOwner(this.app);
 	}
 
+	/** Returns the Obsidian `App` instance associated with this manager. */
 	getApp(): App {
 		return this.app;
 	}
@@ -399,26 +400,32 @@ export class SessionManager {
 		return groups;
 	}
 
+	/** Returns the captured retirement preparation record once `prepareRetirement` has run. */
 	getRetirementPreparation(): SessionRetirementPreparation | null {
 		return this.retirementPreparation;
 	}
 
+	/** Records the original native `MarkdownView.prototype.setViewData` implementation. */
 	setCapturedNativeSetViewData(setter: NativeViewDataSetter): void {
 		this.capturedNativeSetViewData = setter;
 	}
 
+	/** Returns the captured native `setViewData` implementation, if one was recorded. */
 	getCapturedNativeSetViewData(): NativeViewDataSetter | null {
 		return this.capturedNativeSetViewData;
 	}
 
+	/** Returns the frozen safe snapshot for `file` from this manager or the shared coordinator. */
 	getFrozenSnapshot(file: TFile): FrozenSafeSnapshot | null {
 		return this.frozenSnapshotsByFile.get(file) ?? this.coordinator.getFrozenSnapshot(this.app, file);
 	}
 
+	/** Returns all frozen safe snapshots captured by this manager during retirement. */
 	getFrozenSnapshots(): ReadonlyMap<TFile, FrozenSafeSnapshot> {
 		return this.frozenSnapshotsByFile;
 	}
 
+	/** Returns the latest committed disposition for `file` from the coordinator or local cache. */
 	getCommittedDisposition(file: TFile): CommittedDisposition | null {
 		return (
 			this.coordinator.getCommittedDisposition(this.app, file) ??
@@ -427,18 +434,33 @@ export class SessionManager {
 		);
 	}
 
+	/**
+	 * Clears cached per-file snapshot authority, frozen snapshot, and committed disposition
+	 * once an explicit unprotect transition completes for `file`.
+	 */
+	clearFileAuthority(file: TFile): void {
+		this.fileAuthorities.delete(file);
+		this.frozenSnapshotsByFile.delete(file);
+		this.capturedDispositionsByFile.delete(file);
+		this.coordinator.clearCommittedDisposition(this.app, file);
+	}
+
+	/** Returns all committed dispositions captured by this manager. */
 	getCapturedDispositions(): ReadonlyMap<TFile, CommittedDisposition> {
 		return this.capturedDispositionsByFile;
 	}
 
+	/** Returns all pending command records captured per file at retirement. */
 	getCapturedPendingCommands(): ReadonlyMap<TFile, readonly PendingCommandRecord[]> {
 		return this.capturedPendingCommandsByFile;
 	}
 
+	/** Returns the cached `ShutdownHandoffResult` if `shutdownAndHandoff` has already executed. */
 	getShutdownHandoffResult(): ShutdownHandoffResult | null {
 		return this.handoffResult;
 	}
 
+	/** Registers the start of a mutating file command with the lifecycle coordinator. */
 	beginCommand(file: TFile, kind: PendingCommandKind): symbol | null {
 		const cmdId = this.coordinator.beginCommand(this.app, this.owner, file, kind);
 		if (cmdId !== null) {
@@ -452,19 +474,23 @@ export class SessionManager {
 		return cmdId;
 	}
 
+	/** Looks up the coordinator's tracking record for an in-flight command. */
 	getCommandRecord(file: TFile, commandId: symbol): Readonly<PendingCommandRecord> | null {
 		return this.coordinator.getCommandRecord(this.app, file, commandId);
 	}
 
+	/** Marks a tracked file command as finished in both local and coordinator state. */
 	finishCommand(file: TFile, commandId: symbol): void {
 		this.trackedCommandIdsByFile.get(file)?.delete(commandId);
 		this.coordinator.finishCommand(this.app, file, commandId);
 	}
 
+	/** Computes a deterministic fingerprint for `payload` scoped to `file.path`. */
 	private payloadFingerprint(file: TFile, payload: PayloadV1): string {
 		return `${file.path}::${payload.note_id}::${payload.cipher.nonce}::${payload.cipher.ct.slice(0, 64)}`;
 	}
 
+	/** Associates `payload` (and its ciphertext fingerprint) with a monotonic revision number. */
 	private recordPayloadRevision(file: TFile, payload: PayloadV1, revision: number): void {
 		const existing = this.payloadRevisions.get(payload);
 		const nextRev = existing !== undefined && existing > revision ? existing : revision;
@@ -476,6 +502,7 @@ export class SessionManager {
 		}
 	}
 
+	/** Returns the recorded monotonic revision number for `payload`, or `0` if unknown. */
 	getPayloadRevision(file: TFile, payload: PayloadV1): number {
 		const direct = this.payloadRevisions.get(payload);
 		if (direct !== undefined) return direct;
@@ -487,6 +514,10 @@ export class SessionManager {
 		return 0;
 	}
 
+	/**
+	 * Returns or initializes the per-file snapshot authority, reconciling `initialPayload`
+	 * and `initialDecoyBody` against any newer coordinator disposition or frozen snapshot.
+	 */
 	private getOrCreateFileAuthority(
 		file: TFile,
 		initialPayload: PayloadV1,
@@ -529,21 +560,33 @@ export class SessionManager {
 					chosenDecoy = settledDisposition.decoyBody;
 				}
 			}
-		} else if (
+		}
+
+		if (
 			settledSnapshot !== null &&
 			settledSnapshot.payload.note_id === initialPayload.note_id
 		) {
 			const sameCiphertext =
-				settledSnapshot.payload.cipher.nonce === initialPayload.cipher.nonce &&
-				settledSnapshot.payload.cipher.ct === initialPayload.cipher.ct;
+				settledSnapshot.payload.cipher.nonce === chosenPayload.cipher.nonce &&
+				settledSnapshot.payload.cipher.ct === chosenPayload.cipher.ct;
 			if (sameCiphertext) {
-				chosenPayload = initialPayload;
-				chosenPayloadRevision = settledSnapshot.revision;
-				chosenDecoy = initialDecoyBody;
+				if (settledSnapshot.revision > chosenPayloadRevision) {
+					chosenPayloadRevision = settledSnapshot.revision;
+				}
+				if (
+					settledSnapshot.decoyBody !== chosenDecoy &&
+					settledSnapshot.revision >= chosenCoverRevision
+				) {
+					chosenDecoy = settledSnapshot.decoyBody;
+					chosenCoverRevision = settledSnapshot.revision;
+				}
 			} else if (chosenPayloadRevision === 0 || chosenPayloadRevision <= settledSnapshot.revision) {
 				chosenPayload = settledSnapshot.payload;
 				chosenPayloadRevision = settledSnapshot.revision;
 				chosenDecoy = settledSnapshot.decoyBody;
+				if (settledSnapshot.revision > chosenCoverRevision) {
+					chosenCoverRevision = settledSnapshot.revision;
+				}
 			}
 		}
 
@@ -567,6 +610,7 @@ export class SessionManager {
 		return authority;
 	}
 
+	/** Runs `fn` while suppressing property-setter staging side effects on `session`. */
 	private runInternalSessionMutation(session: ViewSession, fn: () => void): void {
 		const meta = this.sessionMeta.get(session);
 		if (!meta) {
@@ -581,6 +625,10 @@ export class SessionManager {
 		}
 	}
 
+	/**
+	 * Records a locked-session decoy cover edit into the per-file authority and assigns
+	 * it a monotonic revision so retirement and save paths preserve the newest cover.
+	 */
 	observeCoverEdit(session: ViewSession, explicitCover?: string): number {
 		if (
 			this.isDisposed() ||
@@ -639,6 +687,10 @@ export class SessionManager {
 		return rev;
 	}
 
+	/**
+	 * Accepts a newly re-encrypted payload into the session and per-file authority
+	 * if its revision is at least as new as the currently accepted payload revision.
+	 */
 	private acceptReencryptedPayload(
 		session: ViewSession,
 		payload: PayloadV1,
@@ -668,6 +720,10 @@ export class SessionManager {
 		return true;
 	}
 
+	/**
+	 * Marks `payload` as committed on disk for `session` and publishes the resulting
+	 * `"protected"` disposition to the shared lifecycle coordinator.
+	 */
 	private commitSessionPayload(
 		session: ViewSession,
 		payload: PayloadV1,
@@ -709,6 +765,10 @@ export class SessionManager {
 		return rev;
 	}
 
+	/**
+	 * Publishes the committed outcome of a file command (`protect`, `refresh`, `password`,
+	 * or `unprotect`) to the shared lifecycle coordinator and updates local authority state.
+	 */
 	publishCommandCommit(file: TFile, outcome: CommandCommitOutcome): CommittedDisposition | null {
 		if (outcome.kind === "unprotect") {
 			const rev = outcome.revision ?? this.coordinator.nextFileRevision(this.app, file);
@@ -767,6 +827,7 @@ export class SessionManager {
 		return disposition;
 	}
 
+	/** Collects all unsettled command records tracked by this manager for `file`. */
 	private collectPendingCommandsForFile(file: TFile): readonly PendingCommandRecord[] {
 		const ids = this.trackedCommandIdsByFile.get(file);
 		if (!ids || ids.size === 0) return [];
@@ -780,6 +841,7 @@ export class SessionManager {
 		return out;
 	}
 
+	/** Selects the highest-revision committed or accepted payload across all sessions for `file`. */
 	private selectCanonicalPayloadForGroup(
 		file: TFile,
 		group: SessionRetirementGroup,
@@ -832,6 +894,7 @@ export class SessionManager {
 		return { payload: bestPayload, revision: bestRevision };
 	}
 
+	/** Selects the canonical decoy cover across all sessions and coordinator state for `file`. */
 	private selectCanonicalCoverForGroup(
 		file: TFile,
 		group: SessionRetirementGroup,
@@ -938,6 +1001,10 @@ export class SessionManager {
 		return { decoyBody: bestCover, revision: bestCoverRevision };
 	}
 
+	/**
+	 * Freezes a canonical `FrozenSafeSnapshot` per file from live session groups before
+	 * keys and pending payloads are wiped during retirement.
+	 */
 	private freezeCanonicalSnapshotsFromGroups(
 		groupsByFile: ReadonlyMap<TFile, SessionRetirementGroup>,
 		errors: unknown[],
@@ -1164,6 +1231,7 @@ export class SessionManager {
 		return preparation;
 	}
 
+	/** Invokes a captured `NativeViewDataSetter` regardless of whether it takes `(data, clear)` or `(view, data, clear)`. */
 	private invokeNativeSetter(
 		setter: NativeViewDataSetter,
 		view: MarkdownView,
@@ -1184,6 +1252,7 @@ export class SessionManager {
 		);
 	}
 
+	/** Verifies that both `view.editor.getValue()` and `view.data` exactly match `expectedRaw`. */
 	private isViewProvenSafe(view: MarkdownView, expectedRaw: string): boolean {
 		try {
 			const hasEditor =
@@ -1201,6 +1270,7 @@ export class SessionManager {
 		}
 	}
 
+	/** Marks `view` as save-blocked in the coordinator and installs a throwing `view.save` guard. */
 	private installSaveBlockGuardOnView(view: MarkdownView, reason: unknown): void {
 		this.coordinator.markViewSaveBlocked(this.app, view);
 		const message =
@@ -1219,6 +1289,7 @@ export class SessionManager {
 		} catch {}
 	}
 
+	/** Restores the displayed title DOM elements on `session.view` with per-element error isolation. */
 	private applyDisplayedTitleIsolated(
 		session: ViewSession,
 		titleText: string,
@@ -1285,6 +1356,11 @@ export class SessionManager {
 		}
 	}
 
+	/**
+	 * Synchronously prepares retirement, freezes canonical per-file snapshots, hydrates
+	 * open views with safe serialized content, and installs save-block guards on any view
+	 * that cannot be proven safe.
+	 */
 	shutdownAndHandoff(nativeSetViewData?: NativeViewDataSetter): ShutdownHandoffResult {
 		if (nativeSetViewData !== undefined) {
 			this.capturedNativeSetViewData = nativeSetViewData;
@@ -1345,6 +1421,27 @@ export class SessionManager {
 					}
 
 					if (targetRaw === undefined) {
+						if (disposition?.kind !== "destroyed") {
+							const reason = new Error(`No safe snapshot available for ${file.path}`);
+							this.installSaveBlockGuardOnView(view, reason);
+							if (!saveBlockedViews.includes(view)) {
+								saveBlockedViews.push(view);
+							}
+							failures.push({
+								file,
+								path: file.path,
+								view,
+								reason,
+								saveBlocked: true,
+							});
+							viewOutcomes.push({
+								view,
+								file,
+								path: file.path,
+								status: "save-blocked",
+								error: reason,
+							});
+						}
 						this.applyDisplayedTitleIsolated(session, file.basename, errors, failures);
 						continue;
 					}
@@ -1461,6 +1558,7 @@ export class SessionManager {
 		return result;
 	}
 
+	/** Removes all captured sessions from `byView` and `byPath` lookup maps. */
 	private detachCapturedSessions(sessions: readonly ViewSession[]): void {
 		for (const session of sessions) {
 			if (this.byView.get(session.view) === session) {
@@ -1471,6 +1569,7 @@ export class SessionManager {
 		this.byPath.clear();
 	}
 
+	/** Indexes `session` under `path` in `byPath`. */
 	private addToPath(path: string, session: ViewSession): void {
 		let set = this.byPath.get(path);
 		if (!set) {
@@ -1480,6 +1579,7 @@ export class SessionManager {
 		set.add(session);
 	}
 
+	/** Removes `session` from the `byPath` index for `path`. */
 	private removeFromPath(path: string, session: ViewSession): void {
 		const set = this.byPath.get(path);
 		if (!set) return;
@@ -1489,15 +1589,18 @@ export class SessionManager {
 		}
 	}
 
+	/** Returns the `ViewSession` currently attached to `view`, or `null`. */
 	get(view: MarkdownView): ViewSession | null {
 		return this.byView.get(view) ?? null;
 	}
 
+	/** Returns all `ViewSession` instances currently indexed under `path`. */
 	getAllByPath(path: string): ViewSession[] {
 		const set = this.byPath.get(path);
 		return set ? [...set] : [];
 	}
 
+	/** Returns the unlocked session for `path` if one exists, or the most recently attached session. */
 	getByPath(path: string): ViewSession | null {
 		const sessions = this.getAllByPath(path);
 		if (sessions.length === 0) return null;
@@ -1697,6 +1800,7 @@ export class SessionManager {
 		return promise;
 	}
 
+	/** Marks `file`'s in-memory snapshot as dirty so retirement persists it if needed. */
 	markSnapshotNeedsRetirementCommit(file: TFile): void {
 		if (this.isDisposed()) return;
 		this.dirtySessionSnapshots.add(file);
@@ -1734,6 +1838,7 @@ export class SessionManager {
 		set.add(guardedRun);
 	}
 
+	/** Replays and clears any deferred save callbacks queued while `path` was reserved. */
 	private flushDeferredSaves(path: string): void {
 		const set = this.deferredSaves.get(path);
 		if (!set) return;
@@ -1768,6 +1873,7 @@ export class SessionManager {
 		return session.state;
 	}
 
+	/** Returns true if `path` is reserved or has any unlocked or currently locking session. */
 	hasLiveSession(path: string): boolean {
 		if (this.isDisposed()) return false;
 		if (this.reservedPaths.has(path)) return true;
@@ -1784,6 +1890,7 @@ export class SessionManager {
 		return false;
 	}
 
+	/** Returns all currently attached `ViewSession` instances across all paths. */
 	all(): ViewSession[] {
 		const out: ViewSession[] = [];
 		for (const set of this.byPath.values()) {
@@ -1792,6 +1899,7 @@ export class SessionManager {
 		return out;
 	}
 
+	/** Creates a `ViewSession` bound with property interceptors that track cover and payload mutations. */
 	private createBoundViewSession(
 		view: MarkdownView,
 		file: TFile,
@@ -1933,6 +2041,10 @@ export class SessionManager {
 		return session;
 	}
 
+	/**
+	 * Attaches or updates a `ViewSession` when `view` loads `file` with `parsed`,
+	 * reconciling against any newer coordinator snapshot or disposition.
+	 */
 	attachFromLoad(view: MarkdownView, file: TFile, parsed: ParsedFile): ViewSession {
 		if (this.isDisposed()) {
 			const inertSession: ViewSession = {
@@ -1958,16 +2070,19 @@ export class SessionManager {
 			inertSession.capture.cancel();
 			return inertSession;
 		}
+		const hadAuthorityBeforeLoad = this.fileAuthorities.has(file);
 		const authority = this.getOrCreateFileAuthority(file, parsed.payload, parsed.decoyBody);
 		this.coordinator.clearFrozenSnapshot(this.app, file);
-		const parsedRev = this.getPayloadRevision(file, parsed.payload);
-		if (parsedRev === 0) {
-			const nextRev = this.coordinator.nextFileRevision(this.app, file);
-			this.recordPayloadRevision(file, parsed.payload, nextRev);
-			if (nextRev >= authority.acceptedPayloadRevision) {
-				authority.acceptedPayload = parsed.payload;
-				authority.acceptedPayloadRevision = nextRev;
-				authority.acceptedDecoyBody = parsed.decoyBody;
+		if (hadAuthorityBeforeLoad) {
+			const parsedRev = this.getPayloadRevision(file, parsed.payload);
+			if (parsedRev === 0) {
+				const nextRev = this.coordinator.nextFileRevision(this.app, file);
+				this.recordPayloadRevision(file, parsed.payload, nextRev);
+				if (nextRev >= authority.acceptedPayloadRevision) {
+					authority.acceptedPayload = parsed.payload;
+					authority.acceptedPayloadRevision = nextRev;
+					authority.acceptedDecoyBody = parsed.decoyBody;
+				}
 			}
 		}
 		const effectivePayload =
@@ -1975,7 +2090,10 @@ export class SessionManager {
 				? authority.acceptedPayload
 				: parsed.payload;
 		const effectiveDecoy =
-			authority.acceptedCoverRevision > 0 ? authority.acceptedDecoyBody : parsed.decoyBody;
+			authority.acceptedCoverRevision > 0 ||
+			this.getPayloadRevision(file, parsed.payload) < authority.acceptedPayloadRevision
+				? authority.acceptedDecoyBody
+				: parsed.decoyBody;
 
 		const existing = this.byView.get(view);
 		if (existing) {
@@ -2035,6 +2153,7 @@ export class SessionManager {
 		return session;
 	}
 
+	/** Updates path-indexed session and decoy maps when a file is renamed from `oldPath` to `newPath`. */
 	renamePath(oldPath: string, newPath: string): void {
 		if (oldPath === newPath) return;
 		const existingSet = this.byPath.get(oldPath);
@@ -2057,6 +2176,7 @@ export class SessionManager {
 		}
 	}
 
+	/** Detaches any tracked sessions whose views are no longer present in `activeViews`. */
 	pruneDetached(activeViews: Set<MarkdownView>): void {
 		if (this.isDisposed()) return;
 		for (const session of this.all()) {
@@ -2064,9 +2184,13 @@ export class SessionManager {
 		}
 	}
 
+	/** Masks and detaches the session associated with `view`. */
 	detach(view: MarkdownView): void {
 		const session = this.byView.get(view);
 		if (!session) return;
+		if (session.lockingPromise !== null) {
+			this.coordinator.releaseFileActivePromise(this.app, session.file);
+		}
 		if (!this.isDisposed()) {
 			void this.lock(session, "detach").catch((error) => {
 				console.warn("Veneer: lock on detach failed", error);
@@ -2103,6 +2227,7 @@ export class SessionManager {
 		return true;
 	}
 
+	/** Populates `session.imageUrls` with `blob:` preview URLs for decrypted vault images. */
 	private populateImageUrls(
 		session: ViewSession,
 		images: Record<string, { mime: string; data: Uint8Array<ArrayBuffer> }>,
@@ -2143,10 +2268,12 @@ export class SessionManager {
 		}
 	}
 
+	/** Revokes all `blob:` preview URLs held by `session` and clears `session.imageUrls`. */
 	private revokeImageUrls(session: ViewSession): void {
 		this.revokeImageUrlsIsolated(session);
 	}
 
+	/** Revokes all `blob:` preview URLs held by `session`, isolating per-URL errors. */
 	private revokeImageUrlsIsolated(session: ViewSession, errors?: unknown[]): string[] {
 		const revoked: string[] = [];
 		if (typeof URL !== "undefined" && typeof URL.revokeObjectURL === "function") {
@@ -2165,6 +2292,7 @@ export class SessionManager {
 		return revoked;
 	}
 
+	/** Updates the inline title, view header title, and tab header title for `session.view`. */
 	private applyDisplayedTitle(session: ViewSession, titleText: string): void {
 		const container = (session.view as unknown as { containerEl?: HTMLElement }).containerEl;
 		if (container) {
@@ -2179,6 +2307,7 @@ export class SessionManager {
 		}
 	}
 
+	/** Reads the current edited inline title from `session.view`'s DOM, falling back to `session.realTitle`. */
 	private readEditedInlineTitle(session: ViewSession): string | null {
 		const container = (session.view as unknown as { containerEl?: HTMLElement }).containerEl;
 		const inlineEl = container?.querySelector(".inline-title");
@@ -2368,6 +2497,10 @@ export class SessionManager {
 		);
 	}
 
+	/**
+	 * Attempts to unlock `session` with `password`, deriving the DEK, decrypting real text
+	 * and embedded images, and swapping the editor buffer to plaintext if still attached and live.
+	 */
 	async unlock(session: ViewSession, password: string): Promise<UnlockOutcome> {
 		const startGeneration = session.killGeneration;
 		const startEpoch = this.killEpoch;
