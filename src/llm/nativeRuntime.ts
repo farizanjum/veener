@@ -259,8 +259,13 @@ export class NativeRuntime implements LlmRuntime {
 			}
 			throw new Error("Native server startup timed out");
 		} catch (error) {
-			await this.stopProcess(process).catch(() => undefined);
-			clearProcess();
+			const stopped = await this.stopProcess(process).then(
+				() => true,
+				() => false,
+			);
+			if (stopped) {
+				clearProcess();
+			}
 			throw error;
 		}
 	}
@@ -301,7 +306,6 @@ export class NativeRuntime implements LlmRuntime {
 		this.loadEpoch += 1;
 		this.ready = false;
 		const process = this.process;
-		this.process = null;
 		const pendingLoad = this.loading;
 		this.loading = null;
 		const stopTask = process ? this.stopProcess(process) : null;
@@ -309,14 +313,10 @@ export class NativeRuntime implements LlmRuntime {
 			if (stopTask) {
 				await stopTask;
 			}
-		} finally {
-			if (process) {
-				const cleanup = this.exitHookCleanups.get(process);
-				if (cleanup) {
-					this.exitHookCleanups.delete(process);
-					cleanup();
-				}
+			if (process && this.process === process) {
+				this.process = null;
 			}
+		} finally {
 			if (pendingLoad) {
 				await pendingLoad.catch(() => undefined);
 			}
@@ -334,24 +334,43 @@ export class NativeRuntime implements LlmRuntime {
 			process.signalCode !== null ||
 			this.terminatedProcesses.has(process)
 		) {
+			this.terminatedProcesses.add(process);
+			if (this.process === process) {
+				this.process = null;
+			}
+			const cleanup = this.exitHookCleanups.get(process);
+			if (cleanup) {
+				this.exitHookCleanups.delete(process);
+				cleanup();
+			}
 			return Promise.resolve();
 		}
 		const task = (async (): Promise<void> => {
+			let exited = false;
 			try {
 				process.kill("SIGTERM");
-				if (await this.dependencies.waitForExit(process, 2_000)) return;
+				if (await this.dependencies.waitForExit(process, 2_000)) {
+					exited = true;
+					return;
+				}
 				process.kill("SIGKILL");
 				if (!(await this.dependencies.waitForExit(process, 2_000))) {
 					throw new Error("Native server did not exit after SIGKILL");
 				}
+				exited = true;
 			} finally {
-				this.terminatedProcesses.add(process);
-				const cleanup = this.exitHookCleanups.get(process);
-				if (cleanup) {
-					this.exitHookCleanups.delete(process);
-					cleanup();
-				}
 				this.stopPromises.delete(process);
+				if (exited || process.exitCode !== null || process.signalCode !== null) {
+					this.terminatedProcesses.add(process);
+					if (this.process === process) {
+						this.process = null;
+					}
+					const cleanup = this.exitHookCleanups.get(process);
+					if (cleanup) {
+						this.exitHookCleanups.delete(process);
+						cleanup();
+					}
+				}
 			}
 		})();
 		this.stopPromises.set(process, task);

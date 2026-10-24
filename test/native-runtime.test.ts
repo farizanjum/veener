@@ -400,6 +400,44 @@ describe("NativeRuntime", () => {
 		}
 	});
 
+	it("retains process tracking and exit hook when stopProcess times out after SIGKILL so retry or host exit can still terminate it", async () => {
+		const proc = new FakeProcess();
+		const activeExitCallbacks = new Set<() => void>();
+		const waitForExit = vi
+			.fn<NativeRuntimeDependencies["waitForExit"]>()
+			.mockResolvedValueOnce(false)
+			.mockResolvedValueOnce(false)
+			.mockResolvedValueOnce(true);
+
+		const runtime = new NativeRuntime(CONFIG, {
+			listDevices: async () => "Available devices:\n  Vulkan0: NVIDIA GeForce RTX 4050\n",
+			findAvailablePort: async () => 43_123,
+			randomApiKey: () => "key",
+			spawnServer: () => proc,
+			request: async () => ({ statusCode: 200, body: "" }),
+			sleep: async () => undefined,
+			waitForExit,
+			registerExitHook: (onExit) => {
+				activeExitCallbacks.add(onExit);
+				return () => {
+					activeExitCallbacks.delete(onExit);
+				};
+			},
+		});
+
+		await runtime.ensureLoaded();
+		expect(activeExitCallbacks.size).toBe(1);
+
+		await expect(runtime.unload()).rejects.toThrow("Native server did not exit after SIGKILL");
+		expect(runtime.isReady()).toBe(false);
+		expect(proc.signals).toEqual(["SIGTERM", "SIGKILL"]);
+		expect(activeExitCallbacks.size).toBe(1);
+
+		await expect(runtime.unload()).resolves.toBeUndefined();
+		expect(proc.signals).toEqual(["SIGTERM", "SIGKILL", "SIGTERM"]);
+		expect(activeExitCallbacks.size).toBe(0);
+	});
+
 	it("times out listDevices when the discovery process hangs", async () => {
 		expect(LIST_DEVICES_TIMEOUT_MS).toBe(10_000);
 		await expect(
@@ -410,6 +448,7 @@ describe("NativeRuntime", () => {
 					modelPath: "/model.gguf",
 				},
 				25,
+				["-e", "setInterval(() => {}, 1000)"],
 			),
 		).rejects.toThrow("Vulkan device discovery timed out");
 	});

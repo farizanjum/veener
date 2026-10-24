@@ -214,7 +214,13 @@ export class VeneerSettingTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.modelId)
 					.onChange(async (value) => {
 						this.plugin.settings.modelId = value as ModelId;
+						const status = this.plugin.modelFileStatus();
+						this.plugin.settings.modelDownloaded = status.exists;
+						if (!status.exists) {
+							this.plugin.settings.modelVerified = false;
+						}
 						await this.plugin.saveSettings();
+						this.plugin.rebuildGenerator();
 						this.display();
 					}),
 			);

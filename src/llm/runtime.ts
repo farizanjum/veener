@@ -27,8 +27,10 @@ class WllamaRecoveryError extends Error {
 /** WebAssembly-backed LLM runtime using @wllama/wllama. */
 export class WllamaRuntime implements LlmRuntime {
 	private engine: Wllama | null = null;
+	private loadingEngine: Wllama | null = null;
 	private loading: Promise<void> | null = null;
 	private loadEpoch = 0;
+	private readonly exitedEngines = new WeakSet<object>();
 
 	constructor(
 		private readonly modelPath: string,
@@ -75,6 +77,7 @@ export class WllamaRuntime implements LlmRuntime {
 					suppressNativeLog: true,
 				},
 			);
+			this.loadingEngine = engine;
 			try {
 				await engine.loadModel([modelBlob], {
 					n_ctx: 2048,
@@ -83,11 +86,21 @@ export class WllamaRuntime implements LlmRuntime {
 					flash_attn: false,
 				});
 			} catch (loadError) {
-				await engine.exit().catch(() => undefined);
+				if (!this.exitedEngines.has(engine)) {
+					this.exitedEngines.add(engine);
+					await engine.exit().catch(() => undefined);
+				}
 				throw loadError;
+			} finally {
+				if (this.loadingEngine === engine) {
+					this.loadingEngine = null;
+				}
 			}
 			if (this.loadEpoch !== epoch) {
-				await engine.exit().catch(() => undefined);
+				if (!this.exitedEngines.has(engine)) {
+					this.exitedEngines.add(engine);
+					await engine.exit().catch(() => undefined);
+				}
 				throw new Error("wllama runtime unloaded during startup");
 			}
 			this.engine = engine;
@@ -127,10 +140,13 @@ export class WllamaRuntime implements LlmRuntime {
 		} catch (generationError) {
 			if (this.engine === engine) {
 				this.engine = null;
-				try {
-					await engine.exit();
-				} catch (cleanupError) {
-					throw new WllamaRecoveryError(generationError, cleanupError);
+				if (!this.exitedEngines.has(engine)) {
+					this.exitedEngines.add(engine);
+					try {
+						await engine.exit();
+					} catch (cleanupError) {
+						throw new WllamaRecoveryError(generationError, cleanupError);
+					}
 				}
 			}
 			throw generationError;
@@ -142,10 +158,23 @@ export class WllamaRuntime implements LlmRuntime {
 		this.loadEpoch += 1;
 		const currentEngine = this.engine;
 		this.engine = null;
+		const inFlightEngine = this.loadingEngine;
+		this.loadingEngine = null;
 		const pendingLoad = this.loading;
 		this.loading = null;
 		try {
-			await currentEngine?.exit();
+			if (currentEngine && !this.exitedEngines.has(currentEngine)) {
+				this.exitedEngines.add(currentEngine);
+				await currentEngine.exit();
+			}
+			if (
+				inFlightEngine &&
+				inFlightEngine !== currentEngine &&
+				!this.exitedEngines.has(inFlightEngine)
+			) {
+				this.exitedEngines.add(inFlightEngine);
+				await inFlightEngine.exit().catch(() => undefined);
+			}
 		} finally {
 			if (pendingLoad) {
 				await pendingLoad.catch(() => undefined);

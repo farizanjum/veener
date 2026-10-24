@@ -84,6 +84,44 @@ describe("WllamaRuntime", () => {
 		expect(runtime.isReady()).toBe(false);
 	});
 
+	it("immediately calls engine.exit() inside unload() while loadModel is stalled before loadModel settles", async () => {
+		let rejectLoadModel!: (reason?: unknown) => void;
+		const exitMock = vi.fn().mockImplementation(async () => {
+			rejectLoadModel?.(new Error("worker terminated by exit"));
+		});
+		const loadModelMock = vi.fn().mockImplementation(
+			() =>
+				new Promise<void>((_resolve, reject) => {
+					rejectLoadModel = reject;
+				}),
+		);
+
+		wllamaConstructMock.mockReturnValue({
+			loadModel: loadModelMock,
+			exit: exitMock,
+			getChatTemplate: vi.fn().mockReturnValue(null),
+			createChatCompletion: vi.fn(),
+			createCompletion: vi.fn(),
+		});
+
+		const runtime = new WllamaRuntime("/tmp/model.gguf", "/tmp/wllama.wasm");
+		const loadPromise = runtime.ensureLoaded();
+
+		await vi.waitFor(() => {
+			expect(loadModelMock).toHaveBeenCalledTimes(1);
+		});
+
+		expect(exitMock).not.toHaveBeenCalled();
+		const unloadPromise = runtime.unload();
+		expect(exitMock).toHaveBeenCalledTimes(1);
+
+		await expect(loadPromise).rejects.toThrow("worker terminated by exit");
+		await unloadPromise;
+
+		expect(exitMock).toHaveBeenCalledTimes(1);
+		expect(runtime.isReady()).toBe(false);
+	});
+
 	it("calls engine.exit() to clean up the worker when loadModel rejects", async () => {
 		const exitMock = vi.fn().mockResolvedValue(undefined);
 		const loadModelMock = vi.fn().mockRejectedValue(new Error("corrupt gguf"));

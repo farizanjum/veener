@@ -1426,6 +1426,9 @@ export default class VeneerPlugin extends Plugin {
 			console.warn("Veneer: model delete skipped", error);
 			deleted = false;
 		}
+		const prevModelId = this.settings.modelId;
+		const prevCustomFile = this.settings.customModel?.file ?? null;
+		const prevDownloaded = this.settings.modelDownloaded;
 		const disk = this.modelFileStatus();
 		if (disk.exists) {
 			this.settings.modelDownloaded = true;
@@ -1453,7 +1456,11 @@ export default class VeneerPlugin extends Plugin {
 			}
 		}
 		await this.saveSettings();
-		if (wasActiveModel) {
+		const selectionOrAvailabilityChanged =
+			this.settings.modelId !== prevModelId ||
+			(this.settings.customModel?.file ?? null) !== prevCustomFile ||
+			(!disk.exists && this.settings.modelDownloaded !== prevDownloaded);
+		if (wasActiveModel || selectionOrAvailabilityChanged) {
 			this.rebuildGenerator();
 		}
 		return deleted;

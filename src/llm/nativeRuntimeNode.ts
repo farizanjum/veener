@@ -18,19 +18,31 @@ export const LIST_DEVICES_TIMEOUT_MS = 10_000;
  * Spawns the native server executable with `--list-devices` and returns its combined stdout/stderr output.
  * Kills the child process with `SIGKILL` if discovery does not finish within `timeoutMs`.
  */
-export function listDevices(config: NativeRuntimeConfig, timeoutMs = LIST_DEVICES_TIMEOUT_MS): Promise<string> {
+export function listDevices(
+	config: NativeRuntimeConfig,
+	timeoutMs = LIST_DEVICES_TIMEOUT_MS,
+	args: readonly string[] = ["--list-devices"],
+): Promise<string> {
 	return new Promise((resolve, reject) => {
-		const child = spawn(config.executablePath, ["--list-devices"], {
+		const child = spawn(config.executablePath, args, {
 			cwd: config.engineDir,
 			windowsHide: true,
 			stdio: ["ignore", "pipe", "pipe"],
 		});
 		let output = "";
 		let settled = false;
+		const unregisterExitHook = registerExitHook(() => {
+			if (!settled) {
+				try {
+					child.kill("SIGKILL");
+				} catch {}
+			}
+		});
 		const finish = (): void => {
+			unregisterExitHook();
 			clearTimeout(timer);
 			child.removeListener("error", onError);
-			child.removeListener("exit", onExit);
+			child.removeListener("close", onExit);
 			child.stdout.destroy();
 			child.stderr.destroy();
 		};
@@ -70,7 +82,7 @@ export function listDevices(config: NativeRuntimeConfig, timeoutMs = LIST_DEVICE
 			output += chunk;
 		});
 		child.once("error", onError);
-		child.once("exit", onExit);
+		child.once("close", onExit);
 	});
 }
 
