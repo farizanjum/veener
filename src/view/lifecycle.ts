@@ -487,6 +487,7 @@ export class ViewLifecycleCoordinator {
 			record.activePromise !== null ||
 			record.queue.length > 0 ||
 			record.frozenSnapshot !== null ||
+			record.disposition?.kind === "destroyed" ||
 			record.disposition?.kind === "unprotected"
 		);
 	}
@@ -1324,7 +1325,6 @@ export class ViewLifecycleCoordinator {
 						(entry) => !entry.cancelledBeforeSubmit && entry.kind === "native-save-guard",
 					);
 					if (!hasPendingGuardedSaves) {
-						record.disposition = null;
 						record.frozenSnapshot = null;
 					}
 					return;
@@ -1351,28 +1351,9 @@ export class ViewLifecycleCoordinator {
 						(entry) => !entry.cancelledBeforeSubmit && entry.kind === "native-save-guard",
 					);
 					if (!hasPendingGuardedSaves) {
-						record.disposition = null;
 						record.frozenSnapshot = null;
 					}
 					return;
-				}
-				if (record.disposition === null && record.frozenSnapshot === null) {
-					const currentEditorText =
-						view.editor && typeof view.editor.getValue === "function"
-							? view.editor.getValue()
-							: ((view as unknown as { data?: string }).data ?? "");
-					if (
-						!scope.saveBlockedViews.has(view) &&
-						parseFileContent(currentEditorText) === null
-					) {
-						if (syncViewData) {
-							syncViewData(view, currentEditorText);
-						} else {
-							(view as unknown as { data: string }).data = currentEditorText;
-						}
-						await rawSave.call(view, clear);
-						return;
-					}
 				}
 				const effectiveSafe =
 					this.getGuardEffectiveContent(

@@ -1127,33 +1127,43 @@ export default class VeneerPlugin extends Plugin {
 									} catch {}
 									for (const v of matchingViews) {
 										try {
-											if (rawSet.length >= 3) {
-												(
-													rawSet as (
-														view: MarkdownView,
-														data: string,
-														clear: boolean,
-													) => void
-												)(v, plaintextWithNewline, true);
-											} else {
-												(
-													rawSet as (
-														this: MarkdownView,
-														data: string,
-														clear: boolean,
-													) => void
-												).call(v, plaintextWithNewline, true);
+											const currentText =
+												v.editor && typeof v.editor.getValue === "function"
+													? v.editor.getValue()
+													: ((v as unknown as { data?: string }).data ?? "");
+											if (
+												parseFileContent(currentText) !== null ||
+												currentText.length === 0
+											) {
+												if (rawSet.length >= 3) {
+													(
+														rawSet as (
+															view: MarkdownView,
+															data: string,
+															clear: boolean,
+														) => void
+													)(v, plaintextWithNewline, true);
+												} else {
+													(
+														rawSet as (
+															this: MarkdownView,
+															data: string,
+															clear: boolean,
+														) => void
+													).call(v, plaintextWithNewline, true);
+												}
+												(v as unknown as { data: string }).data =
+													plaintextWithNewline;
 											}
-											(v as unknown as { data: string }).data =
-												plaintextWithNewline;
 										} catch {}
 									}
 								};
 								if (!this.isLive()) {
 									hydrateMatchingViews();
 								}
+								const wasLiveBeforeRegistryRemove = this.isLive();
 								await this.registry.remove(file.path);
-								if (!this.isLive()) {
+								if (wasLiveBeforeRegistryRemove && !this.isLive()) {
 									hydrateMatchingViews();
 								}
 							},
