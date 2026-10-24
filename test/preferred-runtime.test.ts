@@ -265,4 +265,24 @@ describe("PreferredRuntime", () => {
 		expect(runtime.isReady()).toBe(true);
 		await expect(runtime.generate("prompt", 12)).resolves.toBe("fresh result");
 	});
+
+	it("rejects unload() after attempting to unload both runtimes if either runtime unload rejects", async () => {
+		const primary: LlmRuntime = {
+			isReady: () => false,
+			ensureLoaded: vi.fn(),
+			generate: vi.fn(),
+			unload: vi.fn().mockRejectedValue(new Error("primary unload failed")),
+		};
+		const fallback: LlmRuntime = {
+			isReady: () => false,
+			ensureLoaded: vi.fn(),
+			generate: vi.fn(),
+			unload: vi.fn().mockResolvedValue(undefined),
+		};
+
+		const runtime = new PreferredRuntime(primary, fallback);
+		await expect(runtime.unload()).rejects.toThrow("primary unload failed");
+		expect(primary.unload).toHaveBeenCalledTimes(1);
+		expect(fallback.unload).toHaveBeenCalledTimes(1);
+	});
 });

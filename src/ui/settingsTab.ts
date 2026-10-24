@@ -161,6 +161,7 @@ export class VeneerSettingTab extends PluginSettingTab {
 						this.plugin.settings.customModel = null;
 					}
 					this.plugin.settings.modelDownloaded = true;
+					this.plugin.settings.modelVerified = false;
 					await this.plugin.saveSettings();
 					this.plugin.rebuildGenerator();
 					this.display();
@@ -216,9 +217,7 @@ export class VeneerSettingTab extends PluginSettingTab {
 						this.plugin.settings.modelId = value as ModelId;
 						const status = this.plugin.modelFileStatus();
 						this.plugin.settings.modelDownloaded = status.exists;
-						if (!status.exists) {
-							this.plugin.settings.modelVerified = false;
-						}
+						this.plugin.settings.modelVerified = false;
 						await this.plugin.saveSettings();
 						this.plugin.rebuildGenerator();
 						this.display();

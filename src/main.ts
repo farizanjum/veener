@@ -62,6 +62,7 @@ export default class VeneerPlugin extends Plugin {
 	private generator!: DecoyGenerator;
 	private isShuttingDown = false;
 	private teardownDone = false;
+	private modelDeletionInFlight = false;
 	private activeModals?: Set<ClosableModal>;
 
 	/** Returns the shared `ViewLifecycleCoordinator` from the active session manager or global singleton. */
@@ -830,6 +831,7 @@ export default class VeneerPlugin extends Plugin {
 			new Notice("Not a protected note.");
 			return;
 		}
+		if (this.modelDeletionInFlight) return;
 		const result = await this.generator.generate(
 			"auto",
 			this.settings.interests,
@@ -1409,61 +1411,71 @@ export default class VeneerPlugin extends Plugin {
 		const root = adapter.getBasePath?.() ?? "";
 		const abs = `${root}/${this.app.vault.configDir}/plugins/deocy/models/${fileName}`;
 		if (wasActiveModel) {
-			try {
-				await this.generator?.unload();
-			} catch (error) {
-				console.warn("Veneer: generator unload before model delete failed", error);
-			}
+			this.modelDeletionInFlight = true;
 		}
-		let deleted = false;
 		try {
-			if (fs.existsSync(abs)) {
-				fs.unlinkSync(abs);
-			}
-			clearPartial(abs);
-			deleted = !fs.existsSync(abs);
-		} catch (error) {
-			console.warn("Veneer: model delete skipped", error);
-			deleted = false;
-		}
-		const prevModelId = this.settings.modelId;
-		const prevCustomFile = this.settings.customModel?.file ?? null;
-		const prevDownloaded = this.settings.modelDownloaded;
-		const disk = this.modelFileStatus();
-		if (disk.exists) {
-			this.settings.modelDownloaded = true;
-		} else {
-			const remaining = this.downloadedModels();
-			const next = remaining[0];
-			if (next) {
-				if (next.modelId === "custom") {
-					this.settings.modelId = "custom";
-					this.settings.customModel = {
-						file: next.fileName,
-						url: null,
-						sizeBytes: next.sizeBytes,
-						label: next.fileName,
-					};
-				} else {
-					this.settings.modelId = next.modelId;
-					this.settings.customModel = null;
+			if (wasActiveModel) {
+				try {
+					await this.generator?.unload();
+				} catch (error) {
+					console.warn("Veneer: generator unload before model delete failed", error);
+					return false;
 				}
+			}
+			let deleted = false;
+			try {
+				if (fs.existsSync(abs)) {
+					fs.unlinkSync(abs);
+				}
+				clearPartial(abs);
+				deleted = !fs.existsSync(abs);
+			} catch (error) {
+				console.warn("Veneer: model delete skipped", error);
+				deleted = false;
+			}
+			const prevModelId = this.settings.modelId;
+			const prevCustomFile = this.settings.customModel?.file ?? null;
+			const prevDownloaded = this.settings.modelDownloaded;
+			const disk = this.modelFileStatus();
+			if (disk.exists) {
 				this.settings.modelDownloaded = true;
-				this.settings.modelVerified = false;
 			} else {
-				this.settings.modelDownloaded = false;
-				this.settings.modelVerified = false;
+				const remaining = this.downloadedModels();
+				const next = remaining[0];
+				if (next) {
+					if (next.modelId === "custom") {
+						this.settings.modelId = "custom";
+						this.settings.customModel = {
+							file: next.fileName,
+							url: null,
+							sizeBytes: next.sizeBytes,
+							label: next.fileName,
+						};
+					} else {
+						this.settings.modelId = next.modelId;
+						this.settings.customModel = null;
+					}
+					this.settings.modelDownloaded = true;
+					this.settings.modelVerified = false;
+				} else {
+					this.settings.modelDownloaded = false;
+					this.settings.modelVerified = false;
+				}
+			}
+			await this.saveSettings();
+			const selectionOrAvailabilityChanged =
+				this.settings.modelId !== prevModelId ||
+				(this.settings.customModel?.file ?? null) !== prevCustomFile ||
+				this.settings.modelDownloaded !== prevDownloaded;
+			if (wasActiveModel || selectionOrAvailabilityChanged) {
+				await this.rebuildGenerator();
+			}
+			return deleted;
+		} finally {
+			if (wasActiveModel) {
+				this.modelDeletionInFlight = false;
 			}
 		}
-		await this.saveSettings();
-		const selectionOrAvailabilityChanged =
-			this.settings.modelId !== prevModelId ||
-			(this.settings.customModel?.file ?? null) !== prevCustomFile ||
-			(!disk.exists && this.settings.modelDownloaded !== prevDownloaded);
-		if (wasActiveModel || selectionOrAvailabilityChanged) {
-			this.rebuildGenerator();
-		}
-		return deleted;
 	}
 
 	/** Ensures the plugin models directory exists and returns its absolute and vault-relative paths. */
@@ -1479,13 +1491,15 @@ export default class VeneerPlugin extends Plugin {
 		await this.app.vault.adapter.remove(rel);
 	}
 
-	/** Unloads the current decoy generator and constructs a replacement without eager warmup when the plugin is live. */
-	rebuildGenerator(): void {
-		if (!this.isLive()) return;
-		void this.generator?.unload()?.catch((error) => {
+	/** Unloads the current decoy generator and constructs a replacement without warming it up. */
+	rebuildGenerator(): Promise<void> {
+		if (!this.isLive()) return Promise.resolve();
+		const prevGenerator = this.generator;
+		this.generator = this.buildGenerator();
+		if (!prevGenerator) return Promise.resolve();
+		return Promise.resolve(prevGenerator.unload()).catch((error) => {
 			console.warn("Veneer: generator unload failed", error);
 		});
-		this.generator = this.buildGenerator();
 	}
 
 	/** Copies a local `.gguf` file into the models directory, computes its SHA-256 digest, and activates it. */
@@ -1516,6 +1530,9 @@ export default class VeneerPlugin extends Plugin {
 
 	/** Generates a short sample decoy cover using the active generator to verify model readiness. */
 	async testModelFlow(): Promise<string> {
+		if (this.modelDeletionInFlight) {
+			return "The model is being deleted. Try again after deletion finishes.";
+		}
 		const result = await this.generator.generate(
 			"auto",
 			this.settings.interests,

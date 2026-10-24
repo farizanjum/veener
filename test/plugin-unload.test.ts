@@ -1720,6 +1720,7 @@ describe("VeneerPlugin.onunload and registered cleanup lifecycle regressions (Is
 
 		buildGeneratorSpy.mockClear();
 		warmupSpy.mockClear();
+		plugin.settings.modelDownloaded = true;
 
 		const deletedInactive = await plugin.deleteModelFile("inactive-extra.gguf");
 		expect(deletedInactive).toBe(true);
@@ -1732,6 +1733,9 @@ describe("VeneerPlugin.onunload and registered cleanup lifecycle regressions (Is
 		const deletePromise = plugin.deleteModelFile("Qwen3-0.6B-Q4_K_M.gguf");
 		await Promise.resolve();
 		expect(orderEvents).toEqual(["generator.unload:start"]);
+		await expect(plugin.testModelFlow()).resolves.toBe(
+			"The model is being deleted. Try again after deletion finishes.",
+		);
 
 		unloadDeferred.resolve();
 		const deleted = await deletePromise;
@@ -1746,6 +1750,31 @@ describe("VeneerPlugin.onunload and registered cleanup lifecycle regressions (Is
 		expect(plugin.settings.modelDownloaded).toBe(true);
 		expect(buildGeneratorSpy).toHaveBeenCalledTimes(1);
 		expect(warmupSpy).not.toHaveBeenCalled();
+
+		orderEvents.length = 0;
+		buildGeneratorSpy.mockClear();
+		filesOnDisk.add("stale-inactive.gguf");
+		plugin.settings.modelDownloaded = false;
+		const deletedStale = await plugin.deleteModelFile("stale-inactive.gguf");
+		expect(deletedStale).toBe(true);
+		expect(plugin.settings.modelDownloaded).toBe(true);
+		expect(buildGeneratorSpy).toHaveBeenCalledTimes(1);
+
+		orderEvents.length = 0;
+		buildGeneratorSpy.mockClear();
+		pluginInternal.generator = {
+			warmup: warmupSpy,
+			generate: generateSpy,
+			unload: async () => {
+				orderEvents.push("generator.unload:failed");
+				throw new Error("Simulated unload failure");
+			},
+		} as unknown as DecoyGenerator;
+		const failedDelete = await plugin.deleteModelFile("Qwen3-1.7B-Q4_K_M.gguf");
+		expect(failedDelete).toBe(false);
+		expect(orderEvents).toEqual(["generator.unload:failed"]);
+		expect(filesOnDisk.has("Qwen3-1.7B-Q4_K_M.gguf")).toBe(true);
+		expect(buildGeneratorSpy).not.toHaveBeenCalled();
 
 		existsSpy.mockRestore();
 		readdirSpy.mockRestore();

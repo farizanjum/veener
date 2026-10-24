@@ -98,17 +98,26 @@ export class PreferredRuntime implements LlmRuntime {
 		this.activeRuntime = null;
 		const pendingLoad = this.loading;
 		this.loading = null;
+		let unloadFailed = false;
+		let unloadError: unknown;
 		await Promise.all([
 			this.primary.unload().catch((error) => {
+				unloadFailed = true;
+				unloadError ??= error;
 				console.warn("Primary runtime unload failed", error);
 			}),
 			this.fallback.unload().catch((error) => {
+				unloadFailed = true;
+				unloadError ??= error;
 				console.warn("Fallback runtime unload failed", error);
 			}),
 			pendingLoad?.catch(() => undefined),
 		]);
 		if (this.loadEpoch === unloadEpoch) {
 			this.activeRuntime = null;
+		}
+		if (unloadFailed) {
+			throw unloadError;
 		}
 	}
 }
