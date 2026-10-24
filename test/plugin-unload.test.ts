@@ -1335,5 +1335,97 @@ describe("VeneerPlugin.onunload and registered cleanup lifecycle regressions (Is
 			harness.restorePrototype();
 			activeHarness = null;
 		}
+
+		{
+			let failNativeSetterOnFallbackPane = false;
+			const harness = createPluginUnloadHarness(VeneerPlugin, {
+				shouldFailNativeSetter: (view) =>
+					failNativeSetterOnFallbackPane &&
+					(view as unknown as { file?: { path?: string } }).file?.path ===
+						"FallbackUndoHistory.md"
+						? new Error("Simulated native setViewData failure")
+						: null,
+			});
+			activeHarness = harness;
+
+			const { pane, session } = await harness.seedProtectedNote({
+				path: "FallbackUndoHistory.md",
+				realText: SECRET_P0,
+			});
+			expect(await harness.sessions.unlock(session, TEST_PASSWORD)).toBe("ok");
+			pane.typeInEditor(SECRET_P2_TAIL);
+			expect(pane.undoHistory.length).toBeGreaterThan(0);
+
+			failNativeSetterOnFallbackPane = true;
+			harness.unloadPlugin("onunload-first");
+			const handoff = harness.sessions.shutdownAndHandoff();
+			expect(handoff.viewOutcomes.some((o) => o.status === "fallback-hydrated")).toBe(true);
+			expect(pane.undoHistory).toEqual([]);
+			expect(pane.getEditorText()).not.toContain(SECRET_P0);
+			expect(pane.getEditorText()).not.toContain(SECRET_P2_TAIL);
+
+			harness.restorePrototype();
+			activeHarness = null;
+		}
+
+		{
+			const save1Gate = createDeferred<void>();
+			const save2Gate = createDeferred<void>();
+			const save1Started = createDeferred<void>();
+			const save2Started = createDeferred<void>();
+			let saveCallIndex = 0;
+
+			const harness = createPluginUnloadHarness(VeneerPlugin, {
+				onNativeSaveStart: ({ path: targetPath }) => {
+					if (targetPath === "OverlappingGuardedSaves.md") {
+						saveCallIndex += 1;
+						if (saveCallIndex === 1) {
+							save1Started.resolve();
+						} else if (saveCallIndex === 2) {
+							save2Started.resolve();
+						}
+					}
+				},
+				nativeSaveGateForPath: (targetPath) => {
+					if (targetPath === "OverlappingGuardedSaves.md") {
+						return saveCallIndex === 1 ? save1Gate.promise : save2Gate.promise;
+					}
+					return null;
+				},
+			});
+			activeHarness = harness;
+
+			const { file, pane, session } = await harness.seedProtectedNote({
+				path: "OverlappingGuardedSaves.md",
+				realText: SECRET_P0,
+			});
+			expect(await harness.sessions.unlock(session, TEST_PASSWORD)).toBe("ok");
+			await harness.stageCompletedPendingPayload(session, SECRET_P1);
+
+			harness.unloadPlugin("onunload-first");
+			const coordinator = getSharedLifecycleCoordinator();
+
+			const firstSave = pane.view.save();
+			await save1Started.promise;
+			const secondSave = pane.view.save();
+
+			let predecessorSettled = false;
+			const barrierPromise = coordinator.predecessorReady(harness.app, file).then(() => {
+				predecessorSettled = true;
+			});
+
+			save1Gate.resolve();
+			await firstSave;
+			await save2Started.promise;
+			expect(predecessorSettled).toBe(false);
+
+			save2Gate.resolve();
+			await secondSave;
+			await barrierPromise;
+			expect(predecessorSettled).toBe(true);
+
+			harness.restorePrototype();
+			activeHarness = null;
+		}
 	}, 20000);
 });

@@ -1253,6 +1253,48 @@ export class SessionManager {
 		);
 	}
 
+	/**
+	 * Clears editor undo/redo history on `view` during fallback hydration so `Ctrl+Z`
+	 * cannot recover decrypted plaintext when `nativeSetViewData(fullRaw, true)` fails.
+	 */
+	private clearFallbackUndoHistory(view: MarkdownView, targetRaw: string): void {
+		try {
+			const viewWithClear = view as unknown as {
+				clear?: () => void;
+				undoHistory?: unknown[];
+			};
+			if (typeof viewWithClear.clear === "function") {
+				viewWithClear.clear();
+			}
+			if (Array.isArray(viewWithClear.undoHistory)) {
+				viewWithClear.undoHistory.length = 0;
+			}
+		} catch {}
+		try {
+			const editorWithHistory = view.editor as unknown as {
+				clearHistory?: () => void;
+				undoHistory?: unknown[];
+				cm?: {
+					state?: {
+						constructor?: { create?: (config: { doc: string }) => unknown };
+					};
+					setState?: (state: unknown) => void;
+				};
+			};
+			if (typeof editorWithHistory?.clearHistory === "function") {
+				editorWithHistory.clearHistory();
+			}
+			if (Array.isArray(editorWithHistory?.undoHistory)) {
+				editorWithHistory.undoHistory.length = 0;
+			}
+			const cm = editorWithHistory?.cm;
+			const stateCtor = cm?.state?.constructor;
+			if (cm && typeof cm.setState === "function" && stateCtor && typeof stateCtor.create === "function") {
+				cm.setState(stateCtor.create({ doc: targetRaw }));
+			}
+		} catch {}
+	}
+
 	/** Verifies that both `view.editor.getValue()` and `view.data` exactly match `expectedRaw`. */
 	private isViewProvenSafe(view: MarkdownView, expectedRaw: string): boolean {
 		try {
@@ -1265,7 +1307,12 @@ export class SessionManager {
 			}
 			const editorMatches = view.editor.getValue() === expectedRaw;
 			const backingMatches = (view as unknown as { data?: unknown }).data === expectedRaw;
-			return editorMatches && backingMatches;
+			const viewHistory = (view as unknown as { undoHistory?: unknown[] }).undoHistory;
+			const editorHistory = (view.editor as unknown as { undoHistory?: unknown[] }).undoHistory;
+			const historyClean =
+				(!Array.isArray(viewHistory) || viewHistory.length === 0) &&
+				(!Array.isArray(editorHistory) || editorHistory.length === 0);
+			return editorMatches && backingMatches && historyClean;
 		} catch {
 			return false;
 		}
@@ -1490,6 +1537,10 @@ export class SessionManager {
 					} else {
 						let fallbackError: unknown = null;
 						try {
+							this.clearFallbackUndoHistory(view, targetRaw);
+							view.editor?.setValue?.(targetRaw);
+							(view as unknown as { data: string }).data = targetRaw;
+							this.clearFallbackUndoHistory(view, targetRaw);
 							view.editor?.setValue?.(targetRaw);
 							(view as unknown as { data: string }).data = targetRaw;
 						} catch (error) {

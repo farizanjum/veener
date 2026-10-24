@@ -318,6 +318,28 @@ export default class VeneerPlugin extends Plugin {
 		new Notice("Veneer: unlock blocked. Disable the File Recovery core plugin first (Settings > Core plugins).");
 	}
 
+	/**
+	 * Waits for any predecessor plugin retirement barrier on `file` to settle.
+	 * When `explicitRetry` is true (user-initiated command), clears a prior failed
+	 * barrier before waiting and surfaces a user `Notice` if waiting still fails.
+	 */
+	private async awaitPredecessor(file: TFile, explicitRetry = false): Promise<boolean> {
+		const coordinator = this.getCoordinator();
+		if (explicitRetry) {
+			coordinator.clearBarrierFailure(this.app, file);
+		}
+		try {
+			await coordinator.predecessorReady(this.app, file);
+			return true;
+		} catch (error) {
+			console.warn("Veneer: predecessor retirement barrier failed", error);
+			if (this.isLive()) {
+				new Notice("Veneer: a previous save for this note failed. Check the note, then retry.");
+			}
+			return false;
+		}
+	}
+
 	/** Attaches locked sessions to any already-open markdown views once predecessor retirement settles. */
 	private async attachAlreadyOpenViews(): Promise<void> {
 		if (!this.isLive()) return;
@@ -656,12 +678,7 @@ export default class VeneerPlugin extends Plugin {
 			new Notice("Veneer protects markdown notes only.");
 			return;
 		}
-		try {
-			await this.getCoordinator().predecessorReady(this.app, file);
-		} catch (error) {
-			console.warn("Veneer: predecessor retirement barrier failed", error);
-			return;
-		}
+		if (!(await this.awaitPredecessor(file, true))) return;
 		if (!this.isLive()) return;
 		const content = await this.app.vault.read(file);
 		if (!this.isLive()) return;
@@ -794,12 +811,7 @@ export default class VeneerPlugin extends Plugin {
 	/** Generates and persists a fresh decoy cover for an already-protected note. */
 	private async refreshDecoy(file: TFile): Promise<void> {
 		if (!this.isLive()) return;
-		try {
-			await this.getCoordinator().predecessorReady(this.app, file);
-		} catch (error) {
-			console.warn("Veneer: predecessor retirement barrier failed", error);
-			return;
-		}
+		if (!(await this.awaitPredecessor(file, true))) return;
 		if (!this.isLive()) return;
 		const startEpoch = this.sessions.currentKillEpoch();
 		try {
@@ -941,12 +953,7 @@ export default class VeneerPlugin extends Plugin {
 		const view = this.app.workspace.getActiveViewOfType(MarkdownView);
 		if (!view || !view.file) return;
 		const targetFile = view.file;
-		try {
-			await this.getCoordinator().predecessorReady(this.app, targetFile);
-		} catch (error) {
-			console.warn("Veneer: predecessor retirement barrier failed", error);
-			return;
-		}
+		if (!(await this.awaitPredecessor(targetFile, true))) return;
 		if (!this.isLive() || view.file !== targetFile) return;
 		let session = this.sessions.get(view);
 		if (!session) {
@@ -970,12 +977,7 @@ export default class VeneerPlugin extends Plugin {
 		if (!this.isLive()) return;
 		const file = this.app.workspace.getActiveFile();
 		if (!file) return;
-		try {
-			await this.getCoordinator().predecessorReady(this.app, file);
-		} catch (error) {
-			console.warn("Veneer: predecessor retirement barrier failed", error);
-			return;
-		}
+		if (!(await this.awaitPredecessor(file, true))) return;
 		if (!this.isLive()) return;
 		const startEpoch = this.sessions.currentKillEpoch();
 		try {
@@ -1100,12 +1102,7 @@ export default class VeneerPlugin extends Plugin {
 		if (!this.isLive()) return;
 		const file = this.app.workspace.getActiveFile();
 		if (!file) return;
-		try {
-			await this.getCoordinator().predecessorReady(this.app, file);
-		} catch (error) {
-			console.warn("Veneer: predecessor retirement barrier failed", error);
-			return;
-		}
+		if (!(await this.awaitPredecessor(file, true))) return;
 		if (!this.isLive()) return;
 		const startEpoch = this.sessions.currentKillEpoch();
 		try {

@@ -160,6 +160,7 @@ interface FileQueueRecord {
 	disposition: CommittedDisposition | null;
 	frozenSnapshot: FrozenSafeSnapshot | null;
 	barrierStatus: "none" | "draining" | "settled" | "failed";
+	guardedSaveStartedBarrier: boolean;
 	barrierFailure: unknown;
 	barrierWaiters: Array<{
 		readonly resolve: () => void;
@@ -252,6 +253,7 @@ export class ViewLifecycleCoordinator {
 				disposition: null,
 				frozenSnapshot: null,
 				barrierStatus: "none",
+				guardedSaveStartedBarrier: false,
 				barrierFailure: null,
 				barrierWaiters: [],
 				quarantinedForDestruction: scope.destructionTargetFiles.has(file) || scope.destructionTargetPaths.has(file.path),
@@ -1331,6 +1333,7 @@ export class ViewLifecycleCoordinator {
 		const wasIdleBeforeGuard = !record.processing && record.activePromise === null && record.queue.length === 0;
 		if (wasIdleBeforeGuard && record.barrierStatus !== "failed") {
 			record.barrierStatus = "draining";
+			record.guardedSaveStartedBarrier = true;
 		}
 
 		return this.enqueueFileWrite(app, {
@@ -1435,11 +1438,13 @@ export class ViewLifecycleCoordinator {
 			},
 		}).then(
 			(res) => {
+				const hasRemainingQueue = record.queue.some((entry) => !entry.cancelledBeforeSubmit);
 				if (
-					wasIdleBeforeGuard &&
+					record.guardedSaveStartedBarrier &&
 					record.barrierStatus === "draining" &&
-					record.queue.length === 0
+					!hasRemainingQueue
 				) {
+					record.guardedSaveStartedBarrier = false;
 					record.barrierStatus = "settled";
 					const waiters = record.barrierWaiters.splice(0);
 					for (const w of waiters) w.resolve();
@@ -1449,7 +1454,13 @@ export class ViewLifecycleCoordinator {
 				return res;
 			},
 			(err) => {
-				if (wasIdleBeforeGuard && record.barrierStatus === "draining") {
+				const hasRemainingQueue = record.queue.some((entry) => !entry.cancelledBeforeSubmit);
+				if (
+					record.guardedSaveStartedBarrier &&
+					record.barrierStatus === "draining" &&
+					!hasRemainingQueue
+				) {
+					record.guardedSaveStartedBarrier = false;
 					record.barrierStatus = "settled";
 					const waiters = record.barrierWaiters.splice(0);
 					for (const w of waiters) w.resolve();

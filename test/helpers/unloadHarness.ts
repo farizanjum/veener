@@ -575,6 +575,10 @@ export function createViewUnloadHarness(options?: ViewUnloadHarnessOptions): Vie
 			setValue: (next: string) => {
 				state.editorText = next;
 			},
+			clearHistory: () => {
+				state.undoHistory.length = 0;
+			},
+			undoHistory: state.undoHistory,
 			cm: {
 				state: {},
 				dispatch: () => {
@@ -600,6 +604,12 @@ export function createViewUnloadHarness(options?: ViewUnloadHarnessOptions): Vie
 			editor,
 			containerEl,
 			leaf,
+			clear: () => {
+				state.undoHistory.length = 0;
+				state.editorText = "";
+				state.backingData = "";
+			},
+			undoHistory: state.undoHistory,
 			requestSave: () => {
 				state.requestSaveCount += 1;
 			},
