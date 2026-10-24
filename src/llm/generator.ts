@@ -43,6 +43,7 @@ export class DecoyGenerator {
 	private unloadEpoch = 0;
 	private runtimeTouchedSinceUnload = false;
 	private operationQueue: Promise<void> = Promise.resolve();
+	private unloadBarrier: Promise<void> = Promise.resolve();
 
 	/** Creates a decoy generator with the given runtime, validator, and fallback template bank. */
 	constructor(private readonly deps: GeneratorDeps) {
@@ -133,17 +134,24 @@ export class DecoyGenerator {
 		this.runtimeTouchedSinceUnload = false;
 		this.clearIdleTimer();
 		if (this.deps.runtime) {
-			await this.deps.runtime.unload();
+			const unloadPromise = this.deps.runtime.unload();
+			this.unloadBarrier = unloadPromise.then(
+				() => undefined,
+				() => undefined,
+			);
+			await unloadPromise;
 		}
 	}
 
 	/** Enqueues a runtime operation on the single-flight queue while tracking active operations. */
 	private enqueueOperation<T>(task: (epoch: number) => Promise<T>): Promise<T> {
 		const capturedEpoch = this.unloadEpoch;
+		const unloadBarrier = this.unloadBarrier;
 		this.clearIdleTimer();
 		this.activeOperations += 1;
 		const run = async (): Promise<T> => {
 			try {
+				await unloadBarrier;
 				return await task(capturedEpoch);
 			} finally {
 				this.activeOperations = Math.max(0, this.activeOperations - 1);

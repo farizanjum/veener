@@ -267,8 +267,9 @@ describe("DecoyGenerator", () => {
 		const gen1Promise = generator.generate("grocery list", [], null, 1);
 		const gen2Promise = generator.generate("grocery list", [], null, 2);
 
-		await Promise.resolve();
-		expect(events).toEqual(["warmup:start"]);
+		await vi.waitFor(() => {
+			expect(events).toEqual(["warmup:start"]);
+		});
 
 		warmupGate.resolve();
 		await vi.waitFor(() => {
