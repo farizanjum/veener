@@ -181,7 +181,6 @@ export default class VeneerPlugin extends Plugin {
 		this.patchController = controller;
 		this.viewPatchController = controller;
 		this.generator = this.buildGenerator();
-		this.generator.warmup();
 		this.lockEngine = new LockEngine(this, this.app.workspace, this.sessions, () => this.settings);
 		this.lockEngine.start();
 		void this.attachAlreadyOpenViews();
@@ -1397,22 +1396,67 @@ export default class VeneerPlugin extends Plugin {
 		return results;
 	}
 
-	/** Deletes the active model file and any partial download artifacts, then rebuilds the generator. */
-	async deleteModelFile(): Promise<void> {
-		const model = activeModel(this.settings);
+	/**
+	 * Unloads any active LLM runtime so file handles are released on Windows, deletes the
+	 * specified (or active) `.gguf` model file and partial artifacts, updates settings, and
+	 * rebuilds the generator without warming it up.
+	 */
+	async deleteModelFile(targetFileName?: string): Promise<boolean> {
+		const activeFile = activeModel(this.settings).file;
+		const fileName = targetFileName ?? activeFile;
+		const wasActiveModel = fileName === activeFile;
 		const adapter = this.app.vault.adapter as unknown as { getBasePath?: () => string };
 		const root = adapter.getBasePath?.() ?? "";
-		const abs = `${root}/${this.app.vault.configDir}/plugins/deocy/models/${model.file}`;
+		const abs = `${root}/${this.app.vault.configDir}/plugins/deocy/models/${fileName}`;
+		if (wasActiveModel) {
+			try {
+				await this.generator?.unload();
+			} catch (error) {
+				console.warn("Veneer: generator unload before model delete failed", error);
+			}
+		}
+		let deleted = false;
 		try {
-			if (fs.existsSync(abs)) fs.unlinkSync(abs);
+			if (fs.existsSync(abs)) {
+				fs.unlinkSync(abs);
+			}
 			clearPartial(abs);
+			deleted = !fs.existsSync(abs);
 		} catch (error) {
 			console.warn("Veneer: model delete skipped", error);
+			deleted = false;
 		}
-		this.settings.modelDownloaded = false;
-		this.settings.modelVerified = false;
+		const disk = this.modelFileStatus();
+		if (disk.exists) {
+			this.settings.modelDownloaded = true;
+		} else {
+			const remaining = this.downloadedModels();
+			const next = remaining[0];
+			if (next) {
+				if (next.modelId === "custom") {
+					this.settings.modelId = "custom";
+					this.settings.customModel = {
+						file: next.fileName,
+						url: null,
+						sizeBytes: next.sizeBytes,
+						label: next.fileName,
+					};
+				} else {
+					this.settings.modelId = next.modelId;
+					this.settings.customModel = null;
+				}
+				this.settings.modelDownloaded = true;
+				this.settings.modelVerified = false;
+			} else {
+				this.settings.modelDownloaded = false;
+				this.settings.modelVerified = false;
+			}
+		}
 		await this.saveSettings();
-		this.rebuildGenerator();
+		if (wasActiveModel) {
+			this.rebuildGenerator();
+		}
+		return deleted;
 	}
 
 	/** Ensures the plugin models directory exists and returns its absolute and vault-relative paths. */
@@ -1428,14 +1472,13 @@ export default class VeneerPlugin extends Plugin {
 		await this.app.vault.adapter.remove(rel);
 	}
 
-	/** Unloads the current decoy generator and constructs a warmed-up replacement when the plugin is live. */
+	/** Unloads the current decoy generator and constructs a replacement without eager warmup when the plugin is live. */
 	rebuildGenerator(): void {
 		if (!this.isLive()) return;
 		void this.generator?.unload()?.catch((error) => {
 			console.warn("Veneer: generator unload failed", error);
 		});
 		this.generator = this.buildGenerator();
-		this.generator.warmup();
 	}
 
 	/** Copies a local `.gguf` file into the models directory, computes its SHA-256 digest, and activates it. */

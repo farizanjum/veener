@@ -1,5 +1,4 @@
 import { Notice, PluginSettingTab, Setting, type App } from "obsidian";
-import fs from "fs";
 import type VeneerPlugin from "../main";
 import { MODEL_INFO, activeModel, type ModelId } from "../settings";
 import { formatBytes, metadataApiUrl } from "../llm/download";
@@ -8,7 +7,9 @@ import { collectHygiene } from "../shred/hygiene";
 import { DuressPinModal } from "./modals";
 import { sanitizeInterests, sanitizePersona } from "../llm/prompt";
 
+/** Obsidian settings tab for configuring Veneer masking, cover identity, local LLM models, and hygiene checks. */
 export class VeneerSettingTab extends PluginSettingTab {
+	/** Creates the Veneer settings tab bound to the active Obsidian app and plugin instance. */
 	constructor(
 		app: App,
 		private readonly plugin: VeneerPlugin,
@@ -16,6 +17,7 @@ export class VeneerSettingTab extends PluginSettingTab {
 		super(app, plugin);
 	}
 
+	/** Renders the Veneer settings controls into the settings tab container. */
 	display(): void {
 		const { containerEl } = this;
 		containerEl.empty();
@@ -169,11 +171,8 @@ export class VeneerSettingTab extends PluginSettingTab {
 				});
 				const delBtn = row.createEl("button", { text: "Delete", cls: "veneer-link-button" });
 				delBtn.addEventListener("click", async () => {
-					const adapter = this.plugin.app.vault.adapter as unknown as { getBasePath?: () => string };
-					const root = adapter.getBasePath?.() ?? "";
-					const abs = `${root}/${this.plugin.app.vault.configDir}/plugins/deocy/models/${dm.fileName}`;
-					try { fs.unlinkSync(abs); } catch { }
-					new Notice(`Deleted ${dm.fileName}.`);
+					const deleted = await this.plugin.deleteModelFile(dm.fileName);
+					new Notice(deleted ? `Deleted ${dm.fileName}.` : `Could not delete ${dm.fileName}.`);
 					this.display();
 				});
 			}

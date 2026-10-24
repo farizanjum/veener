@@ -34,6 +34,7 @@ export class ProtectWizard extends Modal {
 	private instruction = "";
 	private decoyText = "";
 	private busy = false;
+	private isOpenModal = false;
 
 	/** Creates a protect-note wizard modal initialized to local generation when an LLM is available. */
 	constructor(
@@ -46,7 +47,11 @@ export class ProtectWizard extends Modal {
 
 	/** Weaves the initial template cover and renders the wizard UI when the modal opens. */
 	onOpen(): void {
+		this.isOpenModal = true;
 		this.decoyText = this.weaveCurrentTemplate();
+		if (this.source === "generate" && this.deps.llmAvailable) {
+			this.deps.generator.warmup();
+		}
 		this.render();
 	}
 
@@ -79,6 +84,9 @@ export class ProtectWizard extends Modal {
 			dropdown.setValue(this.source);
 			dropdown.onChange(async (value) => {
 				this.source = value as DecoySource;
+				if (this.source === "generate" && this.deps.llmAvailable) {
+					this.deps.generator.warmup();
+				}
 				this.render();
 			});
 		});
@@ -167,13 +175,16 @@ export class ProtectWizard extends Modal {
 								realWordCount: this.deps.realWordCount,
 							},
 						);
+						if (!this.isOpenModal) return;
 						this.decoyText = result.text;
 						if (result.source === "template" && result.error) {
 							new Notice(`Model failed: ${result.error}. Used a template instead.`, 10000);
 						}
 					} finally {
 						this.busy = false;
-						this.render();
+						if (this.isOpenModal) {
+							this.render();
+						}
 					}
 				}),
 			);
@@ -267,6 +278,7 @@ export class ProtectWizard extends Modal {
 
 	/** Clears the wizard DOM container when the modal closes. */
 	onClose(): void {
-		this.contentEl?.empty?.();
+		this.isOpenModal = false;
+		this.contentEl.empty();
 	}
 }

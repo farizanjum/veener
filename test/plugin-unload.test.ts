@@ -19,9 +19,10 @@ vi.mock("obsidian", () => {
 	};
 });
 
-import { MarkdownView } from "obsidian";
+import { MarkdownView, Setting } from "obsidian";
 import { parseFileContent, serializeFile } from "../src/crypto/payload";
 import { ProtectWizard } from "../src/decoy/wizard";
+import type { DecoyGenerator } from "../src/llm/generator";
 import VeneerPlugin from "../src/main";
 import { PasswordModal } from "../src/ui/modals";
 import {
@@ -1428,4 +1429,330 @@ describe("VeneerPlugin.onunload and registered cleanup lifecycle regressions (Is
 			activeHarness = null;
 		}
 	}, 20000);
+
+	it("never warms up LLM eagerly in onload() or rebuildGenerator(), warms up lazily in ProtectWizard, skips re-render after onClose(), and awaits generator.unload() before fs.unlinkSync in deleteModelFile()", async () => {
+		const harness = createPluginUnloadHarness(VeneerPlugin);
+		activeHarness = harness;
+
+		const warmupSpy = vi.fn();
+		const unloadSpy = vi.fn(async () => undefined);
+		const generateGate = createDeferred<{
+			text: string;
+			source: "llm" | "template";
+			error?: string;
+		}>();
+		const generateSpy = vi.fn(() => generateGate.promise);
+
+		const makeMockGenerator = (): DecoyGenerator =>
+			({
+				warmup: warmupSpy,
+				generate: generateSpy,
+				unload: unloadSpy,
+			}) as unknown as DecoyGenerator;
+
+		const plugin = harness.plugin as unknown as VeneerPlugin;
+		const pluginInternal = plugin as unknown as {
+			generator: DecoyGenerator;
+			buildGenerator: () => DecoyGenerator;
+			addStatusBarItem: () => HTMLElement;
+			registerDomEvent: () => void;
+			registerEvent: () => void;
+			registerEditorExtension: () => void;
+			addCommand: () => void;
+			addSettingTab: () => void;
+		};
+
+		const statusEl = {
+			setText: () => undefined,
+			addClass: () => undefined,
+			hide: () => undefined,
+			show: () => undefined,
+			remove: () => undefined,
+		} as unknown as HTMLElement;
+		pluginInternal.addStatusBarItem = () => statusEl;
+		pluginInternal.registerDomEvent = () => undefined;
+		pluginInternal.registerEvent = () => undefined;
+		pluginInternal.registerEditorExtension = () => undefined;
+		pluginInternal.addCommand = () => undefined;
+		pluginInternal.addSettingTab = () => undefined;
+		(harness.app.vault as unknown as { configDir: string }).configDir = ".obsidian";
+		const buildGeneratorSpy = vi
+			.spyOn(pluginInternal, "buildGenerator")
+			.mockImplementation(() => makeMockGenerator());
+
+		const origWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+		const origDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+		Object.defineProperty(globalThis, "window", {
+			value: {
+				setTimeout: globalThis.setTimeout.bind(globalThis),
+				clearTimeout: globalThis.clearTimeout.bind(globalThis),
+			},
+			configurable: true,
+		});
+		Object.defineProperty(globalThis, "document", {
+			value: {},
+			configurable: true,
+		});
+
+		try {
+			await plugin.onload();
+			expect(buildGeneratorSpy).toHaveBeenCalledTimes(1);
+			expect(warmupSpy).not.toHaveBeenCalled();
+
+			plugin.rebuildGenerator();
+			expect(unloadSpy).toHaveBeenCalledTimes(1);
+			expect(buildGeneratorSpy).toHaveBeenCalledTimes(2);
+			expect(warmupSpy).not.toHaveBeenCalled();
+		} finally {
+			if (origWindow) {
+				Object.defineProperty(globalThis, "window", origWindow);
+			} else {
+				Reflect.deleteProperty(globalThis, "window");
+			}
+			if (origDocument) {
+				Object.defineProperty(globalThis, "document", origDocument);
+			} else {
+				Reflect.deleteProperty(globalThis, "document");
+			}
+		}
+
+		const dropdownHandlers: Array<(value: string) => unknown> = [];
+		const buttonHandlers: Map<string, () => unknown> = new Map();
+		const settingProto = Setting.prototype as unknown as Record<string, unknown>;
+		settingProto.setName = function () {
+			return this;
+		};
+		settingProto.setDesc = function () {
+			return this;
+		};
+		settingProto.addDropdown = function (
+			cb: (dd: {
+				addOption: () => unknown;
+				setValue: () => unknown;
+				onChange: (fn: (value: string) => unknown) => unknown;
+			}) => void,
+		) {
+			const dd = {
+				addOption: () => dd,
+				setValue: () => dd,
+				onChange: (fn: (value: string) => unknown) => {
+					dropdownHandlers.push(fn);
+					return dd;
+				},
+			};
+			cb(dd);
+			return this;
+		};
+		settingProto.addText = function (
+			cb: (txt: {
+				inputEl: {
+					type: string;
+					placeholder: string;
+					value: string;
+					addEventListener: () => void;
+				};
+				setValue: () => unknown;
+				onChange: () => unknown;
+			}) => void,
+		) {
+			const txt = {
+				inputEl: {
+					type: "text",
+					placeholder: "",
+					value: "",
+					addEventListener: () => undefined,
+				},
+				setValue: () => txt,
+				onChange: () => txt,
+			};
+			cb(txt);
+			return this;
+		};
+		settingProto.addButton = function (
+			cb: (btn: {
+				setButtonText: (label: string) => unknown;
+				setCta: () => unknown;
+				setDisabled: () => unknown;
+				onClick: (fn: () => unknown) => unknown;
+			}) => void,
+		) {
+			let currentLabel = "";
+			const btn = {
+				setButtonText: (label: string) => {
+					currentLabel = label;
+					return btn;
+				},
+				setCta: () => btn,
+				setDisabled: () => btn,
+				onClick: (fn: () => unknown) => {
+					buttonHandlers.set(currentLabel, fn);
+					return btn;
+				},
+			};
+			cb(btn);
+			return this;
+		};
+
+		const makeContentEl = () => {
+			let emptyCalls = 0;
+			let createElCalls = 0;
+			return {
+				getEmptyCalls: () => emptyCalls,
+				getCreateElCalls: () => createElCalls,
+				el: {
+					empty: () => {
+						emptyCalls += 1;
+					},
+					createEl: () => {
+						createElCalls += 1;
+						return {
+							rows: 0,
+							value: "",
+							addEventListener: () => undefined,
+							setText: () => undefined,
+						};
+					},
+				} as unknown as HTMLElement,
+			};
+		};
+
+		const mockGenerator = makeMockGenerator();
+
+		const offlineWizard = new ProtectWizard(harness.app, {
+			interests: ["cooking"],
+			names: [],
+			persona: "",
+			generator: mockGenerator,
+			llmAvailable: false,
+			onProtect: async () => undefined,
+		});
+		const offlineContent = makeContentEl();
+		(offlineWizard as unknown as { contentEl: HTMLElement }).contentEl = offlineContent.el;
+		offlineWizard.onOpen();
+		expect(warmupSpy).not.toHaveBeenCalled();
+
+		dropdownHandlers.length = 0;
+		buttonHandlers.clear();
+		const onlineWizard = new ProtectWizard(harness.app, {
+			interests: ["cooking"],
+			names: [],
+			persona: "backend engineer",
+			generator: mockGenerator,
+			llmAvailable: true,
+			onProtect: async () => undefined,
+		});
+		const onlineContent = makeContentEl();
+		(onlineWizard as unknown as { contentEl: HTMLElement }).contentEl = onlineContent.el;
+		expect(warmupSpy).not.toHaveBeenCalled();
+
+		onlineWizard.onOpen();
+		expect(warmupSpy).toHaveBeenCalledTimes(1);
+
+		const coverSourceOnChange = dropdownHandlers[0];
+		expect(coverSourceOnChange).toBeDefined();
+		await coverSourceOnChange!("template");
+		expect(warmupSpy).toHaveBeenCalledTimes(1);
+
+		const coverSourceAfterTemplate = dropdownHandlers[dropdownHandlers.length - 2];
+		await coverSourceAfterTemplate!("generate");
+		expect(warmupSpy).toHaveBeenCalledTimes(2);
+
+		const generateClick = buttonHandlers.get("Generate");
+		expect(generateClick).toBeDefined();
+		const inFlightGenerate = Promise.resolve(generateClick!());
+		expect(generateSpy).toHaveBeenCalledTimes(1);
+
+		onlineWizard.onClose();
+		const emptyCallsAtClose = onlineContent.getEmptyCalls();
+		const createElCallsAtClose = onlineContent.getCreateElCalls();
+
+		generateGate.resolve({ text: "Generated decoy body text", source: "llm" });
+		await inFlightGenerate;
+
+		expect(onlineContent.getEmptyCalls()).toBe(emptyCallsAtClose);
+		expect(onlineContent.getCreateElCalls()).toBe(createElCallsAtClose);
+
+		const orderEvents: string[] = [];
+		const unloadDeferred = createDeferred<void>();
+		pluginInternal.generator = {
+			warmup: warmupSpy,
+			generate: generateSpy,
+			unload: async () => {
+				orderEvents.push("generator.unload:start");
+				await unloadDeferred.promise;
+				orderEvents.push("generator.unload:done");
+			},
+		} as unknown as DecoyGenerator;
+
+		const filesOnDisk = new Set<string>([
+			"Qwen3-0.6B-Q4_K_M.gguf",
+			"Qwen3-1.7B-Q4_K_M.gguf",
+			"inactive-extra.gguf",
+		]);
+		const existsSpy = vi.spyOn(fs, "existsSync").mockImplementation((targetPath) => {
+			const str = String(targetPath);
+			for (const f of filesOnDisk) {
+				if (str.endsWith(f)) return true;
+			}
+			return false;
+		});
+		const readdirSpy = vi.spyOn(fs, "readdirSync").mockImplementation(
+			() => Array.from(filesOnDisk) as unknown as ReturnType<typeof fs.readdirSync>,
+		);
+		const statSpy = vi.spyOn(fs, "statSync").mockImplementation((targetPath) => {
+			const str = String(targetPath);
+			for (const f of filesOnDisk) {
+				if (str.endsWith(f)) {
+					return { isFile: () => true, size: 400 * 1024 * 1024 } as unknown as fs.Stats;
+				}
+			}
+			throw new Error("ENOENT");
+		});
+		const unlinkSpy = vi.spyOn(fs, "unlinkSync").mockImplementation((targetPath) => {
+			const str = String(targetPath);
+			for (const f of Array.from(filesOnDisk)) {
+				if (str.endsWith(f)) {
+					orderEvents.push(`fs.unlinkSync:${f}`);
+					filesOnDisk.delete(f);
+				}
+			}
+		});
+
+		buildGeneratorSpy.mockClear();
+		warmupSpy.mockClear();
+
+		const deletedInactive = await plugin.deleteModelFile("inactive-extra.gguf");
+		expect(deletedInactive).toBe(true);
+		expect(orderEvents).toEqual(["fs.unlinkSync:inactive-extra.gguf"]);
+		expect(buildGeneratorSpy).not.toHaveBeenCalled();
+		expect(plugin.settings.modelDownloaded).toBe(true);
+		expect(plugin.settings.modelId).toBe("qwen3-0.6b");
+
+		orderEvents.length = 0;
+		const deletePromise = plugin.deleteModelFile("Qwen3-0.6B-Q4_K_M.gguf");
+		await Promise.resolve();
+		expect(orderEvents).toEqual(["generator.unload:start"]);
+
+		unloadDeferred.resolve();
+		const deleted = await deletePromise;
+
+		expect(deleted).toBe(true);
+		expect(orderEvents.slice(0, 3)).toEqual([
+			"generator.unload:start",
+			"generator.unload:done",
+			"fs.unlinkSync:Qwen3-0.6B-Q4_K_M.gguf",
+		]);
+		expect(plugin.settings.modelId).toBe("qwen3-1.7b");
+		expect(plugin.settings.modelDownloaded).toBe(true);
+		expect(buildGeneratorSpy).toHaveBeenCalledTimes(1);
+		expect(warmupSpy).not.toHaveBeenCalled();
+
+		existsSpy.mockRestore();
+		readdirSpy.mockRestore();
+		statSpy.mockRestore();
+		unlinkSpy.mockRestore();
+		harness.unloadPlugin("onunload-first");
+		harness.restorePrototype();
+		activeHarness = null;
+	});
 });

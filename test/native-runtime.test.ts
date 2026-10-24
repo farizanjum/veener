@@ -9,6 +9,7 @@ import {
 	type NativeResponse,
 	type NativeRuntimeDependencies,
 } from "../src/llm/nativeRuntime";
+import { LIST_DEVICES_TIMEOUT_MS, listDevices, registerExitHook } from "../src/llm/nativeRuntimeNode";
 
 const CONFIG = {
 	engineDir: "/engine",
@@ -16,17 +17,26 @@ const CONFIG = {
 	modelPath: "/model.gguf",
 } as const;
 
+/**
+ * In-memory fake `NativeProcess` that records termination signals without spawning an OS child process.
+ */
 class FakeProcess extends EventEmitter implements NativeProcess {
 	exitCode: number | null = null;
 	signalCode: NodeJS.Signals | null = null;
 	readonly signals: NodeJS.Signals[] = [];
 
+	/**
+	 * Records the received termination signal and returns `true`.
+	 */
 	kill(signal: NodeJS.Signals): boolean {
 		this.signals.push(signal);
 		return true;
 	}
 }
 
+/**
+ * Creates an isolated `NativeRuntime` test harness with inspectable fake process, requests, and dependency mocks.
+ */
 function createHarness(requestOverride?: (request: NativeRequest) => Promise<NativeResponse>): {
 	readonly runtime: NativeRuntime;
 	readonly process: FakeProcess;
@@ -131,5 +141,276 @@ describe("NativeRuntime", () => {
 		expect(harness.process.signals).toEqual(["SIGTERM", "SIGKILL"]);
 		expect(harness.waitForExit).toHaveBeenCalledTimes(2);
 		expect(harness.runtime.isReady()).toBe(false);
+	});
+
+	it("aborts ensureLoaded without spawning llama-server if unload() is called during listDevices or findAvailablePort", async () => {
+		let resolveDevices!: (value: string) => void;
+		const spawnServer = vi.fn(() => new FakeProcess());
+		const runtimeDuringDevices = new NativeRuntime(CONFIG, {
+			listDevices: () => new Promise<string>((resolve) => {
+				resolveDevices = resolve;
+			}),
+			findAvailablePort: async () => 43_123,
+			randomApiKey: () => "key",
+			spawnServer,
+			request: async () => ({ statusCode: 200, body: "" }),
+			sleep: async () => undefined,
+			waitForExit: async () => true,
+		});
+
+		const loadPromise1 = runtimeDuringDevices.ensureLoaded();
+		const unloadPromise1 = runtimeDuringDevices.unload();
+		resolveDevices("Available devices:\n  Vulkan0: NVIDIA GeForce RTX 4050\n");
+
+		await expect(loadPromise1).rejects.toThrow("Native server unloaded during startup");
+		await expect(unloadPromise1).resolves.toBeUndefined();
+		expect(spawnServer).not.toHaveBeenCalled();
+		expect(runtimeDuringDevices.isReady()).toBe(false);
+
+		let resolvePort!: (value: number) => void;
+		const runtimeDuringPort = new NativeRuntime(CONFIG, {
+			listDevices: async () => "Available devices:\n  Vulkan0: NVIDIA GeForce RTX 4050\n",
+			findAvailablePort: () => new Promise<number>((resolve) => {
+				resolvePort = resolve;
+			}),
+			randomApiKey: () => "key",
+			spawnServer,
+			request: async () => ({ statusCode: 200, body: "" }),
+			sleep: async () => undefined,
+			waitForExit: async () => true,
+		});
+
+		const loadPromise2 = runtimeDuringPort.ensureLoaded();
+		await Promise.resolve();
+		const unloadPromise2 = runtimeDuringPort.unload();
+		resolvePort(43_124);
+
+		await expect(loadPromise2).rejects.toThrow("Native server unloaded during startup");
+		await expect(unloadPromise2).resolves.toBeUndefined();
+		expect(spawnServer).not.toHaveBeenCalled();
+		expect(runtimeDuringPort.isReady()).toBe(false);
+	});
+
+	it("aborts ensureLoaded and kills the spawned process exactly once if unload() is called during /health polling", async () => {
+		const proc = new FakeProcess();
+		let resolveHealth!: (response: NativeResponse) => void;
+		const waitForExit = vi.fn(async () => true);
+		const runtime = new NativeRuntime(CONFIG, {
+			listDevices: async () => "Available devices:\n  Vulkan0: NVIDIA GeForce RTX 4050\n",
+			findAvailablePort: async () => 43_123,
+			randomApiKey: () => "key",
+			spawnServer: () => proc,
+			request: () => new Promise<NativeResponse>((resolve) => {
+				resolveHealth = resolve;
+			}),
+			sleep: async () => undefined,
+			waitForExit,
+		});
+
+		const loadPromise = runtime.ensureLoaded();
+		for (let i = 0; i < 5 && !resolveHealth; i += 1) {
+			await Promise.resolve();
+		}
+
+		const unloadPromise = runtime.unload();
+		resolveHealth({ statusCode: 200, body: "" });
+
+		await expect(loadPromise).rejects.toThrow("Native server unloaded during startup");
+		await expect(unloadPromise).resolves.toBeUndefined();
+		expect(proc.signals).toEqual(["SIGTERM"]);
+		expect(waitForExit).toHaveBeenCalledTimes(1);
+		expect(runtime.isReady()).toBe(false);
+	});
+
+	it("sends SIGTERM synchronously inside unload() before yielding to any microtask", async () => {
+		const harness = createHarness();
+		await harness.runtime.ensureLoaded();
+		expect(harness.process.signals).toEqual([]);
+
+		const unloadPromise = harness.runtime.unload();
+		expect(harness.process.signals).toEqual(["SIGTERM"]);
+		expect(harness.runtime.isReady()).toBe(false);
+		await unloadPromise;
+	});
+
+	it("kills the active process with SIGKILL on synchronous host exit and cleans up exit hooks without leaking across cycles", async () => {
+		const processes: FakeProcess[] = [];
+		const activeExitCallbacks = new Set<() => void>();
+		const cleanupSpy = vi.fn();
+
+		const runtime = new NativeRuntime(CONFIG, {
+			listDevices: async () => "Available devices:\n  Vulkan0: NVIDIA GeForce RTX 4050\n",
+			findAvailablePort: async () => 43_123,
+			randomApiKey: () => "key",
+			spawnServer: () => {
+				const proc = new FakeProcess();
+				processes.push(proc);
+				return proc;
+			},
+			request: async () => ({ statusCode: 200, body: "" }),
+			sleep: async () => undefined,
+			waitForExit: async () => true,
+			registerExitHook: (onExit) => {
+				activeExitCallbacks.add(onExit);
+				return () => {
+					if (activeExitCallbacks.delete(onExit)) {
+						cleanupSpy();
+					}
+				};
+			},
+		});
+
+		await runtime.ensureLoaded();
+		expect(activeExitCallbacks.size).toBe(1);
+		await runtime.unload();
+		expect(activeExitCallbacks.size).toBe(0);
+		expect(cleanupSpy).toHaveBeenCalledTimes(1);
+
+		await runtime.ensureLoaded();
+		expect(processes).toHaveLength(2);
+		expect(activeExitCallbacks.size).toBe(1);
+
+		for (const onExit of activeExitCallbacks) {
+			onExit();
+		}
+		expect(processes[1]!.signals).toEqual(["SIGKILL"]);
+		expect(runtime.isReady()).toBe(false);
+
+		await runtime.unload();
+		expect(activeExitCallbacks.size).toBe(0);
+		expect(cleanupSpy).toHaveBeenCalledTimes(2);
+	});
+
+	it("reloads cleanly and spawns a fresh server process when ensureLoaded() is called after unload()", async () => {
+		const processes: FakeProcess[] = [];
+		const runtime = new NativeRuntime(CONFIG, {
+			listDevices: async () => "Available devices:\n  Vulkan0: NVIDIA GeForce RTX 4050\n",
+			findAvailablePort: async () => 43_123 + processes.length,
+			randomApiKey: () => "key",
+			spawnServer: () => {
+				const proc = new FakeProcess();
+				processes.push(proc);
+				return proc;
+			},
+			request: async () => ({ statusCode: 200, body: "" }),
+			sleep: async () => undefined,
+			waitForExit: async () => true,
+		});
+
+		await runtime.ensureLoaded();
+		expect(runtime.isReady()).toBe(true);
+		expect(processes).toHaveLength(1);
+
+		await runtime.unload();
+		expect(runtime.isReady()).toBe(false);
+		expect(processes[0]!.signals).toEqual(["SIGTERM"]);
+
+		await runtime.ensureLoaded();
+		expect(runtime.isReady()).toBe(true);
+		expect(processes).toHaveLength(2);
+		expect(processes[1]!.signals).toEqual([]);
+
+		processes[0]!.emit("exit");
+		expect(runtime.isReady()).toBe(true);
+		expect(processes[0]!.listenerCount("exit")).toBe(0);
+		expect(processes[0]!.listenerCount("error")).toBe(0);
+	});
+
+	it("starts a fresh load when ensureLoaded() is called while unload() is still awaiting an aborted startup", async () => {
+		const processes: FakeProcess[] = [];
+		let resolveFirstDevices!: (value: string) => void;
+		let listCalls = 0;
+		const runtime = new NativeRuntime(CONFIG, {
+			listDevices: () => {
+				listCalls += 1;
+				if (listCalls === 1) {
+					return new Promise<string>((resolve) => {
+						resolveFirstDevices = resolve;
+					});
+				}
+				return Promise.resolve("Available devices:\n  Vulkan0: NVIDIA GeForce RTX 4050\n");
+			},
+			findAvailablePort: async () => 43_123 + processes.length,
+			randomApiKey: () => "key",
+			spawnServer: () => {
+				const proc = new FakeProcess();
+				processes.push(proc);
+				return proc;
+			},
+			request: async () => ({ statusCode: 200, body: "" }),
+			sleep: async () => undefined,
+			waitForExit: async () => true,
+		});
+
+		const firstLoad = runtime.ensureLoaded();
+		const unloadPromise = runtime.unload();
+		const secondLoad = runtime.ensureLoaded();
+
+		await expect(secondLoad).resolves.toBeUndefined();
+		expect(runtime.isReady()).toBe(true);
+
+		resolveFirstDevices("Available devices:\n  Vulkan0: NVIDIA GeForce RTX 4050\n");
+		await expect(firstLoad).rejects.toThrow("Native server unloaded during startup");
+		await expect(unloadPromise).resolves.toBeUndefined();
+		expect(runtime.isReady()).toBe(true);
+	});
+
+	it("registers and removes process exit and window unload listeners cleanly via registerExitHook", () => {
+		const beforeCount = process.listenerCount("exit");
+		const windowListeners = new Map<string, () => void>();
+		const addEventListener = vi.fn((event: string, fn: () => void) => {
+			windowListeners.set(event, fn);
+		});
+		const removeEventListener = vi.fn((event: string) => {
+			windowListeners.delete(event);
+		});
+		const originalWindow = (globalThis as { window?: unknown }).window;
+		(globalThis as { window?: unknown }).window = {
+			addEventListener,
+			removeEventListener,
+		};
+
+		try {
+			const onExit = vi.fn();
+			const cleanup = registerExitHook(onExit);
+			expect(process.listenerCount("exit")).toBe(beforeCount + 1);
+			expect(addEventListener).toHaveBeenCalledWith("pagehide", expect.any(Function));
+			expect(addEventListener).toHaveBeenCalledWith("beforeunload", expect.any(Function));
+
+			cleanup();
+			cleanup();
+			expect(process.listenerCount("exit")).toBe(beforeCount);
+			expect(removeEventListener).toHaveBeenCalledWith("pagehide", expect.any(Function));
+			expect(removeEventListener).toHaveBeenCalledWith("beforeunload", expect.any(Function));
+			expect(onExit).not.toHaveBeenCalled();
+
+			const onWindowExit = vi.fn();
+			registerExitHook(onWindowExit);
+			expect(process.listenerCount("exit")).toBe(beforeCount + 1);
+			windowListeners.get("pagehide")?.();
+			expect(onWindowExit).toHaveBeenCalledTimes(1);
+			expect(process.listenerCount("exit")).toBe(beforeCount);
+			expect(windowListeners.size).toBe(0);
+		} finally {
+			if (originalWindow === undefined) {
+				delete (globalThis as { window?: unknown }).window;
+			} else {
+				(globalThis as { window?: unknown }).window = originalWindow;
+			}
+		}
+	});
+
+	it("times out listDevices when the discovery process hangs", async () => {
+		expect(LIST_DEVICES_TIMEOUT_MS).toBe(10_000);
+		await expect(
+			listDevices(
+				{
+					engineDir: process.cwd(),
+					executablePath: process.execPath,
+					modelPath: "/model.gguf",
+				},
+				25,
+			),
+		).rejects.toThrow("Vulkan device discovery timed out");
 	});
 });
