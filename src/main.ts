@@ -63,6 +63,7 @@ export default class VeneerPlugin extends Plugin {
 	private isShuttingDown = false;
 	private teardownDone = false;
 	private modelDeletionInFlight = false;
+	private modelDeletionEpoch = 0;
 	private activeModals?: Set<ClosableModal>;
 
 	/** Returns the shared `ViewLifecycleCoordinator` from the active session manager or global singleton. */
@@ -811,13 +812,14 @@ export default class VeneerPlugin extends Plugin {
 	/** Generates and persists a fresh decoy cover for an already-protected note. */
 	private async refreshDecoy(file: TFile): Promise<void> {
 		if (!this.isLive()) return;
+		const deletionEpoch = this.modelDeletionEpoch;
 		if (this.modelDeletionInFlight) {
 			new Notice("The model is being deleted. Try again after deletion finishes.");
 			return;
 		}
 		if (!(await this.awaitPredecessor(file, true))) return;
 		if (!this.isLive()) return;
-		if (this.modelDeletionInFlight) {
+		if (this.modelDeletionInFlight || this.modelDeletionEpoch !== deletionEpoch) {
 			new Notice("The model is being deleted. Try again after deletion finishes.");
 			return;
 		}
@@ -839,7 +841,7 @@ export default class VeneerPlugin extends Plugin {
 			new Notice("Not a protected note.");
 			return;
 		}
-		if (this.modelDeletionInFlight) {
+		if (this.modelDeletionInFlight || this.modelDeletionEpoch !== deletionEpoch) {
 			new Notice("The model is being deleted. Try again after deletion finishes.");
 			return;
 		}
@@ -855,6 +857,10 @@ export default class VeneerPlugin extends Plugin {
 			},
 		);
 		if (!this.isLive() || this.sessions.currentKillEpoch() !== startEpoch) return;
+		if (this.modelDeletionInFlight || this.modelDeletionEpoch !== deletionEpoch) {
+			new Notice("The model is being deleted. Try again after deletion finishes.");
+			return;
+		}
 		const { title: rawTitle, body: decoyBody } = splitTitleFromBody(result.text.trim());
 		const finalBody = decoyBody.length > 0 ? decoyBody : result.text.trim();
 		try {
@@ -880,6 +886,10 @@ export default class VeneerPlugin extends Plugin {
 		try {
 			const latest = parseFileContent(await this.app.vault.read(file));
 			if (!this.isLive() || this.sessions.currentKillEpoch() !== startEpoch) return;
+			if (this.modelDeletionInFlight || this.modelDeletionEpoch !== deletionEpoch) {
+				new Notice("The model is being deleted. Try again after deletion finishes.");
+				return;
+			}
 			if (!latest) {
 				new Notice("Not a protected note.");
 				return;
@@ -898,6 +908,8 @@ export default class VeneerPlugin extends Plugin {
 				{
 					file,
 					commandId: cmdId,
+					canCommit: () =>
+						!this.modelDeletionInFlight && this.modelDeletionEpoch === deletionEpoch,
 					onCommitted: () => {
 						this.sessions.publishCommandCommit(file, {
 							kind: "refresh",
@@ -1423,6 +1435,7 @@ export default class VeneerPlugin extends Plugin {
 		const abs = `${root}/${this.app.vault.configDir}/plugins/deocy/models/${fileName}`;
 		if (wasActiveModel) {
 			this.modelDeletionInFlight = true;
+			this.modelDeletionEpoch += 1;
 		}
 		try {
 			if (wasActiveModel) {
