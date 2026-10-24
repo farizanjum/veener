@@ -811,8 +811,16 @@ export default class VeneerPlugin extends Plugin {
 	/** Generates and persists a fresh decoy cover for an already-protected note. */
 	private async refreshDecoy(file: TFile): Promise<void> {
 		if (!this.isLive()) return;
+		if (this.modelDeletionInFlight) {
+			new Notice("The model is being deleted. Try again after deletion finishes.");
+			return;
+		}
 		if (!(await this.awaitPredecessor(file, true))) return;
 		if (!this.isLive()) return;
+		if (this.modelDeletionInFlight) {
+			new Notice("The model is being deleted. Try again after deletion finishes.");
+			return;
+		}
 		const startEpoch = this.sessions.currentKillEpoch();
 		try {
 			for (const session of this.sessions.getAllByPath(file.path)) {
@@ -831,7 +839,10 @@ export default class VeneerPlugin extends Plugin {
 			new Notice("Not a protected note.");
 			return;
 		}
-		if (this.modelDeletionInFlight) return;
+		if (this.modelDeletionInFlight) {
+			new Notice("The model is being deleted. Try again after deletion finishes.");
+			return;
+		}
 		const result = await this.generator.generate(
 			"auto",
 			this.settings.interests,
