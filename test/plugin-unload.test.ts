@@ -969,14 +969,121 @@ describe("VeneerPlugin.onunload and registered cleanup lifecycle regressions (Is
 			await unprotectPromise;
 			await harness.patchController.drainPromise();
 
+			const editedBeforeFirstSave = `${SECRET_P0}\n\nEdited before the very first save after unload unprotect.`;
+			pane.typeInEditor(editedBeforeFirstSave);
 			await pane.view.save();
-			expect(harness.disk.get(file.path)).toBe(`${SECRET_P0}\n`);
+			expect(harness.disk.get(file.path)).toBe(editedBeforeFirstSave);
+			expect(parseFileContent(harness.disk.get(file.path) ?? "")).toBeNull();
 
-			const editedOrdinaryAfterUnload = `${SECRET_P0}\n\nNew ordinary paragraph after unload unprotect.`;
+			const editedOrdinaryAfterUnload = `${editedBeforeFirstSave}\n\nNew ordinary paragraph after unload unprotect.`;
 			pane.typeInEditor(editedOrdinaryAfterUnload);
 			await pane.view.save();
 
 			expect(harness.disk.get(file.path)).toBe(editedOrdinaryAfterUnload);
+			expect(parseFileContent(harness.disk.get(file.path) ?? "")).toBeNull();
+
+			harness.restorePrototype();
+			activeHarness = null;
+		}
+
+		{
+			const unprotectGate = createDeferred<void>();
+			const unprotectStarted = createDeferred<void>();
+			let holdModify = true;
+
+			const harness = createPluginUnloadHarness(VeneerPlugin, {
+				onModifyStart: (targetPath) => {
+					if (targetPath === "TwoPaneUnloadUnprotect.md" && holdModify) {
+						unprotectStarted.resolve();
+					}
+				},
+				modifyGateForPath: (targetPath) => {
+					if (targetPath === "TwoPaneUnloadUnprotect.md" && holdModify) {
+						holdModify = false;
+						return unprotectGate.promise;
+					}
+					return null;
+				},
+			});
+			activeHarness = harness;
+
+			const {
+				file,
+				pane: pane1,
+				initialFileContent,
+			} = await harness.seedProtectedNote({
+				path: "TwoPaneUnloadUnprotect.md",
+				realText: SECRET_P0,
+			});
+			const pane2 = harness.createPane(file, DEFAULT_DECOY);
+			pane2.view.setViewData(initialFileContent, true);
+
+			await harness.plugin.registry.add(file.path, {
+				noteId: "note-two-pane-unload-unprotect",
+				addedAt: 1,
+				mode: "portable",
+			});
+			vi.spyOn(PasswordModal.prototype, "ask").mockResolvedValueOnce(TEST_PASSWORD);
+
+			const unprotectPromise = (
+				harness.plugin as unknown as { unprotectViaModal: () => Promise<void> }
+			).unprotectViaModal();
+			await unprotectStarted.promise;
+
+			harness.unloadPlugin("onunload-first");
+
+			const queuedSave1 = pane1.view.save();
+			const queuedSave2 = pane2.view.save();
+
+			unprotectGate.resolve();
+			await Promise.all([unprotectPromise, queuedSave1, queuedSave2]);
+			await harness.patchController.drainPromise();
+
+			expect(harness.disk.get(file.path)).toBe(`${SECRET_P0}\n`);
+			expect(parseFileContent(harness.disk.get(file.path) ?? "")).toBeNull();
+
+			harness.restorePrototype();
+			activeHarness = null;
+		}
+
+		{
+			const registryRemoveStarted = createDeferred<void>();
+			const registryRemoveGate = createDeferred<void>();
+
+			const harness = createPluginUnloadHarness(VeneerPlugin);
+			activeHarness = harness;
+
+			const { file, pane } = await harness.seedProtectedNote({
+				path: "UnloadDuringRegistryRemove.md",
+				realText: SECRET_P0,
+			});
+			await harness.plugin.registry.add(file.path, {
+				noteId: "note-unload-during-registry-remove",
+				addedAt: 1,
+				mode: "portable",
+			});
+			const origRemove = harness.plugin.registry.remove.bind(harness.plugin.registry);
+			vi.spyOn(harness.plugin.registry, "remove").mockImplementationOnce(
+				async (targetPath: string) => {
+					registryRemoveStarted.resolve();
+					await registryRemoveGate.promise;
+					await origRemove(targetPath);
+				},
+			);
+			vi.spyOn(PasswordModal.prototype, "ask").mockResolvedValueOnce(TEST_PASSWORD);
+
+			const unprotectPromise = (
+				harness.plugin as unknown as { unprotectViaModal: () => Promise<void> }
+			).unprotectViaModal();
+			await registryRemoveStarted.promise;
+
+			harness.unloadPlugin("onunload-first");
+			registryRemoveGate.resolve();
+			await unprotectPromise;
+			await harness.patchController.drainPromise();
+
+			await pane.view.save();
+			expect(harness.disk.get(file.path)).toBe(`${SECRET_P0}\n`);
 			expect(parseFileContent(harness.disk.get(file.path) ?? "")).toBeNull();
 
 			harness.restorePrototype();

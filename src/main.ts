@@ -1104,55 +1104,58 @@ export default class VeneerPlugin extends Plugin {
 							commandId: cmdId,
 							onCommitted: async () => {
 								committedAcrossRetirement = true;
-								if (!this.isLive()) {
-									this.sessions.publishCommandCommit(file, {
-										kind: "unprotect",
-										plaintextContent: plaintextWithNewline,
-									});
+								this.sessions.publishCommandCommit(file, {
+									kind: "unprotect",
+									plaintextContent: plaintextWithNewline,
+								});
+								const hydrateMatchingViews = (): void => {
 									const rawSet = this.sessions.getCapturedNativeSetViewData();
-									if (rawSet) {
-										const matchingViews = new Set<MarkdownView>();
-										for (const s of openSessions) {
-											if (s.view.file === file) matchingViews.add(s.view);
-										}
-										try {
-											this.app.workspace.iterateAllLeaves((leaf) => {
-												if (
-													leaf.view instanceof MarkdownView &&
-													leaf.view.file === file
-												) {
-													matchingViews.add(leaf.view);
-												}
-											});
-										} catch {}
-										for (const v of matchingViews) {
-											try {
-												if (rawSet.length >= 3) {
-													(
-														rawSet as (
-															view: MarkdownView,
-															data: string,
-															clear: boolean,
-														) => void
-													)(v, plaintextWithNewline, true);
-												} else {
-													(
-														rawSet as (
-															this: MarkdownView,
-															data: string,
-															clear: boolean,
-														) => void
-													).call(v, plaintextWithNewline, true);
-												}
-												(v as unknown as { data: string }).data =
-													plaintextWithNewline;
-											} catch {}
-										}
+									if (!rawSet) return;
+									const matchingViews = new Set<MarkdownView>();
+									for (const s of openSessions) {
+										if (s.view.file === file) matchingViews.add(s.view);
 									}
-								} else {
-									this.sessions.clearFileAuthority(file);
+									try {
+										this.app.workspace.iterateAllLeaves((leaf) => {
+											if (
+												leaf.view instanceof MarkdownView &&
+												leaf.view.file === file
+											) {
+												matchingViews.add(leaf.view);
+											}
+										});
+									} catch {}
+									for (const v of matchingViews) {
+										try {
+											if (rawSet.length >= 3) {
+												(
+													rawSet as (
+														view: MarkdownView,
+														data: string,
+														clear: boolean,
+													) => void
+												)(v, plaintextWithNewline, true);
+											} else {
+												(
+													rawSet as (
+														this: MarkdownView,
+														data: string,
+														clear: boolean,
+													) => void
+												).call(v, plaintextWithNewline, true);
+											}
+											(v as unknown as { data: string }).data =
+												plaintextWithNewline;
+										} catch {}
+									}
+								};
+								if (!this.isLive()) {
+									hydrateMatchingViews();
 								}
 								await this.registry.remove(file.path);
+								if (!this.isLive()) {
+									hydrateMatchingViews();
+								}
 							},
 						},
 					);

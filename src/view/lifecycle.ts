@@ -1287,7 +1287,6 @@ export class ViewLifecycleCoordinator {
 			return { status: "declined" };
 		}
 
-		const capturedSnapshot = record.frozenSnapshot;
 		const wasIdleBeforeGuard = !record.processing && record.activePromise === null && record.queue.length === 0;
 		if (wasIdleBeforeGuard && record.barrierStatus !== "failed") {
 			record.barrierStatus = "draining";
@@ -1320,24 +1319,60 @@ export class ViewLifecycleCoordinator {
 							(view as unknown as { data: string }).data = sanitized;
 						}
 					}
-					record.disposition = null;
-					record.frozenSnapshot = null;
 					await rawSave.call(view, clear);
+					const hasPendingGuardedSaves = record.queue.some(
+						(entry) => !entry.cancelledBeforeSubmit && entry.kind === "native-save-guard",
+					);
+					if (!hasPendingGuardedSaves) {
+						record.disposition = null;
+						record.frozenSnapshot = null;
+					}
 					return;
 				}
 				if (
 					record.disposition?.kind === "unprotected" &&
 					record.disposition.plaintextContent !== undefined
 				) {
+					const editorText =
+						view.editor && typeof view.editor.getValue === "function"
+							? view.editor.getValue()
+							: ((view as unknown as { data?: string }).data ?? "");
+					const target =
+						parseFileContent(editorText) !== null || editorText.length === 0
+							? record.disposition.plaintextContent
+							: editorText;
 					if (syncViewData) {
-						syncViewData(view, record.disposition.plaintextContent);
+						syncViewData(view, target);
 					} else {
-						(view as unknown as { data: string }).data = record.disposition.plaintextContent;
+						(view as unknown as { data: string }).data = target;
 					}
 					await rawSave.call(view, clear);
-					record.disposition = null;
-					record.frozenSnapshot = null;
+					const hasPendingGuardedSaves = record.queue.some(
+						(entry) => !entry.cancelledBeforeSubmit && entry.kind === "native-save-guard",
+					);
+					if (!hasPendingGuardedSaves) {
+						record.disposition = null;
+						record.frozenSnapshot = null;
+					}
 					return;
+				}
+				if (record.disposition === null && record.frozenSnapshot === null) {
+					const currentEditorText =
+						view.editor && typeof view.editor.getValue === "function"
+							? view.editor.getValue()
+							: ((view as unknown as { data?: string }).data ?? "");
+					if (
+						!scope.saveBlockedViews.has(view) &&
+						parseFileContent(currentEditorText) === null
+					) {
+						if (syncViewData) {
+							syncViewData(view, currentEditorText);
+						} else {
+							(view as unknown as { data: string }).data = currentEditorText;
+						}
+						await rawSave.call(view, clear);
+						return;
+					}
 				}
 				const effectiveSafe =
 					this.getGuardEffectiveContent(
@@ -1346,9 +1381,7 @@ export class ViewLifecycleCoordinator {
 						view.editor && typeof view.editor.getValue === "function"
 							? view.editor.getValue()
 							: undefined,
-					) ??
-					record.frozenSnapshot?.rawSerialized ??
-					capturedSnapshot?.rawSerialized;
+					) ?? record.frozenSnapshot?.rawSerialized;
 				if (effectiveSafe === undefined) {
 					throw new Error(
 						"Veneer: refusing guarded native save without a verified safe snapshot",
@@ -1599,6 +1632,13 @@ export class ViewLifecycleCoordinator {
 		const record = scope.filesByRef.get(file);
 		if (!record) return null;
 		if (record.disposition?.kind === "unprotected" && record.disposition.plaintextContent !== undefined) {
+			if (
+				fallbackEditorText !== undefined &&
+				fallbackEditorText.length > 0 &&
+				parseFileContent(fallbackEditorText) === null
+			) {
+				return fallbackEditorText;
+			}
 			return record.disposition.plaintextContent;
 		}
 		if (record.disposition?.kind === "destroyed") {
