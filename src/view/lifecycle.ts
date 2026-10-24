@@ -363,7 +363,13 @@ export class ViewLifecycleCoordinator {
 			record.revisionCounter = disposition.revision;
 		}
 		record.disposition = disposition;
-		if (disposition.kind === "protected" && disposition.payload && disposition.decoyBody !== undefined && disposition.rawSerialized !== undefined) {
+		if (
+			record.frozenSnapshot !== null &&
+			disposition.kind === "protected" &&
+			disposition.payload &&
+			disposition.decoyBody !== undefined &&
+			disposition.rawSerialized !== undefined
+		) {
 			record.frozenSnapshot = {
 				file,
 				path: file.path,
@@ -409,6 +415,18 @@ export class ViewLifecycleCoordinator {
 		const scope = this.vaultMap.get(app);
 		if (!scope) return null;
 		return scope.filesByRef.get(file)?.frozenSnapshot ?? null;
+	}
+
+	/**
+	 * Clears the frozen safe snapshot for `file` once an active plugin instance re-attaches,
+	 * unless a retirement barrier is currently draining for `file`.
+	 */
+	clearFrozenSnapshot(app: object, file: TFile): void {
+		const scope = this.vaultMap.get(app);
+		if (!scope) return;
+		const record = scope.filesByRef.get(file);
+		if (!record || record.barrierStatus === "draining") return;
+		record.frozenSnapshot = null;
 	}
 
 	/**
@@ -1120,9 +1138,7 @@ export class ViewLifecycleCoordinator {
 		}
 
 		if (
-			(record.barrierStatus === "draining" ||
-				record.activePromise !== null ||
-				record.frozenSnapshot !== null) &&
+			(record.barrierStatus === "draining" || record.activePromise !== null) &&
 			record.frozenSnapshot !== null
 		) {
 			const safeRaw = record.frozenSnapshot.rawSerialized;
@@ -1139,11 +1155,6 @@ export class ViewLifecycleCoordinator {
 					});
 				} else if (record.activePromise !== null) {
 					void record.activePromise.then(() => {
-						if ((view as unknown as { file?: TFile | null }).file !== file) return;
-						return onAfterBarrier(view, file);
-					}).catch(() => undefined);
-				} else {
-					void Promise.resolve().then(() => {
 						if ((view as unknown as { file?: TFile | null }).file !== file) return;
 						return onAfterBarrier(view, file);
 					}).catch(() => undefined);
@@ -1237,6 +1248,18 @@ export class ViewLifecycleCoordinator {
 					}
 				}
 				await rawSave.call(view, clear);
+				if (effectiveSafe !== undefined) {
+					const parsedSaved = parseFileContent(effectiveSafe);
+					if (parsedSaved !== null) {
+						this.publishCommittedDisposition(app, capturedFile, {
+							kind: "protected",
+							revision: this.nextFileRevision(app, capturedFile),
+							payload: parsedSaved.payload,
+							decoyBody: parsedSaved.decoyBody,
+							rawSerialized: effectiveSafe,
+						});
+					}
+				}
 			},
 		}).then(
 			(res) => {

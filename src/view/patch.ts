@@ -63,6 +63,9 @@ export function installViewPatches(
 		const file = this.file ?? null;
 
 		if (
+			(sessions.isDisposed() ||
+				!coordinator.isOwnerActive(owner) ||
+				(file !== null && coordinator.getFrozenSnapshot(app, file) !== null)) &&
 			coordinator.handleGuardedSetViewData({
 				app,
 				view: this,
@@ -84,6 +87,20 @@ export function installViewPatches(
 		const parsed = parseFileContent(data);
 		if (parsed) {
 			if (this.file) {
+				const existing = sessions.get(this);
+				if (
+					existing &&
+					existing.file === this.file &&
+					existing.state === "unlocked" &&
+					existing.lockingPromise === null &&
+					(parsed.payload.cipher.nonce === existing.originalPayload.cipher.nonce ||
+						parsed.payload.cipher.nonce === existing.pendingPayload?.cipher.nonce)
+				) {
+					existing.decoyBody = parsed.decoyBody;
+					existing.originalPayload = parsed.payload;
+					sessions.rememberDecoy(this.file.path, parsed.decoyBody);
+					return;
+				}
 				sessions.attachFromLoad(this, this.file, parsed);
 			}
 			rawSet.call(this, parsed.decoyBody, clear);
