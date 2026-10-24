@@ -1959,6 +1959,7 @@ export class SessionManager {
 			return inertSession;
 		}
 		const authority = this.getOrCreateFileAuthority(file, parsed.payload, parsed.decoyBody);
+		this.coordinator.clearFrozenSnapshot(this.app, file);
 		const parsedRev = this.getPayloadRevision(file, parsed.payload);
 		if (parsedRev === 0) {
 			const nextRev = this.coordinator.nextFileRevision(this.app, file);
@@ -2508,6 +2509,16 @@ export class SessionManager {
 					session.lockingPromise === lockingPromise &&
 					session.killGeneration === startGeneration
 				) {
+					if (parseFileContent(currentText) !== null) {
+						const preservedPayload = session.pendingPayload ?? session.originalPayload;
+						this.commitSessionPayload(session, preservedPayload, candidateRevision);
+						for (const peer of this.getAllByPath(session.file.path)) {
+							this.runInternalSessionMutation(peer, () => {
+								peer.originalPayload = preservedPayload;
+							});
+						}
+						return;
+					}
 					const imageStage = await this.stageEditorImages(session, currentText, dek);
 					const mergedImages = imageStage?.mergedImages ?? session.originalPayload.images;
 					if (
@@ -2524,7 +2535,11 @@ export class SessionManager {
 						session.state === "unlocked"
 					) {
 						const postStageText = session.view.editor.getValue();
-						if (postStageText !== currentText && postStageText !== session.decoyBody) {
+						if (
+							postStageText !== currentText &&
+							postStageText !== session.decoyBody &&
+							parseFileContent(postStageText) === null
+						) {
 							currentText = postStageText;
 							candidateRevision = this.coordinator.nextFileRevision(
 								this.app,
@@ -2561,7 +2576,11 @@ export class SessionManager {
 						session.state === "unlocked"
 					) {
 						const latestText = session.view.editor.getValue();
-						if (latestText !== currentText && latestText !== session.decoyBody) {
+						if (
+							latestText !== currentText &&
+							latestText !== session.decoyBody &&
+							parseFileContent(latestText) === null
+						) {
 							currentText = latestText;
 							currentTitle = this.readEditedInlineTitle(session);
 							session.realTitle = currentTitle;
@@ -2813,6 +2832,9 @@ export class SessionManager {
 					}
 					try {
 						const snapshotText = session.view.editor.getValue();
+						if (parseFileContent(snapshotText) !== null) {
+							return;
+						}
 						const snapshotTitle = this.readEditedInlineTitle(session);
 						const candidateRevision = this.coordinator.nextFileRevision(
 							this.app,
