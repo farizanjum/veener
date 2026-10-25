@@ -877,17 +877,8 @@ async function singleStreamDownload(
 		clearPartial(partPath.slice(0, -".part".length));
 	}
 	let existing = fs.existsSync(partPath) ? fs.statSync(partPath).size : 0;
-	if (expectedTotal !== null && existing > expectedTotal) {
+	if (expectedTotal !== null && existing >= expectedTotal) {
 		existing = 0;
-	}
-	if (expectedTotal !== null && existing === expectedTotal) {
-		onProgress({
-			downloaded: existing,
-			total: expectedTotal,
-			bytesPerSecond: 0,
-			etaSeconds: 0,
-		});
-		return;
 	}
 	const headers: Record<string, string> = existing > 0 ? { Range: `bytes=${existing}-` } : {};
 	const response = await fetchFollowingRedirects(

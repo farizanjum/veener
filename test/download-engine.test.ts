@@ -667,12 +667,31 @@ describe("startModelDownload integration", () => {
 
 		vi.restoreAllMocks();
 		const destCompletePart = path.join(tmpDir, "complete-part.gguf");
-		fs.writeFileSync(`${destCompletePart}.part`, fullPayload);
+		fs.writeFileSync(`${destCompletePart}.part`, Buffer.alloc(fullPayload.length, 0x58));
 		fs.writeFileSync(`${destCompletePart}.part.part.meta.json`, "{}");
-		const getSpy = vi.spyOn(https, "get");
+		let completePartRange: string | undefined = "sentinel";
+		const getSpy = vi.spyOn(https, "get").mockImplementation(((
+			_urlInput: string | URL,
+			options: { headers?: Record<string, string> },
+			callback?: (res: http.IncomingMessage) => void,
+		) => {
+			completePartRange = options?.headers?.Range;
+			const req = createMockClientRequest();
+			queueMicrotask(() => {
+				const res = createMockResponse(200, {
+					"content-length": String(fullPayload.length),
+				});
+				callback?.(res);
+				queueMicrotask(() => {
+					res.end(fullPayload);
+				});
+			});
+			return req;
+		}) as unknown as typeof https.get);
 
 		await startModelDownload(url, destCompletePart, fullPayload.length, () => undefined).promise;
-		expect(getSpy).not.toHaveBeenCalled();
+		expect(getSpy).toHaveBeenCalledTimes(1);
+		expect(completePartRange).toBeUndefined();
 		expect(fs.readFileSync(destCompletePart).equals(fullPayload)).toBe(true);
 		expect(fs.existsSync(`${destCompletePart}.part.part.meta.json`)).toBe(false);
 	});
