@@ -287,6 +287,47 @@ describe("file parsing edge cases", () => {
 			payload.cipher.ct,
 		);
 
+		payload.title = { nonce: "dGl0bGVub25jZQ==", ct: "dGl0bGVjdA==" };
+		expect(parseFileContent(serializeFile(DECOY, payload))?.payload.title).toEqual({
+			nonce: "dGl0bGVub25jZQ==",
+			ct: "dGl0bGVjdA==",
+		});
+
+		payload.title.ct = "dXBkYXRlZHRpdGxl";
+		expect(
+			parseFileContent(serializeFile(DECOY, payload))?.payload.title?.ct,
+		).toBe("dXBkYXRlZHRpdGxl");
+
+		delete payload.title;
+		expect(
+			parseFileContent(serializeFile(DECOY, payload))?.payload.title,
+		).toBeUndefined();
+
+		payload.images = {
+			"pic.png": { mime: "image/png", nonce: "aW1nbm9uY2U=", ct: "aW1nY3Qx" },
+		};
+		expect(
+			parseFileContent(serializeFile(DECOY, payload))?.payload.images?.[
+				"pic.png"
+			],
+		).toEqual({
+			mime: "image/png",
+			nonce: "aW1nbm9uY2U=",
+			ct: "aW1nY3Qx",
+		});
+
+		payload.images["pic.png"]!.ct = "aW1nY3Qy";
+		expect(
+			parseFileContent(serializeFile(DECOY, payload))?.payload.images?.[
+				"pic.png"
+			]?.ct,
+		).toBe("aW1nY3Qy");
+
+		delete payload.images;
+		expect(
+			parseFileContent(serializeFile(DECOY, payload))?.payload.images,
+		).toBeUndefined();
+
 		const stringifySpy = vi.spyOn(JSON, "stringify");
 		try {
 			(payload as unknown as Record<string, unknown>).extraTop = "unexpected";
