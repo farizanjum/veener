@@ -58,7 +58,7 @@ Let's create a test note to see how Veneer hides your text, your filename, and e
 - **Your note body** now shows the mundane cover text (for example, a grocery list or bug triage log).
 - **Your note title (`Q4 Acquisition Strategy`)** was encrypted inside the payload, and the file on disk was automatically renamed to match the first heading of your cover (for example, `Weekend Errands.md`). Anyone glancing at your sidebar sees only `Weekend Errands`.
 - **Your embedded images (`![[Pasted image.png]]`)** were read, encrypted into the AES-256-GCM payload, and deleted from your vault folder on disk so no loose image files give away your secret.
-- **Your encrypted payload** is stored inside a quiet YAML frontmatter property named `draft_cache`, padded to 4 KB blocks, with invisible file-size padding so the file on disk looks completely normal.
+- **Your encrypted payload** is stored inside a quiet YAML frontmatter property named `draft_cache`, with your plaintext padded to 4 KB blocks before encryption so the ciphertext hides the exact length of your note.
 
 ---
 
