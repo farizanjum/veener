@@ -2260,12 +2260,13 @@ export class SessionManager {
 		for (const session of this.all()) {
 			if (!activeViews.has(session.view)) {
 				if (session.lockingPromise !== null) {
-					void session.lockingPromise.finally(() => {
+					const cleanup = (): void => {
 						if (!this.isDisposed() && this.byView.get(session.view) === session) {
 							this.byView.delete(session.view);
 							this.removeFromPath(session.file.path, session);
 						}
-					});
+					};
+					void session.lockingPromise.then(cleanup, cleanup);
 				} else {
 					this.detach(session.view);
 				}

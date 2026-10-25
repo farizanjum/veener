@@ -7,7 +7,7 @@ import { setContentProtection, wirePowerMonitor } from "../src/lock/power";
 import { ProtectedRegistry } from "../src/registry";
 import { DEFAULT_SETTINGS, type VeneerSettings } from "../src/settings";
 import { executeShred } from "../src/shred/duress";
-import type { SessionManager, ViewSession } from "../src/view/session";
+import { SessionManager, type ViewSession } from "../src/view/session";
 
 type ElectronMockMode =
 	| "working"
@@ -995,5 +995,59 @@ describe("Electron power/content-protection bridge and absence of host-wide stor
 		await registry.remove("tracked.md");
 		expect(saveData).toHaveBeenCalledTimes(1);
 		expect(registry.has("tracked.md")).toBe(false);
+	});
+
+	it("removes a detached session from byView and byPath in pruneDetached when lockingPromise rejects without unhandled rejection (Issue #9)", async () => {
+		const sessions = new SessionManager(
+			{} as never,
+			{
+				onUnlocked: () => undefined,
+				onLocked: () => undefined,
+				onUnlockBlocked: () => undefined,
+			},
+			() => "::",
+			() => null,
+		);
+		const view = new MarkdownView(null as never);
+		const path = "detached-note.md";
+		let rejectLock!: (reason?: unknown) => void;
+		const lockingPromise = new Promise<void>((_resolve, reject) => {
+			rejectLock = reject;
+		});
+		const session = {
+			view,
+			file: { path },
+			state: "unlocked",
+			lockingPromise,
+		} as unknown as ViewSession;
+
+		const internal = sessions as unknown as {
+			byView: WeakMap<MarkdownView, ViewSession>;
+			byPath: Map<string, Set<ViewSession>>;
+		};
+		internal.byView.set(view, session);
+		internal.byPath.set(path, new Set([session]));
+
+		expect(sessions.get(view)).toBe(session);
+		expect(sessions.getAllByPath(path)).toEqual([session]);
+
+		const unhandled: unknown[] = [];
+		const onUnhandledRejection = (reason: unknown): void => {
+			unhandled.push(reason);
+		};
+		process.on("unhandledRejection", onUnhandledRejection);
+		try {
+			sessions.pruneDetached(new Set());
+			expect(sessions.get(view)).toBe(session);
+
+			rejectLock(new Error("simulated lock failure"));
+			await new Promise<void>((resolve) => setImmediate(resolve));
+
+			expect(unhandled).toEqual([]);
+			expect(sessions.get(view)).toBeNull();
+			expect(sessions.getAllByPath(path)).toEqual([]);
+		} finally {
+			process.off("unhandledRejection", onUnhandledRejection);
+		}
 	});
 });
