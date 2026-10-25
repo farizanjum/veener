@@ -41,7 +41,14 @@ import { clearPartial, partialProgress, sha256HexOfFile } from "./llm/download";
 import { sanitizeTitle, siblingPath, splitTitleFromBody, withSuffix } from "./decoy/title";
 
 interface EditorWithCm {
-	cm?: { state: EditorState };
+	cm?: {
+		state: EditorState & {
+			doc?: {
+				readonly length: number;
+				readonly lines: number;
+			};
+		};
+	};
 }
 
 export type ClosableModal = {
@@ -49,6 +56,9 @@ export type ClosableModal = {
 	close?: () => void;
 	onClose?: () => void;
 };
+
+/** Debounce interval (ms) for status bar word/char/line counter updates on rapid editor changes. */
+export const WORD_COUNTER_DEBOUNCE_MS = 150;
 
 export default class VeneerPlugin extends Plugin {
 	private static pendingGeneratorUnload: Promise<void> | null = null;
@@ -60,6 +70,7 @@ export default class VeneerPlugin extends Plugin {
 	viewPatchController?: ViewPatchController;
 	private dots!: StatusDots;
 	private wordCounter!: WordCounter;
+	private wordCounterTimer: ReturnType<typeof window.setTimeout> | number | null = null;
 	private generator!: DecoyGenerator;
 	private isShuttingDown = false;
 	private teardownDone = false;
@@ -300,14 +311,27 @@ export default class VeneerPlugin extends Plugin {
 			}),
 		);
 		this.registerEditorExtension(
-			buildUnlockedImageExtension((state, link) => {
-				if (!this.isLive()) return null;
-				const view = this.resolveMarkdownView(state);
-				if (!view) return null;
-				const session = this.sessions.get(view);
-				if (!session || session.state !== "unlocked") return null;
-				return session.imageUrls.get(link) ?? null;
-			}),
+			buildUnlockedImageExtension(
+				(state, link) => {
+					const session = this.resolveSessionByState(state);
+					if (!session || session.state !== "unlocked") return null;
+					return session.imageUrls.get(link) ?? null;
+				},
+				(state) => {
+					const session = this.resolveSessionByState(state);
+					if (!session || session.state !== "unlocked" || session.imageUrls.size === 0) {
+						return null;
+					}
+					if (typeof session.imageUrlsRevision === "number") {
+						return `${session.imageUrls.size}:${session.imageUrlsRevision}`;
+					}
+					let token = "";
+					for (const [key, url] of session.imageUrls) {
+						token += `${key}\0${url}\n`;
+					}
+					return token;
+				},
+			),
 		);
 
 		this.registerCommands();
@@ -322,6 +346,7 @@ export default class VeneerPlugin extends Plugin {
 	 */
 	teardown(): ShutdownHandoffResult | null {
 		this.isShuttingDown = true;
+		this.clearWordCounterTimer();
 
 		if (this.teardownDone) {
 			const existingController = this.patchController ?? this.viewPatchController;
@@ -482,8 +507,28 @@ export default class VeneerPlugin extends Plugin {
 		}
 	}
 
+	/** Cancels any pending debounced status bar word-counter update timer. */
+	private clearWordCounterTimer(): void {
+		if (this.wordCounterTimer !== null && this.wordCounterTimer !== undefined) {
+			window.clearTimeout(this.wordCounterTimer);
+			this.wordCounterTimer = null;
+		}
+	}
+
+	/** Schedules a debounced status bar word-counter refresh after rapid editor changes. */
+	private scheduleWordCounterUpdate(): void {
+		if (!this.isLive()) return;
+		this.clearWordCounterTimer();
+		this.wordCounterTimer = window.setTimeout(() => {
+			this.wordCounterTimer = null;
+			if (!this.isLive()) return;
+			this.updateWordCounter();
+		}, WORD_COUNTER_DEBOUNCE_MS);
+	}
+
 	/** Refreshes the status bar word counter for the currently active protected markdown view. */
 	private updateWordCounter(): void {
+		this.clearWordCounterTimer();
 		if (!this.isLive()) return;
 		const view = this.app.workspace.getActiveViewOfType(MarkdownView);
 		if (!view) {
@@ -495,22 +540,37 @@ export default class VeneerPlugin extends Plugin {
 			this.wordCounter?.hide();
 			return;
 		}
+		const cmDoc = (view.editor as unknown as EditorWithCm | undefined)?.cm?.state?.doc;
+		if (cmDoc && typeof cmDoc.length === "number" && cmDoc.length === 0) {
+			this.wordCounter?.hide();
+			return;
+		}
 		const text = view.editor?.getValue() ?? "";
-		this.wordCounter?.update(text, session.state);
+		const docStats =
+			cmDoc &&
+			typeof cmDoc.length === "number" &&
+			typeof cmDoc.lines === "number" &&
+			cmDoc.length === text.length
+				? { chars: cmDoc.length, lines: cmDoc.lines }
+				: undefined;
+		this.wordCounter?.update(text, session.state, docStats);
 	}
 
-	/** Resolves the workspace `MarkdownView` owning the given CodeMirror `EditorState`, if any. */
-	private resolveMarkdownView(state: EditorState): MarkdownView | null {
-		if (!this.isLive()) return null;
-		const found: { view: MarkdownView | null } = { view: null };
-		this.app.workspace.iterateAllLeaves((leaf) => {
-			if (found.view !== null) return;
-			if (leaf.view instanceof MarkdownView) {
-				const cm = (leaf.view.editor as unknown as EditorWithCm).cm;
-				if (cm && cm.state === state) found.view = leaf.view;
+	/** Resolves the active `ViewSession` owning the given CodeMirror `EditorState` in $O(1)$ over open sessions. */
+	private resolveSessionByState(state: EditorState): ViewSession | null {
+		if (!this.isLive() || !this.sessions) return null;
+		for (const session of this.sessions.all()) {
+			const cm = (session.view?.editor as unknown as EditorWithCm | undefined)?.cm;
+			if (cm && cm.state === state) {
+				return this.sessions.get(session.view);
 			}
-		});
-		return found.view;
+		}
+		return null;
+	}
+
+	/** Resolves the workspace `MarkdownView` owning the given CodeMirror `EditorState`, if tracked in `this.sessions`. */
+	private resolveMarkdownView(state: EditorState): MarkdownView | null {
+		return this.resolveSessionByState(state)?.view ?? null;
 	}
 
 	/** Handles an in-editor captured trigger candidate, routing `!` prefixes to duress verification or unlocking the session. */
@@ -796,18 +856,30 @@ export default class VeneerPlugin extends Plugin {
 		this.registerEvent(
 			this.app.workspace.on("editor-change", (_editor, info) => {
 				if (!this.isLive()) return;
-				const view =
-					info instanceof MarkdownView
-						? info
-						: this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (view) {
-					const session = this.sessions.get(view);
-					if (session && session.state === "unlocked") {
+				const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+				const view = info instanceof MarkdownView ? info : activeView;
+				const session = view ? this.sessions.get(view) : null;
+				if (session) {
+					if (session.state === "unlocked") {
 						this.sessions.scheduleReencrypt(session);
-					} else if (session && session.state === "locked" && session.lockingPromise === null) {
+					} else if (session.state === "locked" && session.lockingPromise === null) {
 						this.sessions.observeCoverEdit(session);
 					}
 				}
+				const activeSession = activeView ? this.sessions.get(activeView) : null;
+				if (activeSession) {
+					if (!view || view === activeView) {
+						this.scheduleWordCounterUpdate();
+					}
+				} else if (!view || view === activeView) {
+					this.clearWordCounterTimer();
+					this.wordCounter?.hide();
+				}
+			}),
+		);
+		this.registerEvent(
+			this.app.workspace.on("active-leaf-change", () => {
+				if (!this.isLive()) return;
 				this.updateWordCounter();
 			}),
 		);
