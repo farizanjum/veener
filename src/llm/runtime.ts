@@ -39,6 +39,9 @@ class WllamaRecoveryError extends Error {
 	}
 }
 
+/** Per-path serialization queue preventing overlapping WASM downloads and cleanups across reloads. */
+const wasmProvisionQueues = new Map<string, Promise<void>>();
+
 /** WebAssembly-backed LLM runtime using @wllama/wllama. */
 export class WllamaRuntime implements LlmRuntime {
 	private engine: Wllama | null = null;
@@ -71,114 +74,132 @@ export class WllamaRuntime implements LlmRuntime {
 		};
 		checkUnloaded();
 
+		const prevTask = wasmProvisionQueues.get(this.wasmPath) ?? Promise.resolve();
+		let releaseQueue!: () => void;
+		const currentQueue = new Promise<void>((resolve) => {
+			releaseQueue = resolve;
+		});
+		const chainedQueue = prevTask.finally(() => currentQueue);
+		wasmProvisionQueues.set(this.wasmPath, chainedQueue);
+
 		try {
-			const stat = fs.statSync(this.wasmPath);
-			if (stat.isFile() && stat.size === WLLAMA_WASM_SIZE_BYTES) {
-				if (this.verifiedWasmMtimeMs !== null && this.verifiedWasmMtimeMs === stat.mtimeMs) {
-					return;
-				}
-				const digest = await sha256HexOfFile(this.wasmPath);
-				checkUnloaded();
-				if (digest.toLowerCase() === WLLAMA_WASM_SHA256) {
-					this.verifiedWasmMtimeMs = stat.mtimeMs;
-					return;
-				}
-			}
-		} catch (err) {
-			if (err instanceof Error && err.message === "wllama runtime unloaded during startup") {
-				throw err;
-			}
-			// File missing or unreadable; proceed to provision from CDN mirrors
-		}
-
-		checkUnloaded();
-		await fs.promises.mkdir(path.dirname(this.wasmPath), { recursive: true });
-		checkUnloaded();
-
-		const removeCorruptOrPartial = async (): Promise<void> => {
-			this.verifiedWasmMtimeMs = null;
-			try {
-				await fs.promises.unlink(this.wasmPath);
-			} catch (err) {
-				const code = (err as NodeJS.ErrnoException | undefined)?.code;
-				const msg = err instanceof Error ? err.message : String(err);
-				if (code !== "ENOENT" && !msg.includes("ENOENT")) {
-					throw err;
-				}
-			}
-			try {
-				clearPartial(this.wasmPath);
-			} catch (err) {
-				const code = (err as NodeJS.ErrnoException | undefined)?.code;
-				const msg = err instanceof Error ? err.message : String(err);
-				if (code !== "ENOENT" && !msg.includes("ENOENT")) {
-					throw err;
-				}
-			}
-		};
-
-		let lastError: unknown = null;
-		for (const url of WLLAMA_WASM_URLS) {
+			await prevTask.catch(() => undefined);
 			checkUnloaded();
-			try {
-				await removeCorruptOrPartial();
-			} catch (cleanupErr) {
-				checkUnloaded();
-				lastError = cleanupErr;
-				continue;
-			}
-			checkUnloaded();
-			const handle = startModelDownload(
-				url,
-				this.wasmPath,
-				WLLAMA_WASM_SIZE_BYTES,
-				(progress) => {
-					if (onProgress && progress.total && progress.total > 0) {
-						onProgress(Math.min(1, Math.max(0, progress.downloaded / progress.total)));
-					}
-				},
-			);
-			this.activeWasmDownload = handle;
-			try {
-				await handle.promise;
-			} catch (downloadErr) {
-				await removeCorruptOrPartial().catch(() => undefined);
-				checkUnloaded();
-				lastError = downloadErr;
-				continue;
-			} finally {
-				if (this.activeWasmDownload === handle) {
-					this.activeWasmDownload = null;
-				}
-			}
 
-			checkUnloaded();
 			try {
 				const stat = fs.statSync(this.wasmPath);
-				if (!stat.isFile() || stat.size !== WLLAMA_WASM_SIZE_BYTES) {
-					throw new Error(
-						`unexpected wllama.wasm size (${stat.size}/${WLLAMA_WASM_SIZE_BYTES} bytes)`,
-					);
+				if (stat.isFile() && stat.size === WLLAMA_WASM_SIZE_BYTES) {
+					if (this.verifiedWasmMtimeMs !== null && this.verifiedWasmMtimeMs === stat.mtimeMs) {
+						return;
+					}
+					const digest = await sha256HexOfFile(this.wasmPath);
+					checkUnloaded();
+					if (digest.toLowerCase() === WLLAMA_WASM_SHA256) {
+						this.verifiedWasmMtimeMs = stat.mtimeMs;
+						return;
+					}
 				}
-				const digest = await sha256HexOfFile(this.wasmPath);
-				checkUnloaded();
-				if (digest.toLowerCase() !== WLLAMA_WASM_SHA256) {
-					throw new Error("wllama.wasm SHA-256 verification failed");
+			} catch (err) {
+				if (err instanceof Error && err.message === "wllama runtime unloaded during startup") {
+					throw err;
 				}
-				this.verifiedWasmMtimeMs = stat.mtimeMs;
-				return;
-			} catch (verifyErr) {
-				await removeCorruptOrPartial().catch(() => undefined);
+				// File missing or unreadable; proceed to provision from CDN mirrors
+			}
+
+			checkUnloaded();
+			await fs.promises.mkdir(path.dirname(this.wasmPath), { recursive: true });
+			checkUnloaded();
+
+			const removeCorruptOrPartial = async (): Promise<void> => {
+				this.verifiedWasmMtimeMs = null;
+				try {
+					await fs.promises.unlink(this.wasmPath);
+				} catch (err) {
+					const code = (err as NodeJS.ErrnoException | undefined)?.code;
+					const msg = err instanceof Error ? err.message : String(err);
+					if (code !== "ENOENT" && !msg.includes("ENOENT")) {
+						throw err;
+					}
+				}
+				try {
+					clearPartial(this.wasmPath);
+				} catch (err) {
+					const code = (err as NodeJS.ErrnoException | undefined)?.code;
+					const msg = err instanceof Error ? err.message : String(err);
+					if (code !== "ENOENT" && !msg.includes("ENOENT")) {
+						throw err;
+					}
+				}
+			};
+
+			let lastError: unknown = null;
+			for (const url of WLLAMA_WASM_URLS) {
 				checkUnloaded();
-				lastError = verifyErr;
+				try {
+					await removeCorruptOrPartial();
+				} catch (cleanupErr) {
+					checkUnloaded();
+					lastError = cleanupErr;
+					continue;
+				}
+				checkUnloaded();
+				const handle = startModelDownload(
+					url,
+					this.wasmPath,
+					WLLAMA_WASM_SIZE_BYTES,
+					(progress) => {
+						if (onProgress && progress.total && progress.total > 0) {
+							onProgress(Math.min(1, Math.max(0, progress.downloaded / progress.total)));
+						}
+					},
+				);
+				this.activeWasmDownload = handle;
+				try {
+					await handle.promise;
+				} catch (downloadErr) {
+					checkUnloaded();
+					await removeCorruptOrPartial().catch(() => undefined);
+					lastError = downloadErr;
+					continue;
+				} finally {
+					if (this.activeWasmDownload === handle) {
+						this.activeWasmDownload = null;
+					}
+				}
+
+				checkUnloaded();
+				try {
+					const stat = fs.statSync(this.wasmPath);
+					if (!stat.isFile() || stat.size !== WLLAMA_WASM_SIZE_BYTES) {
+						throw new Error(
+							`unexpected wllama.wasm size (${stat.size}/${WLLAMA_WASM_SIZE_BYTES} bytes)`,
+						);
+					}
+					const digest = await sha256HexOfFile(this.wasmPath);
+					checkUnloaded();
+					if (digest.toLowerCase() !== WLLAMA_WASM_SHA256) {
+						throw new Error("wllama.wasm SHA-256 verification failed");
+					}
+					this.verifiedWasmMtimeMs = stat.mtimeMs;
+					return;
+				} catch (verifyErr) {
+					checkUnloaded();
+					await removeCorruptOrPartial().catch(() => undefined);
+					lastError = verifyErr;
+				}
+			}
+
+			throw new Error(
+				`Failed to provision verified wllama.wasm runtime asset: ${
+					lastError instanceof Error ? lastError.message : String(lastError ?? "unknown error")
+				}`,
+			);
+		} finally {
+			releaseQueue();
+			if (wasmProvisionQueues.get(this.wasmPath) === chainedQueue) {
+				wasmProvisionQueues.delete(this.wasmPath);
 			}
 		}
-
-		throw new Error(
-			`Failed to provision verified wllama.wasm runtime asset: ${
-				lastError instanceof Error ? lastError.message : String(lastError ?? "unknown error")
-			}`,
-		);
 	}
 
 	/** Deduplicates and tracks worker exit for `engine`, retaining failed engines for retry on subsequent unloads. */

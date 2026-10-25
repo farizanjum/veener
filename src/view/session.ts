@@ -71,6 +71,7 @@ export interface SessionHooks {
 	onLocked(session: ViewSession): void;
 	onUnlockBlocked(reason: string): void;
 	onLockFailed?(error: unknown): void;
+	onAttached?(file: TFile, payload: PayloadV1): void;
 }
 
 export interface SessionRetirementGroup {
@@ -2177,6 +2178,11 @@ export class SessionManager {
 						console.warn("Veneer: lock on reload failed", error);
 					});
 				}
+				try {
+					this.hooks.onAttached?.(file, parsed.payload);
+				} catch {
+					// Ignore hook errors during synchronous view attachment
+				}
 				return existing;
 			}
 			// A pending mask keeps its captured state and finishes on its own, so only
@@ -2215,6 +2221,11 @@ export class SessionManager {
 		this.byView.set(view, session);
 		this.addToPath(file.path, session);
 		this.rememberDecoy(file.path, effectiveDecoy);
+		try {
+			this.hooks.onAttached?.(file, parsed.payload);
+		} catch {
+			// Ignore hook errors during synchronous view attachment
+		}
 		return session;
 	}
 

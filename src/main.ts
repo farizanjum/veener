@@ -51,6 +51,7 @@ export type ClosableModal = {
 };
 
 export default class VeneerPlugin extends Plugin {
+	private static pendingGeneratorUnload: Promise<void> | null = null;
 	settings: VeneerSettings = { ...DEFAULT_SETTINGS };
 	registry!: ProtectedRegistry;
 	sessions!: SessionManager;
@@ -112,6 +113,95 @@ export default class VeneerPlugin extends Plugin {
 		}
 	}
 
+	/**
+	 * Migrates settings, destruction PIN records, and protected-note registry entries from
+	 * a legacy `deocy/data.json` installation when upgrading to `veneer`.
+	 */
+	async migrateLegacyPluginDataIfNeeded(): Promise<void> {
+		try {
+			const configDir = this.app?.vault?.configDir || ".obsidian";
+			const legacyPluginId = "deocy";
+			const legacyDirRel = normalizePath(`${configDir}/plugins/${legacyPluginId}`);
+			if (this.pluginDirPaths().rel === legacyDirRel) return;
+
+			const legacyDataRel = normalizePath(`${legacyDirRel}/data.json`);
+			const adapter = this.app?.vault?.adapter as
+				| {
+						exists?: (p: string) => Promise<boolean>;
+						read?: (p: string) => Promise<string>;
+						getBasePath?: () => string;
+				  }
+				| undefined;
+
+			let legacyRawText: string | null = null;
+			if (typeof adapter?.read === "function") {
+				const exists =
+					typeof adapter.exists === "function" ? await adapter.exists(legacyDataRel) : true;
+				if (exists) {
+					try {
+						legacyRawText = await adapter.read(legacyDataRel);
+					} catch {
+						legacyRawText = null;
+					}
+				}
+			} else {
+				const root =
+					adapter instanceof FileSystemAdapter
+						? adapter.getBasePath()
+						: (adapter?.getBasePath?.() ?? "");
+				if (root) {
+					const legacyAbs = path.join(root, ...legacyDataRel.split("/"));
+					if (fs.existsSync(legacyAbs)) {
+						legacyRawText = fs.readFileSync(legacyAbs, "utf8");
+					}
+				}
+			}
+			if (!legacyRawText) return;
+
+			const parsedLegacy: unknown = JSON.parse(legacyRawText);
+			if (!parsedLegacy || typeof parsedLegacy !== "object") return;
+			const legacyObj = parsedLegacy as Record<string, unknown>;
+
+			const currentRaw = (await this.loadData()) as Record<string, unknown> | null;
+			const legacyEntries =
+				legacyObj.entries && typeof legacyObj.entries === "object"
+					? (legacyObj.entries as Record<string, unknown>)
+					: {};
+			const currentEntries =
+				currentRaw?.entries && typeof currentRaw.entries === "object"
+					? (currentRaw.entries as Record<string, unknown>)
+					: {};
+
+			const hasMissingEntries = Object.keys(legacyEntries).some(
+				(key) => !Object.prototype.hasOwnProperty.call(currentEntries, key),
+			);
+			const needsPinMigration =
+				currentRaw !== null &&
+				!currentRaw.duressPinHash &&
+				typeof legacyObj.duressPinHash === "string" &&
+				typeof legacyObj.duressPinSalt === "string";
+
+			if (currentRaw === null || hasMissingEntries || needsPinMigration) {
+				const mergedEntries = { ...legacyEntries, ...currentEntries };
+				const mergedData: Record<string, unknown> =
+					currentRaw === null
+						? { ...legacyObj, entries: mergedEntries }
+						: {
+								...legacyObj,
+								...currentRaw,
+								duressPinSalt:
+									currentRaw.duressPinSalt ?? legacyObj.duressPinSalt ?? null,
+								duressPinHash:
+									currentRaw.duressPinHash ?? legacyObj.duressPinHash ?? null,
+								entries: mergedEntries,
+						  };
+				await this.saveData(mergedData);
+			}
+		} catch (error) {
+			console.warn("Veneer: legacy deocy data migration skipped", error);
+		}
+	}
+
 	/** Initializes plugin state, lifecycle coordination, view patches, lock engine, and commands. */
 	async onload(): Promise<void> {
 		this.isShuttingDown = false;
@@ -128,6 +218,8 @@ export default class VeneerPlugin extends Plugin {
 			"veneer-layers",
 			`<svg viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"><path d="M24 12 H76 A8 8 0 0 1 84 20 V56 L58 82 H24 A8 8 0 0 1 16 74 V20 A8 8 0 0 1 24 12 Z"/><path d="M84 56 H64 A6 6 0 0 0 58 62 V82"/><line x1="30" y1="30" x2="68" y2="30"/><line x1="30" y1="44" x2="58" y2="44"/><line x1="30" y1="58" x2="46" y2="58"/><path d="M58 88 H78 A10 10 0 0 0 88 78 V58" stroke-opacity="0.65"/></svg>`,
 		);
+		await this.migrateLegacyPluginDataIfNeeded();
+		if (!this.isLive()) return;
 		this.registry = new ProtectedRegistry(this);
 		await this.registry.load();
 		if (!this.isLive()) return;
@@ -166,6 +258,15 @@ export default class VeneerPlugin extends Plugin {
 						"Veneer: could not save your latest edits before masking. The note is masked; unlock it to check for missing changes.",
 					);
 				},
+				onAttached: (file, payload) => {
+					if (!this.isLive() || !this.registry) return;
+					if (this.registry.has(file.path)) return;
+					void this.registry.ensure(file.path, {
+						noteId: payload.note_id,
+						addedAt: Date.now(),
+						mode: "portable",
+					});
+				},
 			},
 			() => this.settings.triggerPrefix,
 			() =>
@@ -182,7 +283,7 @@ export default class VeneerPlugin extends Plugin {
 		});
 		this.patchController = controller;
 		this.viewPatchController = controller;
-		this.generator = this.buildGenerator();
+		this.generator = this.buildGenerator(VeneerPlugin.pendingGeneratorUnload ?? undefined);
 		this.lockEngine = new LockEngine(this, this.app.workspace, this.sessions, () => this.settings);
 		this.lockEngine.start();
 		void this.attachAlreadyOpenViews();
@@ -291,11 +392,17 @@ export default class VeneerPlugin extends Plugin {
 		} catch {}
 
 		try {
-			const unloadRes = this.generator?.unload();
+			const unloadRes = this.generator?.unload(true);
 			if (unloadRes) {
-				void Promise.resolve(unloadRes).catch((error) => {
+				const trackedUnload = Promise.resolve(unloadRes).catch((error) => {
 					console.warn("Veneer: generator unload failed", error);
 				});
+				const settledUnload = trackedUnload.finally(() => {
+					if (VeneerPlugin.pendingGeneratorUnload === settledUnload) {
+						VeneerPlugin.pendingGeneratorUnload = null;
+					}
+				});
+				VeneerPlugin.pendingGeneratorUnload = settledUnload;
 			}
 		} catch (error) {
 			console.warn("Veneer: generator unload failed", error);
@@ -438,7 +545,25 @@ export default class VeneerPlugin extends Plugin {
 		const coordinator = this.getCoordinator();
 		const targets: ShredTarget[] = this.registry
 			.list()
-			.map(({ path, entry }) => ({ path, mode: entry.mode }));
+			.map(({ path: p, entry }) => ({ path: p, mode: entry.mode }));
+		const seenPaths = new Set(targets.map((t) => t.path));
+		if (typeof this.app.vault.getMarkdownFiles === "function") {
+			for (const mdFile of this.app.vault.getMarkdownFiles()) {
+				if (seenPaths.has(mdFile.path)) continue;
+				try {
+					const raw =
+						typeof this.app.vault.cachedRead === "function"
+							? await this.app.vault.cachedRead(mdFile)
+							: await this.app.vault.read(mdFile);
+					if (parseFileContent(raw) !== null) {
+						seenPaths.add(mdFile.path);
+						targets.push({ path: mdFile.path, mode: "portable" });
+					}
+				} catch {
+					// Ignore unreadable files during emergency scan
+				}
+			}
+		}
 		const targetFiles = new Map<string, TFile>();
 		const coordinatorTargets: Array<{ file?: TFile; path: string }> = [];
 		for (const t of targets) {

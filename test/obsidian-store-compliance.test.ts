@@ -1,8 +1,10 @@
 import fs from "fs";
 import path from "path";
 import { describe, expect, it, vi } from "vitest";
-import { FileSystemAdapter, MarkdownView, type App, type Command, type TFile } from "obsidian";
+import { FileSystemAdapter, MarkdownView, TFile, type App, type Command } from "obsidian";
 import VeneerPlugin from "../src/main";
+import { ProtectedRegistry } from "../src/registry";
+import { serializeFile, type PayloadV1 } from "../src/crypto/payload";
 import type { SessionManager, ViewSession } from "../src/view/session";
 
 const ROOT_DIR = path.resolve(__dirname, "..");
@@ -343,6 +345,140 @@ describe("Obsidian Community Plugin Store compliance", () => {
 
 			expect(maskCmd.checkCallback!(false)).toBe(true);
 			expect(lockSpy).toHaveBeenCalledWith(mockSession, "manual");
+		});
+
+		it("migrates legacy .obsidian/plugins/deocy/data.json on startup and shreds both registry and vault-scanned protected notes", async () => {
+			const legacyData = {
+				triggerPrefix: "//custom",
+				duressPinSalt: "deadbeef",
+				duressPinHash: "cafebabe",
+				entries: {
+					"Migrated.md": {
+						noteId: "note-migrated",
+						addedAt: 1000,
+						mode: "portable" as const,
+					},
+				},
+			};
+
+			const state: { savedData: Record<string, unknown> | null } = { savedData: null };
+			const dummyPayload: PayloadV1 = {
+				v: 1,
+				note_id: "note-scanned",
+				kdf: {
+					algo: "argon2id",
+					salt: "AA==",
+					time: 3,
+					mem: 65536,
+					par: 1,
+				},
+				cipher: {
+					algo: "aes-256-gcm",
+					nonce: "AA==",
+					ct: "AA==",
+				},
+				dek_wrap: "AA==",
+				pad: 4096,
+			};
+			const protectedRaw = serializeFile("Decoy body text", dummyPayload);
+			const filesByPath = new Map<string, { file: TFile; content: string }>();
+
+			const makeTFile = (p: string): TFile => {
+				const f = Object.create(TFile.prototype) as TFile;
+				Object.assign(f, {
+					path: p,
+					name: p.split("/").pop() ?? p,
+					basename: (p.split("/").pop() ?? p).replace(/\.md$/, ""),
+					extension: "md",
+				});
+				return f;
+			};
+
+			const migratedFile = makeTFile("Migrated.md");
+			const scannedFile = makeTFile("ScannedUnregistered.md");
+			const normalFile = makeTFile("Normal.md");
+			filesByPath.set("Migrated.md", { file: migratedFile, content: protectedRaw });
+			filesByPath.set("ScannedUnregistered.md", { file: scannedFile, content: protectedRaw });
+			filesByPath.set("Normal.md", { file: normalFile, content: "Plain note without payload" });
+
+			const appMock = {
+				vault: {
+					configDir: ".obsidian",
+					adapter: {
+						exists: vi.fn(async (p: string) => p === ".obsidian/plugins/deocy/data.json"),
+						read: vi.fn(async (p: string) => {
+							if (p === ".obsidian/plugins/deocy/data.json") {
+								return JSON.stringify(legacyData);
+							}
+							throw new Error("ENOENT");
+						}),
+						remove: vi.fn(async () => undefined),
+					},
+					getMarkdownFiles: () => [migratedFile, scannedFile, normalFile],
+					getAbstractFileByPath: (p: string) => filesByPath.get(p)?.file ?? null,
+					cachedRead: vi.fn(async (f: TFile) => filesByPath.get(f.path)?.content ?? ""),
+					read: vi.fn(async (f: TFile) => filesByPath.get(f.path)?.content ?? ""),
+					modify: vi.fn(async (f: TFile, nextContent: string) => {
+						const entry = filesByPath.get(f.path);
+						if (entry) entry.content = nextContent;
+					}),
+				},
+			} as unknown as App;
+
+			const plugin = Object.create(VeneerPlugin.prototype) as VeneerPlugin;
+			Object.assign(plugin, {
+				app: appMock,
+				manifest: { id: "veneer", dir: ".obsidian/plugins/veneer" },
+				loadData: vi.fn(async () => state.savedData),
+				saveData: vi.fn(async (next: Record<string, unknown>) => {
+					state.savedData = next;
+				}),
+			});
+
+			await plugin.migrateLegacyPluginDataIfNeeded();
+			expect(state.savedData).not.toBeNull();
+			expect(state.savedData?.duressPinSalt).toBe("deadbeef");
+			expect(state.savedData?.duressPinHash).toBe("cafebabe");
+			expect(state.savedData?.triggerPrefix).toBe("//custom");
+
+			plugin.registry = new ProtectedRegistry(plugin);
+			await plugin.registry.load();
+			expect(plugin.registry.has("Migrated.md")).toBe(true);
+
+			Object.assign(plugin, {
+				sessions: {
+					getCoordinator: () => ({
+						beginDestruction: () => ({
+							generation: 1,
+							waitActiveWrites: async () => undefined,
+							releaseQuarantine: () => undefined,
+						}),
+						enqueueFileWrite: async (
+							_app: App,
+							job: { task: () => Promise<void> },
+						) => {
+							await job.task();
+						},
+						nextFileRevision: () => 1,
+						runDestructionPathWrite: async (
+							_app: App,
+							_path: string,
+							task: () => Promise<void>,
+						) => {
+							await task();
+						},
+					}),
+					hardKillAll: vi.fn(async () => undefined),
+					getDecoyFallback: () => "Decoy body text",
+				} as unknown as SessionManager,
+				clearDuressPin: vi.fn(async () => undefined),
+			});
+
+			await (plugin as unknown as { runShred: () => Promise<void> }).runShred();
+
+			expect(filesByPath.get("Migrated.md")?.content).toBe("Decoy body text\n");
+			expect(filesByPath.get("ScannedUnregistered.md")?.content).toBe("Decoy body text\n");
+			expect(filesByPath.get("Normal.md")?.content).toBe("Plain note without payload");
 		});
 	});
 });

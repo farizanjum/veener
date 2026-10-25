@@ -380,14 +380,87 @@ describe("WllamaRuntime", () => {
 			expect(startModelDownloadMock).toHaveBeenCalledTimes(1);
 		});
 
+		unlinkMock.mockClear();
+		clearPartialMock.mockClear();
+
 		const unloadPromise = runtime.unload();
 		expect(cancelMock).toHaveBeenCalledTimes(1);
 
 		await expect(loadPromise).rejects.toThrow("wllama runtime unloaded during startup");
 		await unloadPromise;
 
+		expect(unlinkMock).not.toHaveBeenCalled();
+		expect(clearPartialMock).not.toHaveBeenCalled();
 		expect(wllamaConstructMock).not.toHaveBeenCalled();
 		expect(runtime.isReady()).toBe(false);
+	});
+
+	it("does not unlink wllama.wasm when unload() happens during post-download SHA-256 verification and serializes concurrent ensureLoaded() on the same wasmPath", async () => {
+		let downloaded = false;
+		statSyncMock.mockImplementation(() => {
+			if (!downloaded) {
+				const err = new Error("ENOENT") as NodeJS.ErrnoException;
+				err.code = "ENOENT";
+				throw err;
+			}
+			return {
+				isFile: () => true,
+				size: WLLAMA_WASM_SIZE_BYTES,
+				mtimeMs: 5000,
+			};
+		});
+
+		startModelDownloadMock.mockImplementation(() => {
+			downloaded = true;
+			return {
+				promise: Promise.resolve(),
+				cancel: vi.fn(),
+			};
+		});
+
+		let resolveFirstHash!: (digest: string) => void;
+		sha256HexOfFileMock
+			.mockImplementationOnce(
+				() =>
+					new Promise<string>((resolve) => {
+						resolveFirstHash = resolve;
+					}),
+			)
+			.mockResolvedValueOnce(WLLAMA_WASM_SHA256);
+
+		const loadModelMock = vi.fn().mockResolvedValue(undefined);
+		wllamaConstructMock.mockReturnValue({
+			loadModel: loadModelMock,
+			exit: vi.fn().mockResolvedValue(undefined),
+			getChatTemplate: vi.fn().mockReturnValue(null),
+			createChatCompletion: vi.fn(),
+			createCompletion: vi.fn(),
+		});
+
+		const wasmPath = "/tmp/assets/wllama/wasm/shared-wllama.wasm";
+		const runtimeA = new WllamaRuntime("/tmp/model.gguf", wasmPath);
+		const runtimeB = new WllamaRuntime("/tmp/model.gguf", wasmPath);
+
+		const loadPromiseA = runtimeA.ensureLoaded();
+		await vi.waitFor(() => {
+			expect(sha256HexOfFileMock).toHaveBeenCalledTimes(1);
+		});
+
+		const loadPromiseB = runtimeB.ensureLoaded();
+		unlinkMock.mockClear();
+		clearPartialMock.mockClear();
+
+		const unloadPromiseA = runtimeA.unload();
+		resolveFirstHash(WLLAMA_WASM_SHA256);
+
+		await expect(loadPromiseA).rejects.toThrow("wllama runtime unloaded during startup");
+		await unloadPromiseA;
+
+		expect(unlinkMock).not.toHaveBeenCalled();
+		expect(clearPartialMock).not.toHaveBeenCalled();
+
+		await loadPromiseB;
+		expect(runtimeB.isReady()).toBe(true);
 	});
 
 	it("fails fast without calling startModelDownload when unlinking a corrupt wllama.wasm fails with EBUSY", async () => {

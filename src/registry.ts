@@ -37,6 +37,17 @@ export class ProtectedRegistry {
 		return { ...this.data.entries };
 	}
 
+	/** Returns true when `path` is currently tracked in the protected-note registry. */
+	has(path: string): boolean {
+		return Object.prototype.hasOwnProperty.call(this.data.entries, path);
+	}
+
+	/** Registers `path` in the protected-note registry if it is not already tracked. */
+	async ensure(path: string, entry: RegistryEntry): Promise<void> {
+		if (this.has(path)) return;
+		await this.add(path, entry);
+	}
+
 	async add(path: string, entry: RegistryEntry): Promise<void> {
 		this.data.entries[path] = entry;
 		await this.save();
