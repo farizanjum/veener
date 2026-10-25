@@ -78,6 +78,7 @@ export class VeneerSettingTab extends PluginSettingTab {
 			.addToggle((toggle) =>
 				toggle.setValue(this.plugin.settings.contentProtection).onChange(async (value) => {
 					this.plugin.settings.contentProtection = value;
+					this.plugin.lockEngine?.applyContentProtection();
 					await this.plugin.saveSettings();
 				}),
 			);

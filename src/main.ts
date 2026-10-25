@@ -241,6 +241,7 @@ export default class VeneerPlugin extends Plugin {
 				onLocked: () => {
 					this.dots?.reset();
 					if (this.isLive()) {
+						this.lockEngine?.applyContentProtection();
 						this.updateWordCounter();
 					}
 				},
@@ -557,6 +558,7 @@ export default class VeneerPlugin extends Plugin {
 
 		let destruction = coordinator.beginDestruction(this.app, coordinatorTargets);
 		await this.sessions.hardKillAll();
+		this.lockEngine?.applyContentProtection();
 
 		const scannedPortablePaths = new Set<string>();
 		if (typeof this.app.vault.getMarkdownFiles === "function") {
