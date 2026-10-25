@@ -798,7 +798,19 @@ async function parallelDownload(
 									"chunk exceeded requested byte range",
 								);
 							}
-							await fileHandle.write(chunk, 0, chunk.length, offset);
+							let written = 0;
+							while (written < chunk.length) {
+								const { bytesWritten } = await fileHandle.write(
+									chunk,
+									written,
+									chunk.length - written,
+									offset + written,
+								);
+								if (bytesWritten <= 0) {
+									throw new Error("file write made no progress");
+								}
+								written += bytesWritten;
+							}
 							offset += chunk.length;
 							perChunk[index] += chunk.length;
 							tracker.add(Date.now(), chunk.length);

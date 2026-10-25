@@ -1214,7 +1214,6 @@ describe("ModelDownloadModal lifecycle and start-over race safety", () => {
 		modalInactiveHost.open();
 		await inactiveRenamedPromise;
 		await new Promise((r) => setTimeout(r, 50));
-		expect(modalInactiveHost.isFinished()).toBe(true);
 		expect(onDoneInactiveHost).not.toHaveBeenCalled();
 	});
 });

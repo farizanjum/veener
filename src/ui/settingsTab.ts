@@ -356,6 +356,7 @@ export class VeneerSettingTab extends PluginSettingTab {
 			return;
 		}
 		const targetFile = model.file;
+		const targetUrl = model.url;
 		this.plugin.trackModal(
 			new ModelDownloadModal(this.app, {
 				url: model.url,
@@ -371,7 +372,8 @@ export class VeneerSettingTab extends PluginSettingTab {
 					void (async () => {
 						if (!this.plugin.isLive()) return;
 						if (ok) {
-							if (activeModel(this.plugin.settings).file === targetFile) {
+							const currentModel = activeModel(this.plugin.settings);
+							if (currentModel.file === targetFile && currentModel.url === targetUrl) {
 								this.plugin.settings.modelDownloaded = true;
 								this.plugin.settings.modelVerified = verified;
 								await this.plugin.saveSettings();

@@ -48,7 +48,6 @@ export type ClosableModal = {
 	cancelAndClose?: () => void;
 	close?: () => void;
 	onClose?: () => void;
-	isFinished?: () => boolean;
 };
 
 export default class VeneerPlugin extends Plugin {
@@ -87,9 +86,7 @@ export default class VeneerPlugin extends Plugin {
 		this.activeModals.add(modal);
 		const origOnClose = modal.onClose?.bind(modal);
 		modal.onClose = (): void => {
-			if (modal.isFinished?.() !== false) {
-				this.activeModals?.delete(modal);
-			}
+			this.activeModals?.delete(modal);
 			origOnClose?.();
 		};
 		return modal;

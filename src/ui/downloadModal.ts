@@ -76,10 +76,6 @@ export class ModelDownloadModal extends Modal {
 		this.close();
 	}
 
-	isFinished(): boolean {
-		return this.finished;
-	}
-
 	private canReportCompletion(): boolean {
 		return !this.cancelledByUnload && (this.deps.isHostActive ? this.deps.isHostActive() : true);
 	}
