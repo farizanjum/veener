@@ -9,6 +9,7 @@ import type { ViewSession } from "../view/session";
  * capture edits the in-memory buffer, not the decoy.
  */
 
+/** Dependencies required by the inline unlock capture CodeMirror extension. */
 export interface CaptureDeps {
 	resolveView: (state: EditorState) => MarkdownView | null;
 	getSession: (view: MarkdownView) => ViewSession | null;
@@ -18,21 +19,28 @@ export interface CaptureDeps {
 	onCaptureReset: () => void;
 }
 
+/** Single-range insertion extracted from a CodeMirror transaction. */
 interface InsertInfo {
 	text: string;
 	from: number;
 }
 
+/** Extracts the inserted text and start offset when a transaction contains exactly one pure non-empty insertion. */
 function singleInsert(tr: Transaction): InsertInfo | null {
-	const inserts: InsertInfo[] = [];
-	tr.changes.iterChanges((fromA, _toA, _fromB, _toB, inserted) => {
-		inserts.push({ text: inserted.toString(), from: fromA });
+	let only: InsertInfo | null = null;
+	let count = 0;
+	tr.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
+		count += 1;
+		if (count === 1 && fromA === toA && inserted.length > 0) {
+			only = { text: inserted.toString(), from: fromA };
+		} else {
+			only = null;
+		}
 	});
-	if (inserts.length !== 1) return null;
-	const only = inserts[0];
-	return only.text.length > 0 ? only : null;
+	return count === 1 ? only : null;
 }
 
+/** Returns true when `tr` represents user typing or paste input. */
 function isTypingInput(tr: Transaction): boolean {
 	return tr.isUserEvent("input.type") || tr.isUserEvent("input.paste");
 }
@@ -43,6 +51,9 @@ function isTypingInput(tr: Transaction): boolean {
  */
 export function buildCaptureExtension(deps: CaptureDeps): Extension {
 	return EditorState.transactionFilter.of((tr) => {
+		if (!tr.docChanged && !tr.isUserEvent("input.delete") && !tr.isUserEvent("select")) {
+			return tr;
+		}
 		const view = deps.resolveView(tr.startState);
 		const session = view ? deps.getSession(view) : null;
 		if (!session) return tr;
@@ -67,8 +78,9 @@ export function buildCaptureExtension(deps: CaptureDeps): Extension {
 			return [];
 		}
 
+		const insert = tr.docChanged ? singleInsert(tr) : null;
+
 		if (buffer.isActive && tr.docChanged) {
-			const insert = singleInsert(tr);
 			if (insert && /^\r?\n/.test(insert.text)) {
 				const result = buffer.feed("\n", false);
 				for (const event of result.events) {
@@ -84,7 +96,6 @@ export function buildCaptureExtension(deps: CaptureDeps): Extension {
 		}
 
 		if (isTypingInput(tr) && tr.docChanged) {
-			const insert = singleInsert(tr);
 			if (!insert) {
 				cancelCapture(buffer, deps);
 				return tr;
@@ -122,6 +133,7 @@ export function buildCaptureExtension(deps: CaptureDeps): Extension {
 	});
 }
 
+/** Cancels active capture in `buffer` and notifies `deps.onCaptureReset()` if a reset event was emitted. */
 function cancelCapture(buffer: ViewSession["capture"], deps: CaptureDeps): void {
 	const events = buffer.cancel();
 	if (events.length > 0) queueMicrotask(() => deps.onCaptureReset());

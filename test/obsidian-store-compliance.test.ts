@@ -133,8 +133,9 @@ describe("Obsidian Community Plugin Store compliance", () => {
 			expect(settingsTabContent).not.toMatch(/\bcreateEl\(\s*["']h[1-6]["']/);
 		});
 
-		it("contains zero bare setTimeout or clearTimeout calls in LockEngine, downloadModal, session, and generator", () => {
+		it("contains zero bare setTimeout or clearTimeout calls in main, LockEngine, downloadModal, session, and generator", () => {
 			const targetFiles = [
+				path.join(SRC_DIR, "main.ts"),
 				path.join(SRC_DIR, "lock", "LockEngine.ts"),
 				path.join(SRC_DIR, "ui", "downloadModal.ts"),
 				path.join(SRC_DIR, "view", "session.ts"),

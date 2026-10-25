@@ -17,7 +17,9 @@ const LINE_IMAGE_EMBED_RE = new RegExp(
 	"gi",
 );
 
+/** CodeMirror 6 widget that renders an in-memory decrypted image `blob:` URL inline. */
 class UnlockedImageWidget extends WidgetType {
+	/** Creates a widget for `blobUrl` with the given `alt` text. */
 	constructor(
 		private readonly blobUrl: string,
 		private readonly alt: string,
@@ -25,10 +27,12 @@ class UnlockedImageWidget extends WidgetType {
 		super();
 	}
 
+	/** Returns true when `other` renders the same `blobUrl` and `alt` text. */
 	override eq(other: UnlockedImageWidget): boolean {
 		return this.blobUrl === other.blobUrl && this.alt === other.alt;
 	}
 
+	/** Builds the `<img>` DOM element for the decrypted image. */
 	toDOM(): HTMLElement {
 		const img = document.createElement("img");
 		img.src = this.blobUrl;
@@ -38,6 +42,7 @@ class UnlockedImageWidget extends WidgetType {
 	}
 }
 
+/** Scans visible lines in `view` for local image embeds and attaches `UnlockedImageWidget` decorations. */
 function buildDecorations(
 	view: EditorView,
 	getImageUrl: (state: EditorState, link: string) => string | null,
@@ -54,9 +59,11 @@ function buildDecorations(
 			while ((match = LINE_IMAGE_EMBED_RE.exec(line.text)) !== null) {
 				const linkName = (match[1] ?? match[2] ?? match[3] ?? "").trim();
 				if (!linkName) continue;
-				const basename = linkName.split("/").pop() ?? linkName;
+				const slashIdx = linkName.lastIndexOf("/");
+				const basename = slashIdx >= 0 ? linkName.slice(slashIdx + 1) : linkName;
 				const blobUrl =
-					getImageUrl(view.state, linkName) ?? getImageUrl(view.state, basename);
+					getImageUrl(view.state, linkName) ??
+					(basename !== linkName ? getImageUrl(view.state, basename) : null);
 				if (blobUrl) {
 					const endPos = line.from + match.index + match[0].length;
 					builder.add(
@@ -77,19 +84,55 @@ function buildDecorations(
 	return builder.finish();
 }
 
+/**
+ * Builds the CodeMirror 6 `ViewPlugin` that renders decrypted vault images via in-memory `blob:` URLs
+ * when an unlocked session has active image URLs, short-circuiting in $O(1)$ otherwise.
+ */
 export function buildUnlockedImageExtension(
 	getImageUrl: (state: EditorState, link: string) => string | null,
+	getImageStateToken?: (state: EditorState) => string | null,
 ): Extension {
 	return ViewPlugin.fromClass(
 		class {
 			decorations: DecorationSet;
+			private lastToken: string | null | undefined;
 
 			constructor(view: EditorView) {
-				this.decorations = buildDecorations(view, getImageUrl);
+				if (getImageStateToken) {
+					this.lastToken = getImageStateToken(view.state);
+					this.decorations =
+						this.lastToken === null
+							? Decoration.none
+							: buildDecorations(view, getImageUrl);
+				} else {
+					this.lastToken = undefined;
+					this.decorations = buildDecorations(view, getImageUrl);
+				}
 			}
 
 			update(update: ViewUpdate): void {
-				this.decorations = buildDecorations(update.view, getImageUrl);
+				if (getImageStateToken) {
+					const nextToken = getImageStateToken(update.state);
+					if (nextToken === null) {
+						if (this.lastToken !== null) {
+							this.decorations = Decoration.none;
+							this.lastToken = null;
+						}
+						return;
+					}
+					if (
+						nextToken !== this.lastToken ||
+						update.docChanged ||
+						update.viewportChanged
+					) {
+						this.lastToken = nextToken;
+						this.decorations = buildDecorations(update.view, getImageUrl);
+					}
+					return;
+				}
+				if (update.docChanged || update.viewportChanged) {
+					this.decorations = buildDecorations(update.view, getImageUrl);
+				}
 			}
 		},
 		{
