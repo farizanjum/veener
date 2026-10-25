@@ -1,7 +1,7 @@
 import { Notice, PluginSettingTab, Setting, type App } from "obsidian";
 import type VeneerPlugin from "../main";
 import { MODEL_INFO, activeModel, type ModelId } from "../settings";
-import { formatBytes, metadataApiUrl } from "../llm/download";
+import { formatBytes, metadataApiUrl, parseHuggingFaceResolveUrl } from "../llm/download";
 import { ModelDownloadModal } from "./downloadModal";
 import { collectHygiene } from "../shred/hygiene";
 import { DuressPinModal } from "./modals";
@@ -10,10 +10,7 @@ import { sanitizeInterests, sanitizePersona } from "../llm/prompt";
 /** Obsidian settings tab for configuring Veneer masking, cover identity, local LLM models, and hygiene checks. */
 export class VeneerSettingTab extends PluginSettingTab {
 	/** Creates the Veneer settings tab bound to the active Obsidian app and plugin instance. */
-	constructor(
-		app: App,
-		private readonly plugin: VeneerPlugin,
-	) {
+	constructor(app: App, private readonly plugin: VeneerPlugin) {
 		super(app, plugin);
 	}
 
@@ -239,8 +236,12 @@ export class VeneerSettingTab extends PluginSettingTab {
 				cls: "veneer-download-button mod-cta",
 			});
 			customBtn.addEventListener("click", async () => {
-				const fileName = customUrl.split("/").pop() ?? "";
-				try { metadataApiUrl(customUrl); } catch {
+				let fileName = "";
+				try {
+					const parsed = parseHuggingFaceResolveUrl(customUrl);
+					metadataApiUrl(customUrl);
+					fileName = parsed.fileName;
+				} catch {
 					new Notice("That does not look like a Hugging Face resolve link.");
 					return;
 				}
@@ -281,7 +282,7 @@ export class VeneerSettingTab extends PluginSettingTab {
 			.setDesc("Type ;;! followed by your PIN at the start of any line to trigger. Different prefix from unlock (;;) so it cannot fire accidentally.")
 			.addButton((button) =>
 				button.setButtonText(this.plugin.settings.duressPinHash ? "Change PIN" : "Set PIN").onClick(async () => {
-					const pin = await new DuressPinModal(this.app).ask();
+					const pin = await this.plugin.trackModal(new DuressPinModal(this.app)).ask();
 					if (pin === null) return;
 					await this.plugin.setDuressPin(pin);
 					new Notice("Destruction PIN set.");
@@ -347,41 +348,54 @@ export class VeneerSettingTab extends PluginSettingTab {
 		});
 	}
 
+	/** Opens the resumable download modal for the currently selected model. */
 	private openDownloadModal(): void {
 		const model = activeModel(this.plugin.settings);
 		if (model.url === null) {
 			new Notice("This model was imported from disk; nothing to download.");
 			return;
 		}
-		new ModelDownloadModal(this.app, {
-			url: model.url,
-			file: model.file,
-			label: model.label,
-			getDest: async () => {
-				const dir = await this.plugin.modelsDir();
-				return { abs: `${dir.abs}/${model.file}`, rel: `${dir.rel}/${model.file}` };
-			},
-			removeFile: (rel) => this.plugin.removeModelFile(rel),
-			onDone: (ok, verified) => {
-				void (async () => {
-					if (ok) {
-						this.plugin.settings.modelDownloaded = true;
-						this.plugin.settings.modelVerified = verified;
-						await this.plugin.saveSettings();
-						this.plugin.rebuildGenerator();
-						new Notice(
-							verified
-								? "Model ready. SHA-256 verified against Hugging Face's record."
-								: "Model ready. Hash record could not be fetched, but the download completed.",
-							8000,
-						);
-						this.display();
-					}
-				})();
-			},
-		}).open();
+		const targetFile = model.file;
+		const targetUrl = model.url;
+		this.plugin.trackModal(
+			new ModelDownloadModal(this.app, {
+				url: model.url,
+				file: model.file,
+				label: model.label,
+				isHostActive: () => this.plugin.isLive(),
+				getDest: async () => {
+					const dir = await this.plugin.modelsDir();
+					return { abs: `${dir.abs}/${model.file}`, rel: `${dir.rel}/${model.file}` };
+				},
+				removeFile: (rel) => this.plugin.removeModelFile(rel),
+				onDone: (ok, verified) => {
+					void (async () => {
+						if (!this.plugin.isLive()) return;
+						if (ok) {
+							const currentModel = activeModel(this.plugin.settings);
+							if (currentModel.file === targetFile && currentModel.url === targetUrl) {
+								this.plugin.settings.modelDownloaded = true;
+								this.plugin.settings.modelVerified = verified;
+								await this.plugin.saveSettings();
+								if (!this.plugin.isLive()) return;
+								await this.plugin.rebuildGenerator();
+							}
+							if (!this.plugin.isLive()) return;
+							new Notice(
+								verified
+									? "Model ready. SHA-256 verified against Hugging Face's record."
+									: "Model ready. Hash record could not be fetched, but the download completed.",
+								8000,
+							);
+							this.display();
+						}
+					})();
+				},
+			}),
+		).open();
 	}
 
+	/** Renders the vault and OS security hygiene status cards into `el`. */
 	private renderHygiene(el: HTMLElement): void {
 		for (const item of collectHygiene(this.app, this.plugin.settings)) {
 			const cls = item.ok
