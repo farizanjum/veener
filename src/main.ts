@@ -1,4 +1,4 @@
-import { addIcon, MarkdownView, Notice, Plugin, TFile } from "obsidian";
+import { addIcon, FileSystemAdapter, MarkdownView, normalizePath, Notice, Plugin, TFile } from "obsidian";
 import fs from "fs";
 import path from "path";
 import type { EditorState } from "@codemirror/state";
@@ -524,7 +524,6 @@ export default class VeneerPlugin extends Plugin {
 		this.addCommand({
 			id: "panic-mask",
 			name: "Panic: mask all protected notes",
-			hotkeys: [{ modifiers: ["Mod", "Shift"], key: "X" }],
 			callback: () => {
 				if (!this.isLive()) return;
 				this.lockEngine.panic();
@@ -533,58 +532,83 @@ export default class VeneerPlugin extends Plugin {
 		this.addCommand({
 			id: "protect-note",
 			name: "Protect this note",
-			callback: () => {
-				if (!this.isLive()) return;
+			checkCallback: (checking: boolean) => {
+				if (!this.isLive()) return false;
 				const file = this.app.workspace.getActiveFile();
-				if (file) void this.protectFile(file);
+				if (!file || file.extension !== "md") return false;
+				if (!checking) {
+					void this.protectFile(file);
+				}
+				return true;
 			},
 		});
 		this.addCommand({
 			id: "refresh-decoy",
 			name: "Refresh decoy cover of this note",
-			callback: () => {
-				if (!this.isLive()) return;
+			checkCallback: (checking: boolean) => {
+				if (!this.isLive()) return false;
 				const file = this.app.workspace.getActiveFile();
-				if (file) void this.refreshDecoy(file);
+				if (!file || file.extension !== "md") return false;
+				if (!checking) {
+					void this.refreshDecoy(file);
+				}
+				return true;
 			},
 		});
 		this.addCommand({
 			id: "unlock-note",
 			name: "Unlock this note",
-			callback: () => {
-				if (!this.isLive()) return;
-				void this.unlockViaModal();
+			checkCallback: (checking: boolean) => {
+				if (!this.isLive()) return false;
+				const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+				if (!view || !view.file || view.file.extension !== "md") return false;
+				if (!checking) {
+					void this.unlockViaModal();
+				}
+				return true;
 			},
 		});
 		this.addCommand({
 			id: "unprotect-note",
 			name: "Unprotect this note (decrypt permanently)",
-			callback: () => {
-				if (!this.isLive()) return;
-				void this.unprotectViaModal();
+			checkCallback: (checking: boolean) => {
+				if (!this.isLive()) return false;
+				const file = this.app.workspace.getActiveFile();
+				if (!file || file.extension !== "md") return false;
+				if (!checking) {
+					void this.unprotectViaModal();
+				}
+				return true;
 			},
 		});
 		this.addCommand({
 			id: "change-password",
 			name: "Change password of this note",
-			callback: () => {
-				if (!this.isLive()) return;
-				void this.changePasswordViaModal();
+			checkCallback: (checking: boolean) => {
+				if (!this.isLive()) return false;
+				const file = this.app.workspace.getActiveFile();
+				if (!file || file.extension !== "md") return false;
+				if (!checking) {
+					void this.changePasswordViaModal();
+				}
+				return true;
 			},
 		});
 		this.addCommand({
 			id: "mask-note",
 			name: "Mask this note (return to cover)",
-			callback: () => {
-				if (!this.isLive()) return;
+			checkCallback: (checking: boolean) => {
+				if (!this.isLive()) return false;
 				const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (!view) return;
+				if (!view) return false;
 				const session = this.sessions.get(view);
-				if (session) {
+				if (!session) return false;
+				if (!checking) {
 					void this.sessions.lock(session, "manual").catch((error) => {
 						console.warn("Veneer: manual mask failed", error);
 					});
 				}
+				return true;
 			},
 		});
 		this.addCommand({
@@ -1353,12 +1377,24 @@ export default class VeneerPlugin extends Plugin {
 		});
 	}
 
+	/** Resolves the vault-relative and absolute filesystem paths for this plugin's directory. */
+	pluginDirPaths(): { abs: string; rel: string } {
+		const configDir = this.app?.vault?.configDir || ".obsidian";
+		const pluginId = this.manifest?.id || "veneer";
+		const rel = normalizePath(this.manifest?.dir || `${configDir}/plugins/${pluginId}`);
+		const adapter = this.app?.vault?.adapter;
+		const root =
+			adapter instanceof FileSystemAdapter
+				? adapter.getBasePath()
+				: ((adapter as unknown as { getBasePath?: () => string })?.getBasePath?.() ?? "");
+		const abs = root ? path.join(root, ...rel.split("/")) : path.join(...rel.split("/"));
+		return { abs, rel };
+	}
+
 	/** Selects and constructs the preferred local LLM runtime (`NativeRuntime` or `WllamaRuntime`). */
 	private buildRuntime(): LlmRuntime {
 		const model = activeModel(this.settings);
-		const adapter = this.app.vault.adapter as unknown as { getBasePath?: () => string };
-		const root = adapter.getBasePath?.() ?? "";
-		const base = path.join(root, this.app.vault.configDir, "plugins", "deocy");
+		const base = this.pluginDirPaths().abs;
 		const modelPath = path.join(base, "models", model.file);
 		
 		const wllama = new WllamaRuntime(
@@ -1383,9 +1419,7 @@ export default class VeneerPlugin extends Plugin {
 		partial: { downloaded: number; total: number | null } | null;
 	} {
 		const model = activeModel(this.settings);
-		const adapter = this.app.vault.adapter as unknown as { getBasePath?: () => string };
-		const root = adapter.getBasePath?.() ?? "";
-		const abs = `${root}/${this.app.vault.configDir}/plugins/deocy/models/${model.file}`;
+		const abs = path.join(this.pluginDirPaths().abs, "models", model.file);
 		let exists = false;
 		let sizeBytes = 0;
 		try {
@@ -1400,15 +1434,13 @@ export default class VeneerPlugin extends Plugin {
 
 	/** Lists all non-empty `.gguf` model files currently present in the plugin models directory. */
 	downloadedModels(): { fileName: string; sizeBytes: number; modelId: ModelId | "custom" }[] {
-		const adapter = this.app.vault.adapter as unknown as { getBasePath?: () => string };
-		const root = adapter.getBasePath?.() ?? "";
-		const dir = `${root}/${this.app.vault.configDir}/plugins/deocy/models`;
+		const dir = path.join(this.pluginDirPaths().abs, "models");
 		const results: { fileName: string; sizeBytes: number; modelId: ModelId | "custom" }[] = [];
 		try {
 			const files = fs.readdirSync(dir);
 			for (const file of files) {
 				if (!file.endsWith(".gguf")) continue;
-				const stat = fs.statSync(`${dir}/${file}`);
+				const stat = fs.statSync(path.join(dir, file));
 				if (!stat.isFile() || stat.size === 0) continue;
 				const builtin = Object.entries(MODEL_INFO).find(([, info]) => info.file === file);
 				results.push({
@@ -1431,9 +1463,7 @@ export default class VeneerPlugin extends Plugin {
 		const activeFile = activeModel(this.settings).file;
 		const fileName = targetFileName ?? activeFile;
 		const wasActiveModel = fileName === activeFile;
-		const adapter = this.app.vault.adapter as unknown as { getBasePath?: () => string };
-		const root = adapter.getBasePath?.() ?? "";
-		const abs = `${root}/${this.app.vault.configDir}/plugins/deocy/models/${fileName}`;
+		const abs = path.join(this.pluginDirPaths().abs, "models", fileName);
 		if (wasActiveModel && this.modelDeletionInFlight) {
 			return false;
 		}
@@ -1508,10 +1538,10 @@ export default class VeneerPlugin extends Plugin {
 
 	/** Ensures the plugin models directory exists and returns its absolute and vault-relative paths. */
 	async modelsDir(): Promise<{ abs: string; rel: string }> {
-		const rel = `${this.app.vault.configDir}/plugins/deocy/models`;
+		const pluginDir = this.pluginDirPaths();
+		const rel = normalizePath(`${pluginDir.rel}/models`);
 		await this.app.vault.adapter.mkdir(rel);
-		const adapter = this.app.vault.adapter as unknown as { getBasePath?: () => string };
-		return { abs: `${adapter.getBasePath?.() ?? ""}/${rel}`, rel };
+		return { abs: path.join(pluginDir.abs, "models"), rel };
 	}
 
 	/** Removes a model file at the given vault-relative path via the vault adapter. */
@@ -1544,7 +1574,7 @@ export default class VeneerPlugin extends Plugin {
 			}
 			const dir = await this.modelsDir();
 			const fileName = sourcePath.split(/[\\/]/).pop() ?? "custom-model.gguf";
-			const dest = `${dir.abs}/${fileName}`;
+			const dest = path.join(dir.abs, fileName);
 			fs.copyFileSync(sourcePath, dest);
 			const sizeBytes = fs.statSync(dest).size;
 			const sha256 = await sha256HexOfFile(dest);

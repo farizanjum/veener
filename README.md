@@ -1,3 +1,5 @@
+# Veneer
+
 <p align="center">
   <img src="docs/assets/banner.svg" alt="Veneer: Plausible deniability for Obsidian notes" width="100%" />
 </p>
@@ -45,7 +47,7 @@ To unlock a protected note, click at the start of any line and type `;;` followe
 Once Argon2id derives your key (~300 ms), your real text, original note title, and embedded images appear in the editor. Edit, type, and paste new screenshots naturally. Every debounced auto-save re-encrypts the RAM buffer with a fresh 96-bit AES-256-GCM nonce, pads the payload to **4 KB blocks**, absorbs any newly pasted vault images into the encrypted bundle, and writes only the cover note and `draft_cache` frontmatter to disk.
 
 ### `04. Walk away, it masks itself`
-Stop typing for 60 seconds, switch tabs, `Alt+Tab` to another window, lock your OS screen, or hit the `Ctrl+Shift+X` panic chord: Veneer immediately flushes pending edits to the encrypted payload, revokes active `blob:` image URLs, wipes the CodeMirror undo history so `Ctrl+Z` cannot resurrect your real text, clears tracked clipboard text, and swaps the cover title and decoy body back in. In an emergency, typing `;;!` + your **Destruction PIN** at any line start crypto-shreds all protected payloads across your vault in one pass.
+Stop typing for 60 seconds, switch tabs, `Alt+Tab` to another window, lock your OS screen, or trigger your configured `Veneer: Panic: mask all protected notes` hotkey (such as `Ctrl+Shift+X`): Veneer immediately flushes pending edits to the encrypted payload, revokes active `blob:` image URLs, wipes the CodeMirror undo history so `Ctrl+Z` cannot resurrect your real text, clears tracked clipboard text, and swaps the cover title and decoy body back in. In an emergency, typing `;;!` + your **Destruction PIN** at any line start crypto-shreds all protected payloads across your vault in one pass.
 
 ---
 
@@ -61,7 +63,7 @@ npm run build
 
 # Copy the built plugin into your Obsidian vault:
 # Copy main.js, manifest.json, styles.css, and assets/ into:
-# <your-vault>/.obsidian/plugins/deocy/
+# <your-vault>/.obsidian/plugins/veneer/
 ```
 
 ### 3-Step First-Run Checklist
@@ -169,12 +171,21 @@ npm run dev        # Watch mode for local development
 - **Compelled quick unlocks** where you need to either keep sensitive notes looking mundane or trigger `;;!PIN` to shred all encrypted payloads into plain cover files.
 
 ### What Requires VeraCrypt & OS-Level Hygiene
-- **Raw disk imaging and forensic carving:** The presence of `.obsidian/plugins/deocy/` on disk proves Veneer is installed. Furthermore, Windows pagefiles (`pagefile.sys`), hibernation files (`hiberfil.sys`), NTFS USN journals, and Electron crash dumps exist outside any plugin's control.
+- **Raw disk imaging and forensic carving:** The presence of `.obsidian/plugins/veneer/` on disk proves Veneer is installed. Furthermore, Windows pagefiles (`pagefile.sys`), hibernation files (`hiberfil.sys`), NTFS USN journals, and Electron crash dumps exist outside any plugin's control.
 - **Cloud version history of previously plaintext notes:** If a note was synced to the cloud *before* you protected it with Veneer, old plaintext revisions remain in your cloud provider's version history. Always create sensitive notes fresh inside a local folder or purge cloud version history after protecting.
 - **Other untrusted Obsidian community plugins:** All plugins share the same Electron renderer process and can inspect active editor buffers while a note is unlocked. Keep your installed plugin list minimal and trusted.
-- **Plugin unload, force-quit durability, and runtime memory limits:** When Veneer is disabled, reloaded, or updated in Obsidian, it synchronously masks open protected views, zeroes owned DEK `Uint8Array` key copies, wipes editor undo history, revokes `blob:` image URLs, restores cover titles, and hands the newest already-completed encrypted snapshot (`draft_cache` + cover) back to Obsidian's native editor without stripping payloads or clearing the registry. Because unload is synchronous, edits inside the unencrypted tail (normally the 600 ms re-encryption debounce window, or longer if encryption or image staging stalled or failed) are not guaranteed to be saved on immediate unload, and force-killing Obsidian cannot guarantee a brand-new disk write completes. If your newest edits matter before intentionally disabling or updating Veneer, run `Veneer: Mask this note (return to cover)` or `Ctrl+Shift+X` (`Veneer: Panic: mask all protected notes`) and confirm masking finished first. In addition, while Veneer zeroes the `Uint8Array` key buffers it owns, JavaScript strings and internal WebCrypto key objects are garbage-collected by the runtime and cannot be deterministically erased from a plugin. During `;;!PIN` duress, Veneer scrubs only its own in-memory sessions/keys, protected files, and registry, leaving Electron application caches, shared Chromium storage, other community plugins, and other vaults untouched.
+- **Plugin unload, force-quit durability, and runtime memory limits:** When Veneer is disabled, reloaded, or updated in Obsidian, it synchronously masks open protected views, zeroes owned DEK `Uint8Array` key copies, wipes editor undo history, revokes `blob:` image URLs, restores cover titles, and hands the newest already-completed encrypted snapshot (`draft_cache` + cover) back to Obsidian's native editor without stripping payloads or clearing the registry. Because unload is synchronous, edits inside the unencrypted tail (normally the 600 ms re-encryption debounce window, or longer if encryption or image staging stalled or failed) are not guaranteed to be saved on immediate unload, and force-killing Obsidian cannot guarantee a brand-new disk write completes. If your newest edits matter before intentionally disabling or updating Veneer, run `Veneer: Mask this note (return to cover)` or `Veneer: Panic: mask all protected notes` and confirm masking finished first. In addition, while Veneer zeroes the `Uint8Array` key buffers it owns, JavaScript strings and internal WebCrypto key objects are garbage-collected by the runtime and cannot be deterministically erased from a plugin. During `;;!PIN` duress, Veneer scrubs only its own in-memory sessions/keys, protected files, and registry, leaving Electron application caches, shared Chromium storage, other community plugins, and other vaults untouched.
 
 For high-risk scenarios requiring disk-level plausible deniability, store your entire vault and portable Obsidian installation inside a **VeraCrypt hidden volume** (full step-by-step instructions are built directly into **Settings -> Veneer -> VeraCrypt guide**).
+
+---
+
+## Network & Local Subprocess Disclosures
+
+- **Zero Telemetry & Offline Core:** Protecting, unlocking, editing, and masking notes with the 12 built-in cover templates works 100% offline with zero network requests.
+- **Optional Model Downloads (`huggingface.co`):** Only when you explicitly click **Download** in **Settings -> Veneer -> Decoy model**, Veneer connects over HTTPS to `huggingface.co` to fetch the selected GGUF model and verify its SHA-256 hash.
+- **One-Time WASM Runtime Provisioning (`cdn.jsdelivr.net` / `unpkg.com`):** On a 3-file Obsidian Community Plugin store installation where `assets/wllama/wasm/wllama.wasm` is not pre-bundled, the first time on-device LLM generation runs on the WebAssembly fallback runtime, Veneer downloads the pinned `@wllama/wllama@3.5.1` WebAssembly binary (`7,656,521` bytes) over HTTPS and verifies its SHA-256 digest (`4197ce6d3dc9240c42ee52b4197dc99638875a06b0083901f8a57767338a0cfa`) before loading it.
+- **Optional Local Vulkan Subprocess (`llama-server`):** On Windows, if `assets/llama-vulkan/llama-server.exe` is present in the plugin folder, Veneer spawns it locally bound strictly to `127.0.0.1` on an ephemeral loopback port for hardware-accelerated GPU cover generation, and automatically terminates it after 5 minutes of inactivity or on plugin unload.
 
 ---
 

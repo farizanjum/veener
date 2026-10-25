@@ -7,10 +7,17 @@ import { DEFAULT_SETTINGS } from "../src/settings";
 
 vi.mock("obsidian", () => {
 	class HostClass {}
+	class FileSystemAdapter {
+		getBasePath(): string {
+			return "";
+		}
+	}
 	return {
 		Plugin: HostClass, Modal: HostClass, MarkdownView: HostClass,
 		PluginSettingTab: HostClass, Setting: HostClass, TFile: HostClass,
-		Notice: HostClass, addIcon: () => undefined,
+		Notice: HostClass, FileSystemAdapter, addIcon: () => undefined,
+		normalizePath: (p: string) =>
+			String(p).replace(/\\/g, "/").replace(/\/+/g, "/").replace(/^\/|\/$/g, ""),
 	};
 });
 

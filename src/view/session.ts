@@ -53,7 +53,7 @@ export interface ViewSession {
 	readonly imageUrls: Map<string, string>;
 	readonly backoff: BackoffTracker;
 	readonly capture: CaptureBuffer;
-	reencryptTimer: ReturnType<typeof setTimeout> | null;
+	reencryptTimer: ReturnType<typeof window.setTimeout> | number | null;
 	reencryptSeq: number;
 	reencryptPromise: Promise<void> | null;
 	/**
@@ -1167,7 +1167,7 @@ export class SessionManager {
 
 			if (session.reencryptTimer !== null) {
 				try {
-					clearTimeout(session.reencryptTimer);
+					window.clearTimeout(session.reencryptTimer);
 					clearedTimersCount += 1;
 				} catch (error) {
 					errors.push(error);
@@ -1994,7 +1994,7 @@ export class SessionManager {
 			imageUrls: new Map<string, string>(),
 			backoff: new BackoffTracker(),
 			capture: new CaptureBuffer(this.triggerPrefix()),
-			reencryptTimer: null as ReturnType<typeof setTimeout> | null,
+			reencryptTimer: null as ReturnType<typeof window.setTimeout> | number | null,
 			reencryptSeq: 0,
 			reencryptPromise: null as Promise<void> | null,
 			writePromise: null as Promise<void> | null,
@@ -2197,7 +2197,7 @@ export class SessionManager {
 					existing.capture.cancel();
 					existing.reencryptSeq += 1;
 					if (existing.reencryptTimer !== null) {
-						clearTimeout(existing.reencryptTimer);
+						window.clearTimeout(existing.reencryptTimer);
 						existing.reencryptTimer = null;
 					}
 					this.hooks.onLocked(existing);
@@ -2282,7 +2282,7 @@ export class SessionManager {
 		session.capture.cancel();
 		session.reencryptSeq += 1;
 		if (session.reencryptTimer !== null) {
-			clearTimeout(session.reencryptTimer);
+			window.clearTimeout(session.reencryptTimer);
 			session.reencryptTimer = null;
 		}
 		this.pendingLocks.delete(session);
@@ -2665,7 +2665,7 @@ export class SessionManager {
 	 * Coalesces concurrent mask triggers, snapshots the DEK and editor state,
 	 * re-encrypts the latest plaintext to disk, zeroes key material, and restores the decoy cover.
 	 */
-	lock(session: ViewSession, reason: string): Promise<void> {
+	lock(session: ViewSession, _reason: string): Promise<void> {
 		if (this.isDisposed() || this.reservedPaths.has(session.file.path)) {
 			return Promise.resolve();
 		}
@@ -2673,10 +2673,9 @@ export class SessionManager {
 		if (session.state !== "unlocked") return Promise.resolve();
 		session.reencryptSeq += 1;
 		if (session.reencryptTimer !== null) {
-			clearTimeout(session.reencryptTimer);
+			window.clearTimeout(session.reencryptTimer);
 			session.reencryptTimer = null;
 		}
-		console.debug(`Veneer: masking note (${reason})`);
 		const sameFile = session.view.file === session.file;
 		let currentText = sameFile ? session.view.editor.getValue() : "";
 		let currentTitle = sameFile ? this.readEditedInlineTitle(session) : session.realTitle;
@@ -2870,7 +2869,7 @@ export class SessionManager {
 					});
 					session.capture.cancel();
 					if (session.reencryptTimer !== null) {
-						clearTimeout(session.reencryptTimer);
+						window.clearTimeout(session.reencryptTimer);
 						session.reencryptTimer = null;
 					}
 					if (this.isAttached(session) && sameFile && session.view.file === session.file) {
@@ -2959,7 +2958,7 @@ export class SessionManager {
 			session.capture.cancel();
 			session.reencryptSeq += 1;
 			if (session.reencryptTimer !== null) {
-				clearTimeout(session.reencryptTimer);
+				window.clearTimeout(session.reencryptTimer);
 				session.reencryptTimer = null;
 			}
 			if (this.byView.get(session.view) === session && session.view.file === session.file) {
@@ -2996,8 +2995,8 @@ export class SessionManager {
 		const seq = ++session.reencryptSeq;
 		const startGeneration = session.killGeneration;
 		const startEpoch = this.killEpoch;
-		if (session.reencryptTimer !== null) clearTimeout(session.reencryptTimer);
-		session.reencryptTimer = setTimeout(() => {
+		if (session.reencryptTimer !== null) window.clearTimeout(session.reencryptTimer);
+		session.reencryptTimer = window.setTimeout(() => {
 			session.reencryptTimer = null;
 			if (
 				this.isDisposed() ||

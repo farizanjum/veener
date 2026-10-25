@@ -1,7 +1,8 @@
 {
 	"name": "deocy",
-	"version": "0.1.0",
+	"version": "1.0.0",
 	"description": "Veneer — decoy-text plausible deniability for Obsidian notes",
+	"license": "MIT",
 	"private": true,
 	"type": "module",
 	"scripts": {

@@ -91,7 +91,18 @@ vi.mock("obsidian", () => {
 		}
 	}
 
-	return { Modal };
+	class FileSystemAdapter {
+		getBasePath(): string {
+			return "";
+		}
+	}
+
+	return {
+		Modal,
+		FileSystemAdapter,
+		normalizePath: (p: string) =>
+			String(p).replace(/\\/g, "/").replace(/\/+/g, "/").replace(/^\/|\/$/g, ""),
+	};
 });
 
 import type { App } from "obsidian";

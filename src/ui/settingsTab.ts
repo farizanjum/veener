@@ -1,4 +1,5 @@
-import { Notice, PluginSettingTab, Setting, type App } from "obsidian";
+import { normalizePath, Notice, PluginSettingTab, Setting, type App } from "obsidian";
+import path from "path";
 import type VeneerPlugin from "../main";
 import { MODEL_INFO, activeModel, type ModelId } from "../settings";
 import { formatBytes, metadataApiUrl, parseHuggingFaceResolveUrl } from "../llm/download";
@@ -19,9 +20,7 @@ export class VeneerSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 
-		containerEl.createEl("h2", { text: "Veneer" });
-
-		containerEl.createEl("h3", { text: "Masking" });
+		new Setting(containerEl).setName("Masking").setHeading();
 		new Setting(containerEl)
 			.setName("Idle timeout (seconds)")
 			.setDesc("Mask every unlocked note after this much inactivity. 15 to 600.")
@@ -83,7 +82,7 @@ export class VeneerSettingTab extends PluginSettingTab {
 				}),
 			);
 
-		containerEl.createEl("h3", { text: "Cover identity" });
+		new Setting(containerEl).setName("Cover identity").setHeading();
 		new Setting(containerEl)
 			.setName("Your cover interests")
 			.setDesc("Comma separated, everyday topics. Decoys reference these, never your notes.")
@@ -122,7 +121,7 @@ export class VeneerSettingTab extends PluginSettingTab {
 				}),
 			);
 
-		containerEl.createEl("h3", { text: "Decoy model" });
+		new Setting(containerEl).setName("Decoy model").setHeading();
 		const disk = this.plugin.modelFileStatus();
 		const downloaded = this.plugin.downloadedModels();
 
@@ -253,7 +252,7 @@ export class VeneerSettingTab extends PluginSettingTab {
 				await this.plugin.saveSettings();
 				this.openDownloadModal();
 			});
-			const fileInput = containerEl.createEl("input", { attr: { type: "file", accept: ".gguf", style: "display:none" } });
+			const fileInput = containerEl.createEl("input", { cls: "veneer-hidden-input", attr: { type: "file", accept: ".gguf" } });
 			fileInput.addEventListener("change", () => {
 				void (async () => {
 					const file = fileInput.files?.[0];
@@ -276,7 +275,7 @@ export class VeneerSettingTab extends PluginSettingTab {
 			downloadBtn.addEventListener("click", () => this.openDownloadModal());
 		}
 
-		containerEl.createEl("h3", { text: "Destruction PIN" });
+		new Setting(containerEl).setName("Destruction PIN").setHeading();
 		new Setting(containerEl)
 			.setName(this.plugin.settings.duressPinHash ? "PIN is set" : "No PIN set")
 			.setDesc("Type ;;! followed by your PIN at the start of any line to trigger. Different prefix from unlock (;;) so it cannot fire accidentally.")
@@ -297,7 +296,7 @@ export class VeneerSettingTab extends PluginSettingTab {
 				}),
 			);
 
-		containerEl.createEl("h3", { text: "Hygiene check" });
+		new Setting(containerEl).setName("Hygiene check").setHeading();
 		const hygieneEl = containerEl.createDiv();
 		this.renderHygiene(hygieneEl);
 		const recheckBtn = containerEl.createEl("button", {
@@ -309,7 +308,7 @@ export class VeneerSettingTab extends PluginSettingTab {
 			this.renderHygiene(hygieneEl);
 		});
 
-		containerEl.createEl("h3", { text: "Protected notes" });
+		new Setting(containerEl).setName("Protected notes").setHeading();
 		const entries = this.plugin.registry.list();
 		if (entries.length === 0) {
 			containerEl.createEl("p", { text: "None yet. Right-click a note and choose Protect this note.", cls: "veneer-strength" });
@@ -321,7 +320,7 @@ export class VeneerSettingTab extends PluginSettingTab {
 			});
 		}
 
-		containerEl.createEl("h3", { text: "Forensic setup: VeraCrypt hidden volume" });
+		new Setting(containerEl).setName("Forensic setup: VeraCrypt hidden volume").setHeading();
 		containerEl.createEl("p", {
 			text: "Veneer protects against people looking at your screen. For protection against people imaging your disk, layer it with VeraCrypt. A hidden volume stores your vault inside what looks like random data. Under coercion, you reveal the outer password and they see believable non-sensitive notes.",
 			cls: "veneer-strength",
@@ -365,7 +364,7 @@ export class VeneerSettingTab extends PluginSettingTab {
 				isHostActive: () => this.plugin.isLive(),
 				getDest: async () => {
 					const dir = await this.plugin.modelsDir();
-					return { abs: `${dir.abs}/${model.file}`, rel: `${dir.rel}/${model.file}` };
+					return { abs: path.join(dir.abs, model.file), rel: normalizePath(`${dir.rel}/${model.file}`) };
 				},
 				removeFile: (rel) => this.plugin.removeModelFile(rel),
 				onDone: (ok, verified) => {

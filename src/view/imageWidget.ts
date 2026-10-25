@@ -34,8 +34,6 @@ class UnlockedImageWidget extends WidgetType {
 		img.src = this.blobUrl;
 		img.alt = this.alt;
 		img.className = "veneer-unlocked-image";
-		img.style.cssText =
-			"max-width: 100%; max-height: 360px; display: block; margin: 6px 0; border-radius: 6px;";
 		return img;
 	}
 }

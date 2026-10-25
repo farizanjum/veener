@@ -1,9 +1,10 @@
 {
-	"id": "deocy",
+	"id": "veneer",
 	"name": "Veneer",
-	"version": "0.1.0",
+	"version": "1.0.0",
 	"minAppVersion": "1.5.0",
-	"description": "Notes that look like ordinary notes. Meaningful decoy text on the surface; your real text encrypted beneath — revealed by an inline password, hidden again on inactivity.",
+	"description": "Notes that look like ordinary notes. Meaningful decoy text on the surface, your real text encrypted beneath, revealed by an inline password and hidden again on inactivity.",
 	"author": "Fariz",
+	"authorUrl": "https://github.com/farizanjum",
 	"isDesktopOnly": true
 }

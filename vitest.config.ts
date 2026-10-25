@@ -21,11 +21,38 @@ export default defineConfig({
 				return id === "obsidian" ? OBSIDIAN_TEST_STUB_ID : null;
 			},
 			/**
-			 * Serves the minimal `MarkdownView` stub for the redirected module id.
+			 * Serves the minimal Obsidian runtime stub for the redirected module id.
 			 */
 			load(id) {
-				return id === OBSIDIAN_TEST_STUB_ID ? "export class MarkdownView {}" : null;
+				return id === OBSIDIAN_TEST_STUB_ID
+					? [
+							"export class MarkdownView {}",
+							'export class FileSystemAdapter { getBasePath() { return ""; } }',
+							"export class Plugin {}",
+							"export class Modal {}",
+							"export class PluginSettingTab {}",
+							"export class Setting {",
+							"  setName() { return this; }",
+							"  setDesc() { return this; }",
+							"  setHeading() { return this; }",
+							"  addText() { return this; }",
+							"  addTextArea() { return this; }",
+							"  addToggle() { return this; }",
+							"  addDropdown() { return this; }",
+							"  addButton() { return this; }",
+							"}",
+							"export class TFile {}",
+							"export class Notice {}",
+							"export function addIcon() {}",
+							"export function normalizePath(p) {",
+							'  return String(p).replace(/\\\\/g, "/").replace(/\\/+/g, "/").replace(/^\\/|\\/$/g, "");',
+							"}",
+						].join("\n")
+					: null;
 			},
 		},
 	],
+	test: {
+		setupFiles: ["./test/setup.ts"],
+	},
 });

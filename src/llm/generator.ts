@@ -39,7 +39,7 @@ export class DecoyGenerator {
 	private readonly maxAttempts: number;
 	private readonly maxTokens: number;
 	private readonly idleTimeoutMs: number;
-	private idleTimer: ReturnType<typeof setTimeout> | null = null;
+	private idleTimer: ReturnType<typeof window.setTimeout> | number | null = null;
 	private activeOperations = 0;
 	private unloadEpoch = 0;
 	private retired = false;
@@ -197,7 +197,7 @@ export class DecoyGenerator {
 			return;
 		}
 		const scheduledEpoch = this.unloadEpoch;
-		this.idleTimer = setTimeout(() => {
+		this.idleTimer = window.setTimeout(() => {
 			this.idleTimer = null;
 			if (this.activeOperations === 0 && this.unloadEpoch === scheduledEpoch) {
 				void this.unload().catch((error) => {
@@ -219,7 +219,7 @@ export class DecoyGenerator {
 	/** Clears any currently scheduled idle unload timer. */
 	private clearIdleTimer(): void {
 		if (this.idleTimer !== null) {
-			clearTimeout(this.idleTimer);
+			window.clearTimeout(this.idleTimer);
 			this.idleTimer = null;
 		}
 	}

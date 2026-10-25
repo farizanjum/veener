@@ -10,6 +10,11 @@ vi.mock("obsidian", () => {
 		open(): void {}
 		close(): void {}
 	}
+	class FileSystemAdapter {
+		getBasePath(): string {
+			return "";
+		}
+	}
 	return {
 		Plugin: HostClass,
 		Modal: HostClass,
@@ -18,7 +23,10 @@ vi.mock("obsidian", () => {
 		Setting: HostClass,
 		TFile: HostClass,
 		Notice: HostClass,
+		FileSystemAdapter,
 		addIcon: () => undefined,
+		normalizePath: (p: string) =>
+			String(p).replace(/\\/g, "/").replace(/\/+/g, "/").replace(/^\/|\/$/g, ""),
 	};
 });
 
