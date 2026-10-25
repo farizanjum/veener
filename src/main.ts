@@ -322,6 +322,9 @@ export default class VeneerPlugin extends Plugin {
 					if (!session || session.state !== "unlocked" || session.imageUrls.size === 0) {
 						return null;
 					}
+					if (typeof session.imageUrlsRevision === "number") {
+						return `${session.imageUrls.size}:${session.imageUrlsRevision}`;
+					}
 					let token = "";
 					for (const [key, url] of session.imageUrls) {
 						token += `${key}\0${url}\n`;
@@ -853,10 +856,8 @@ export default class VeneerPlugin extends Plugin {
 		this.registerEvent(
 			this.app.workspace.on("editor-change", (_editor, info) => {
 				if (!this.isLive()) return;
-				const view =
-					info instanceof MarkdownView
-						? info
-						: this.app.workspace.getActiveViewOfType(MarkdownView);
+				const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+				const view = info instanceof MarkdownView ? info : activeView;
 				const session = view ? this.sessions.get(view) : null;
 				if (session) {
 					if (session.state === "unlocked") {
@@ -864,8 +865,13 @@ export default class VeneerPlugin extends Plugin {
 					} else if (session.state === "locked" && session.lockingPromise === null) {
 						this.sessions.observeCoverEdit(session);
 					}
-					this.scheduleWordCounterUpdate();
-				} else {
+				}
+				const activeSession = activeView ? this.sessions.get(activeView) : null;
+				if (activeSession) {
+					if (!view || view === activeView) {
+						this.scheduleWordCounterUpdate();
+					}
+				} else if (!view || view === activeView) {
 					this.clearWordCounterTimer();
 					this.wordCounter?.hide();
 				}

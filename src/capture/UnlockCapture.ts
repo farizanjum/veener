@@ -25,13 +25,13 @@ interface InsertInfo {
 	from: number;
 }
 
-/** Extracts the inserted text and start offset when a transaction contains exactly one pure non-empty insertion. */
+/** Extracts the inserted text and start offset when a transaction contains a single non-empty insertion. */
 function singleInsert(tr: Transaction): InsertInfo | null {
 	let only: InsertInfo | null = null;
 	let count = 0;
-	tr.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
+	tr.changes.iterChanges((fromA, _toA, _fromB, _toB, inserted) => {
 		count += 1;
-		if (count === 1 && fromA === toA && inserted.length > 0) {
+		if (count === 1 && inserted.length > 0) {
 			only = { text: inserted.toString(), from: fromA };
 		} else {
 			only = null;

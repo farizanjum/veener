@@ -165,6 +165,42 @@ describe("buildCaptureExtension hot-path transaction filtering", () => {
 		expect(resolveView).toHaveBeenCalledTimes(2);
 		expect(capture.isActive).toBe(true);
 	});
+
+	it("captures and swallows a pasted unlock sequence over a selected range at line start", async () => {
+		const view = Object.create(MarkdownView.prototype) as MarkdownView;
+		const capture = new CaptureBuffer(";;");
+		const mockSession = {
+			view,
+			state: "locked",
+			lockingPromise: null,
+			capture,
+		} as unknown as ViewSession;
+
+		const onCandidate = vi.fn();
+		const state = EditorState.create({
+			doc: "hello world",
+			extensions: [
+				buildCaptureExtension({
+					resolveView: () => view,
+					getSession: () => mockSession,
+					lineStartOnly: () => true,
+					onCandidate,
+					onProgress: vi.fn(),
+					onCaptureReset: vi.fn(),
+				}),
+			],
+		});
+
+		const tr = state.update({
+			changes: { from: 0, to: 5, insert: ";;secret\n" },
+			userEvent: "input.paste",
+		});
+
+		expect(tr.state.doc.toString()).toBe("hello world");
+		await Promise.resolve();
+		expect(onCandidate).toHaveBeenCalledTimes(1);
+		expect(onCandidate).toHaveBeenCalledWith(mockSession, "secret");
+	});
 });
 
 describe("VeneerPlugin.resolveMarkdownView session-scoped lookup", () => {

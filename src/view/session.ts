@@ -51,6 +51,7 @@ export interface ViewSession {
 	dek: Uint8Array<ArrayBuffer> | null;
 	realTitle: string | null;
 	readonly imageUrls: Map<string, string>;
+	imageUrlsRevision?: number;
 	readonly backoff: BackoffTracker;
 	readonly capture: CaptureBuffer;
 	reencryptTimer: ReturnType<typeof window.setTimeout> | number | null;
@@ -1995,6 +1996,7 @@ export class SessionManager {
 			dek: null as Uint8Array<ArrayBuffer> | null,
 			realTitle: null as string | null,
 			imageUrls: new Map<string, string>(),
+			imageUrlsRevision: 0,
 			backoff: new BackoffTracker(),
 			capture: new CaptureBuffer(this.triggerPrefix()),
 			reencryptTimer: null as ReturnType<typeof window.setTimeout> | number | null,
@@ -2366,6 +2368,7 @@ export class SessionManager {
 		for (const [key, url] of next) {
 			session.imageUrls.set(key, url);
 		}
+		session.imageUrlsRevision = (session.imageUrlsRevision ?? 0) + 1;
 	}
 
 	/** Revokes all `blob:` preview URLs held by `session` and clears `session.imageUrls`. */
@@ -2389,6 +2392,7 @@ export class SessionManager {
 			}
 		}
 		session.imageUrls.clear();
+		session.imageUrlsRevision = (session.imageUrlsRevision ?? 0) + 1;
 		return revoked;
 	}
 
