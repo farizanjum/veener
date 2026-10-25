@@ -50,6 +50,12 @@ export class LockEngine {
 				if (selection.length > 0) this.clipboard.markTainted(selection);
 			}
 		});
+		this.plugin.registerDomEvent(document, "visibilitychange", () => {
+			if (this.isStopped()) return;
+			if (document.visibilityState === "hidden") {
+				void this.maskAll("visibility-hidden");
+			}
+		});
 		this.plugin.registerEvent(
 			this.workspace.on("active-leaf-change", () => {
 				if (this.isStopped()) return;
@@ -102,13 +108,13 @@ export class LockEngine {
 		} catch (error) {
 			console.warn(`Veneer: maskAll (${reason}) encountered an error`, error);
 		}
+		if (this.isStopped()) return;
+		this.applyContentProtection();
 		if (hadUnlocked && this.settings().clearClipboardOnLock) {
 			await this.clipboard.clearIfTainted();
 		}
 		if (this.isStopped()) return;
-		if (hadUnlocked) {
-			this.applyContentProtection();
-		}
+		this.applyContentProtection();
 		this.armIdleTimer();
 	}
 
@@ -126,7 +132,7 @@ export class LockEngine {
 	}
 
 	/** Synchronizes OS-level screenshot/window capture protection with current session state. */
-	private applyContentProtection(): void {
+	applyContentProtection(): void {
 		if (this.isStopped()) {
 			setContentProtection(false);
 			return;
