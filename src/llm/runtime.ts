@@ -40,7 +40,15 @@ class WllamaRecoveryError extends Error {
 }
 
 /** Per-path serialization queue preventing overlapping WASM downloads and cleanups across reloads. */
-const wasmProvisionQueues = new Map<string, Promise<void>>();
+const WASM_QUEUE_KEY = Symbol.for("veneer.wasmProvisionQueues.v1");
+const wasmProvisionQueues: Map<string, Promise<void>> =
+	((globalThis as Record<symbol, unknown>)[WASM_QUEUE_KEY] as
+		| Map<string, Promise<void>>
+		| undefined) ??
+	(((globalThis as Record<symbol, unknown>)[WASM_QUEUE_KEY] = new Map<
+		string,
+		Promise<void>
+	>()) as Map<string, Promise<void>>);
 
 /** WebAssembly-backed LLM runtime using @wllama/wllama. */
 export class WllamaRuntime implements LlmRuntime {

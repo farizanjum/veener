@@ -66,6 +66,7 @@ export default class VeneerPlugin extends Plugin {
 	private modelDeletionInFlight = false;
 	private modelDeletionEpoch = 0;
 	private activeModals?: Set<ClosableModal>;
+	private legacyDeocyMigrated = false;
 
 	/** Returns the shared `ViewLifecycleCoordinator` from the active session manager or global singleton. */
 	private getCoordinator(): ViewLifecycleCoordinator {
@@ -163,6 +164,10 @@ export default class VeneerPlugin extends Plugin {
 			const legacyObj = parsedLegacy as Record<string, unknown>;
 
 			const currentRaw = (await this.loadData()) as Record<string, unknown> | null;
+			if (currentRaw?.legacyDeocyMigrated === true) {
+				this.legacyDeocyMigrated = true;
+				return;
+			}
 			const legacyEntries =
 				legacyObj.entries && typeof legacyObj.entries === "object"
 					? (legacyObj.entries as Record<string, unknown>)
@@ -172,31 +177,22 @@ export default class VeneerPlugin extends Plugin {
 					? (currentRaw.entries as Record<string, unknown>)
 					: {};
 
-			const hasMissingEntries = Object.keys(legacyEntries).some(
-				(key) => !Object.prototype.hasOwnProperty.call(currentEntries, key),
-			);
-			const needsPinMigration =
-				currentRaw !== null &&
-				!currentRaw.duressPinHash &&
-				typeof legacyObj.duressPinHash === "string" &&
-				typeof legacyObj.duressPinSalt === "string";
-
-			if (currentRaw === null || hasMissingEntries || needsPinMigration) {
-				const mergedEntries = { ...legacyEntries, ...currentEntries };
-				const mergedData: Record<string, unknown> =
-					currentRaw === null
-						? { ...legacyObj, entries: mergedEntries }
-						: {
-								...legacyObj,
-								...currentRaw,
-								duressPinSalt:
-									currentRaw.duressPinSalt ?? legacyObj.duressPinSalt ?? null,
-								duressPinHash:
-									currentRaw.duressPinHash ?? legacyObj.duressPinHash ?? null,
-								entries: mergedEntries,
-						  };
-				await this.saveData(mergedData);
-			}
+			const mergedEntries = { ...legacyEntries, ...currentEntries };
+			const mergedData: Record<string, unknown> =
+				currentRaw === null
+					? { ...legacyObj, entries: mergedEntries, legacyDeocyMigrated: true }
+					: {
+							...legacyObj,
+							...currentRaw,
+							duressPinSalt:
+								currentRaw.duressPinSalt ?? legacyObj.duressPinSalt ?? null,
+							duressPinHash:
+								currentRaw.duressPinHash ?? legacyObj.duressPinHash ?? null,
+							entries: mergedEntries,
+							legacyDeocyMigrated: true,
+					  };
+			this.legacyDeocyMigrated = true;
+			await this.saveData(mergedData);
 		} catch (error) {
 			console.warn("Veneer: legacy deocy data migration skipped", error);
 		}
@@ -547,23 +543,6 @@ export default class VeneerPlugin extends Plugin {
 			.list()
 			.map(({ path: p, entry }) => ({ path: p, mode: entry.mode }));
 		const seenPaths = new Set(targets.map((t) => t.path));
-		if (typeof this.app.vault.getMarkdownFiles === "function") {
-			for (const mdFile of this.app.vault.getMarkdownFiles()) {
-				if (seenPaths.has(mdFile.path)) continue;
-				try {
-					const raw =
-						typeof this.app.vault.cachedRead === "function"
-							? await this.app.vault.cachedRead(mdFile)
-							: await this.app.vault.read(mdFile);
-					if (parseFileContent(raw) !== null) {
-						seenPaths.add(mdFile.path);
-						targets.push({ path: mdFile.path, mode: "portable" });
-					}
-				} catch {
-					// Ignore unreadable files during emergency scan
-				}
-			}
-		}
 		const targetFiles = new Map<string, TFile>();
 		const coordinatorTargets: Array<{ file?: TFile; path: string }> = [];
 		for (const t of targets) {
@@ -576,7 +555,35 @@ export default class VeneerPlugin extends Plugin {
 			}
 		}
 
-		const destruction = coordinator.beginDestruction(this.app, coordinatorTargets);
+		let destruction = coordinator.beginDestruction(this.app, coordinatorTargets);
+		await this.sessions.hardKillAll();
+
+		if (typeof this.app.vault.getMarkdownFiles === "function") {
+			const extraCoordinatorTargets: Array<{ file?: TFile; path: string }> = [];
+			for (const mdFile of this.app.vault.getMarkdownFiles()) {
+				if (seenPaths.has(mdFile.path)) continue;
+				try {
+					const raw =
+						typeof this.app.vault.cachedRead === "function"
+							? await this.app.vault.cachedRead(mdFile)
+							: await this.app.vault.read(mdFile);
+					if (parseFileContent(raw) !== null) {
+						seenPaths.add(mdFile.path);
+						targets.push({ path: mdFile.path, mode: "portable" });
+						targetFiles.set(mdFile.path, mdFile);
+						extraCoordinatorTargets.push({ file: mdFile, path: mdFile.path });
+					}
+				} catch {
+					// Ignore unreadable files during emergency vault scan
+				}
+			}
+			if (extraCoordinatorTargets.length > 0) {
+				destruction = coordinator.beginDestruction(this.app, [
+					...coordinatorTargets,
+					...extraCoordinatorTargets,
+				]);
+			}
+		}
 
 		const report = await executeShred(targets, {
 			zeroSessions: async () => {
@@ -877,6 +884,9 @@ export default class VeneerPlugin extends Plugin {
 						const restorePreProtectViewIfLive = (): void => {
 							if (!this.isLive()) {
 								return;
+							}
+							if (this.registry?.has(file.path)) {
+								void this.registry.remove(file.path);
 							}
 							if (view && view.file === file) {
 								const attached = this.sessions.get(view);
@@ -1736,8 +1746,13 @@ export default class VeneerPlugin extends Plugin {
 
 	/** Loads persisted plugin settings while stripping the registry `entries` map. */
 	async loadSettings(): Promise<void> {
-		const raw = (await this.loadData()) as (Partial<VeneerSettings> & { entries?: unknown }) | null;
-		const { entries: _entries, ...rest } = raw ?? {};
+		const raw = (await this.loadData()) as
+			| (Partial<VeneerSettings> & { entries?: unknown; legacyDeocyMigrated?: unknown })
+			| null;
+		if (raw?.legacyDeocyMigrated === true) {
+			this.legacyDeocyMigrated = true;
+		}
+		const { entries: _entries, legacyDeocyMigrated: _migrated, ...rest } = raw ?? {};
 		this.settings = { ...DEFAULT_SETTINGS, ...rest };
 	}
 
@@ -1746,6 +1761,7 @@ export default class VeneerPlugin extends Plugin {
 		await this.saveData({
 			...this.settings,
 			entries: this.registry ? this.registry.entriesRecord() : {},
+			...(this.legacyDeocyMigrated ? { legacyDeocyMigrated: true } : {}),
 		});
 	}
 }

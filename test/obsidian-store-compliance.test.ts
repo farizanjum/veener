@@ -401,6 +401,7 @@ describe("Obsidian Community Plugin Store compliance", () => {
 			filesByPath.set("ScannedUnregistered.md", { file: scannedFile, content: protectedRaw });
 			filesByPath.set("Normal.md", { file: normalFile, content: "Plain note without payload" });
 
+			const eventOrder: string[] = [];
 			const appMock = {
 				vault: {
 					configDir: ".obsidian",
@@ -416,7 +417,10 @@ describe("Obsidian Community Plugin Store compliance", () => {
 					},
 					getMarkdownFiles: () => [migratedFile, scannedFile, normalFile],
 					getAbstractFileByPath: (p: string) => filesByPath.get(p)?.file ?? null,
-					cachedRead: vi.fn(async (f: TFile) => filesByPath.get(f.path)?.content ?? ""),
+					cachedRead: vi.fn(async (f: TFile) => {
+						eventOrder.push(`cachedRead:${f.path}`);
+						return filesByPath.get(f.path)?.content ?? "";
+					}),
 					read: vi.fn(async (f: TFile) => filesByPath.get(f.path)?.content ?? ""),
 					modify: vi.fn(async (f: TFile, nextContent: string) => {
 						const entry = filesByPath.get(f.path);
@@ -437,13 +441,43 @@ describe("Obsidian Community Plugin Store compliance", () => {
 
 			await plugin.migrateLegacyPluginDataIfNeeded();
 			expect(state.savedData).not.toBeNull();
+			expect(state.savedData?.legacyDeocyMigrated).toBe(true);
 			expect(state.savedData?.duressPinSalt).toBe("deadbeef");
 			expect(state.savedData?.duressPinHash).toBe("cafebabe");
 			expect(state.savedData?.triggerPrefix).toBe("//custom");
 
 			plugin.registry = new ProtectedRegistry(plugin);
 			await plugin.registry.load();
+			await plugin.loadSettings();
 			expect(plugin.registry.has("Migrated.md")).toBe(true);
+
+			await plugin.clearDuressPin();
+			await plugin.registry.remove("Migrated.md");
+			expect(state.savedData?.legacyDeocyMigrated).toBe(true);
+			expect(state.savedData?.duressPinHash).toBeNull();
+
+			const reloadedPlugin = Object.create(VeneerPlugin.prototype) as VeneerPlugin;
+			Object.assign(reloadedPlugin, {
+				app: appMock,
+				manifest: { id: "veneer", dir: ".obsidian/plugins/veneer" },
+				loadData: vi.fn(async () => state.savedData),
+				saveData: vi.fn(async (next: Record<string, unknown>) => {
+					state.savedData = next;
+				}),
+			});
+			await reloadedPlugin.migrateLegacyPluginDataIfNeeded();
+			reloadedPlugin.registry = new ProtectedRegistry(reloadedPlugin);
+			await reloadedPlugin.registry.load();
+			await reloadedPlugin.loadSettings();
+			expect(reloadedPlugin.settings.duressPinHash).toBeNull();
+			expect(reloadedPlugin.settings.duressPinSalt).toBeNull();
+			expect(reloadedPlugin.registry.has("Migrated.md")).toBe(false);
+
+			await plugin.registry.add("Migrated.md", {
+				noteId: "note-migrated",
+				addedAt: 1000,
+				mode: "portable",
+			});
 
 			Object.assign(plugin, {
 				sessions: {
@@ -468,14 +502,19 @@ describe("Obsidian Community Plugin Store compliance", () => {
 							await task();
 						},
 					}),
-					hardKillAll: vi.fn(async () => undefined),
+					hardKillAll: vi.fn(async () => {
+						eventOrder.push("hardKillAll");
+					}),
 					getDecoyFallback: () => "Decoy body text",
 				} as unknown as SessionManager,
-				clearDuressPin: vi.fn(async () => undefined),
 			});
 
 			await (plugin as unknown as { runShred: () => Promise<void> }).runShred();
 
+			expect(eventOrder[0]).toBe("hardKillAll");
+			expect(eventOrder.indexOf("hardKillAll")).toBeLessThan(
+				eventOrder.indexOf("cachedRead:ScannedUnregistered.md"),
+			);
 			expect(filesByPath.get("Migrated.md")?.content).toBe("Decoy body text\n");
 			expect(filesByPath.get("ScannedUnregistered.md")?.content).toBe("Decoy body text\n");
 			expect(filesByPath.get("Normal.md")?.content).toBe("Plain note without payload");
