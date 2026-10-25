@@ -241,7 +241,7 @@ export default class VeneerPlugin extends Plugin {
 				onLocked: () => {
 					this.dots?.reset();
 					if (this.isLive()) {
-						this.lockEngine?.applyContentProtection();
+						this.lockEngine?.onSessionLocked();
 						this.updateWordCounter();
 					}
 				},

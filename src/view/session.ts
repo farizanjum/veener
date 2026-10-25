@@ -2258,7 +2258,18 @@ export class SessionManager {
 	pruneDetached(activeViews: Set<MarkdownView>): void {
 		if (this.isDisposed()) return;
 		for (const session of this.all()) {
-			if (!activeViews.has(session.view)) this.detach(session.view);
+			if (!activeViews.has(session.view)) {
+				if (session.lockingPromise !== null) {
+					void session.lockingPromise.finally(() => {
+						if (!this.isDisposed() && this.byView.get(session.view) === session) {
+							this.byView.delete(session.view);
+							this.removeFromPath(session.file.path, session);
+						}
+					});
+				} else {
+					this.detach(session.view);
+				}
+			}
 		}
 	}
 
