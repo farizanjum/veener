@@ -99,7 +99,10 @@ export class DecoyGenerator {
 						continue;
 					}
 					const quality = evaluateDecoyQuality(candidate);
-					if (quality.score < 0.4) continue;
+					if (quality.score < 0.4) {
+						lastError = `quality score too low (${quality.score.toFixed(2)})`;
+						continue;
+					}
 					return { text: candidate, source: "llm", attempts: attempt };
 				} catch (error) {
 					lastError = error instanceof Error ? error.message : String(error);

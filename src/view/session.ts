@@ -194,6 +194,8 @@ export class SessionManager {
 	private readonly byPath = new Map<string, Set<ViewSession>>();
 	private readonly reservedPaths = new Map<string, number>();
 	private readonly pendingLocks = new Set<ViewSession>();
+	private readonly lockTextObservers = new WeakMap<ViewSession, Set<(text: string) => void>>();
+	private readonly activeLockSnapshots = new WeakMap<ViewSession, string[]>();
 	private readonly deferredSaves = new Map<string, Set<() => void>>();
 
 	/** Monotonic epoch fencing duress writes; `runReservedWrite` declines stale snapshots. */
@@ -2297,6 +2299,8 @@ export class SessionManager {
 			session.reencryptTimer = null;
 		}
 		this.pendingLocks.delete(session);
+		this.lockTextObservers.delete(session);
+		this.activeLockSnapshots.delete(session);
 		this.byView.delete(session.view);
 		this.removeFromPath(session.file.path, session);
 		this.hooks.onLocked(session);
@@ -2676,12 +2680,75 @@ export class SessionManager {
 	 * Coalesces concurrent mask triggers, snapshots the DEK and editor state,
 	 * re-encrypts the latest plaintext to disk, zeroes key material, and restores the decoy cover.
 	 */
-	lock(session: ViewSession, _reason: string): Promise<void> {
+	lock(
+		session: ViewSession,
+		_reason: string,
+		onTextCaptured?: (text: string) => void,
+	): Promise<void> {
 		if (this.isDisposed() || this.reservedPaths.has(session.file.path)) {
 			return Promise.resolve();
 		}
+		if (onTextCaptured) {
+			let observers = this.lockTextObservers.get(session);
+			if (!observers) {
+				observers = new Set();
+				this.lockTextObservers.set(session, observers);
+			}
+			observers.add(onTextCaptured);
+			const priorSnapshots = this.activeLockSnapshots.get(session);
+			if (priorSnapshots) {
+				for (const snap of priorSnapshots) {
+					try {
+						onTextCaptured(snap);
+					} catch {
+						// Ignore observer errors during lock replay
+					}
+				}
+			}
+			if (
+				this.isAttached(session) &&
+				session.view.file === session.file &&
+				session.state === "unlocked" &&
+				session.view.editor &&
+				typeof session.view.editor.getValue === "function"
+			) {
+				const initialText = session.view.editor.getValue();
+				if (
+					typeof initialText === "string" &&
+					initialText !== session.decoyBody &&
+					parseFileContent(initialText) === null
+				) {
+					onTextCaptured(initialText);
+				}
+			}
+		}
 		if (session.lockingPromise !== null) return session.lockingPromise;
-		if (session.state !== "unlocked") return Promise.resolve();
+		if (session.state !== "unlocked") {
+			this.lockTextObservers.delete(session);
+			this.activeLockSnapshots.delete(session);
+			return Promise.resolve();
+		}
+		this.activeLockSnapshots.set(session, []);
+		const notifyLockText = (text: string): void => {
+			if (!text) return;
+			let snapshots = this.activeLockSnapshots.get(session);
+			if (!snapshots) {
+				snapshots = [];
+				this.activeLockSnapshots.set(session, snapshots);
+			}
+			if (!snapshots.includes(text)) {
+				snapshots.push(text);
+			}
+			const observers = this.lockTextObservers.get(session);
+			if (!observers) return;
+			for (const cb of observers) {
+				try {
+					cb(text);
+				} catch {
+					// Ignore observer errors during lock
+				}
+			}
+		};
 		session.reencryptSeq += 1;
 		if (session.reencryptTimer !== null) {
 			window.clearTimeout(session.reencryptTimer);
@@ -2689,6 +2756,14 @@ export class SessionManager {
 		}
 		const sameFile = session.view.file === session.file;
 		let currentText = sameFile ? session.view.editor.getValue() : "";
+		if (
+			sameFile &&
+			typeof currentText === "string" &&
+			currentText !== session.decoyBody &&
+			parseFileContent(currentText) === null
+		) {
+			notifyLockText(currentText);
+		}
 		let currentTitle = sameFile ? this.readEditedInlineTitle(session) : session.realTitle;
 		let candidateRevision = sameFile
 			? this.coordinator.nextFileRevision(this.app, session.file)
@@ -2749,6 +2824,7 @@ export class SessionManager {
 							parseFileContent(postStageText) === null
 						) {
 							currentText = postStageText;
+							notifyLockText(currentText);
 							candidateRevision = this.coordinator.nextFileRevision(
 								this.app,
 								session.file,
@@ -2790,6 +2866,7 @@ export class SessionManager {
 							parseFileContent(latestText) === null
 						) {
 							currentText = latestText;
+							notifyLockText(currentText);
 							currentTitle = this.readEditedInlineTitle(session);
 							session.realTitle = currentTitle;
 							candidateRevision = this.coordinator.nextFileRevision(
@@ -2864,6 +2941,8 @@ export class SessionManager {
 				hasFailed = true;
 				lockError = error;
 			} finally {
+				this.lockTextObservers.delete(session);
+				this.activeLockSnapshots.delete(session);
 				releaseLocalDek();
 				const ownedOnExit =
 					!this.isDisposed() &&
