@@ -907,10 +907,15 @@ async function singleStreamDownload(
 		existing = 0;
 	}
 	const contentLength = Number(response.headers["content-length"] ?? 0);
-	const total =
+	const headerTotal =
 		Number.isFinite(contentLength) && contentLength > 0
 			? existing + contentLength
-			: expectedTotal;
+			: null;
+	if (expectedTotal !== null && headerTotal !== null && headerTotal !== expectedTotal) {
+		response.destroy();
+		throw new Error(`unexpected Content-Length (${headerTotal}/${expectedTotal} bytes)`);
+	}
+	const total = expectedTotal ?? headerTotal;
 	const tracker = new SpeedTracker();
 	let downloaded = existing;
 	const report = reportThrottled(onProgress, total, tracker, () => downloaded);

@@ -563,7 +563,7 @@ describe("startModelDownload integration", () => {
 		) => {
 			const req = createMockClientRequest();
 			queueMicrotask(() => {
-				const res = createMockResponse(200, { "content-length": "128" });
+				const res = createMockResponse(200, { "content-length": "32" });
 				callback?.(res);
 				queueMicrotask(() => {
 					res.write(Buffer.alloc(16, 2));
