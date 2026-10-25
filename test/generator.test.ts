@@ -398,4 +398,48 @@ describe("DecoyGenerator", () => {
 		await vi.advanceTimersByTimeAsync(DEFAULT_IDLE_UNLOAD_MS);
 		expect(unload).toHaveBeenCalledTimes(1);
 	});
+
+	it("rejects candidates that echo realText (8-gram overlap), retries, and falls back when all echo", async () => {
+		const realText = "the secret acquisition target is scheduled to close next thursday morning";
+		const taintedCandidate = `${GOOD} and the secret acquisition target is scheduled to close soon`;
+
+		const retryGenerator = new DecoyGenerator({
+			runtime: mockRuntime([taintedCandidate, GOOD]),
+			validate: (candidate, real) => validateDecoy(candidate, real),
+			fallbackTemplate: (seed) => `TEMPLATE-${seed}`,
+			maxAttempts: 3,
+		});
+		const retryResult = await retryGenerator.generate("grocery list", [], realText, 1);
+		expect(retryResult.source).toBe("llm");
+		expect(retryResult.text).toBe(GOOD);
+		expect(retryResult.attempts).toBe(2);
+
+		const fallbackGenerator = new DecoyGenerator({
+			runtime: mockRuntime([taintedCandidate, taintedCandidate, taintedCandidate]),
+			validate: (candidate, real) => validateDecoy(candidate, real),
+			fallbackTemplate: (seed) => `TEMPLATE-${seed}`,
+			maxAttempts: 3,
+		});
+		const fallbackResult = await fallbackGenerator.generate("grocery list", [], realText, 9);
+		expect(fallbackResult.source).toBe("template");
+		expect(fallbackResult.text).toBe("TEMPLATE-9");
+		expect(fallbackResult.error).toBe("validation failed (echoes real content)");
+	});
+
+	it("sets lastError to 'quality score too low' when evaluateDecoyQuality(candidate).score < 0.4", async () => {
+		const lowQuality = Array.from(
+			{ length: 6 },
+			(_, i) => `Furthermore this crucial sentence number ${i}`,
+		).join(". ");
+		const generator = new DecoyGenerator({
+			runtime: mockRuntime([lowQuality, lowQuality, lowQuality]),
+			validate: () => ({ ok: true }),
+			fallbackTemplate: (seed) => `TEMPLATE-${seed}`,
+			maxAttempts: 3,
+		});
+		const result = await generator.generate("grocery list", [], null, 42);
+		expect(result.source).toBe("template");
+		expect(result.text).toBe("TEMPLATE-42");
+		expect(result.error).toMatch(/^quality score too low \(0\.\d{2}\)$/);
+	});
 });

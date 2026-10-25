@@ -99,4 +99,54 @@ describe("evaluateDecoyQuality", () => {
 		expect(metrics.aiPhraseCount).toBeGreaterThan(0);
 		expect(metrics.score).toBeLessThan(0.7);
 	});
+
+	it("scores multi-line bullet lists without periods using per-line burstiness (LF and CRLF)", () => {
+		const lines = [
+			"# Weekend Errands",
+			"- milk",
+			"- 6 free range eggs from the market",
+			"- sourdough bread",
+			"- pick up dry cleaning before 5pm if traffic is light",
+			"- coffee beans",
+		];
+		const bulletListLf = lines.join("\n");
+		const metricsLf = evaluateDecoyQuality(bulletListLf);
+		expect(metricsLf.burstinessStdDev).toBeGreaterThan(0);
+		expect(metricsLf.score).toBeGreaterThanOrEqual(0.7);
+
+		const bulletListCrlf = lines.join("\r\n");
+		const metricsCrlf = evaluateDecoyQuality(bulletListCrlf);
+		expect(metricsCrlf.burstinessStdDev).toBeGreaterThan(0);
+		expect(metricsCrlf.score).toBeGreaterThanOrEqual(0.7);
+	});
+
+	it("scores multi-line code snippets and terminal commands without trailing periods", () => {
+		const codeSnippet = [
+			"// todo: retry connection if local cache misses on cold boot",
+			"const client = createClient(config)",
+			"await client.connect()",
+			"if (!client.isReady()) throw new Error('offline')",
+		].join("\n");
+		const metrics = evaluateDecoyQuality(codeSnippet);
+		expect(metrics.burstinessStdDev).toBeGreaterThan(0);
+		expect(metrics.score).toBeGreaterThanOrEqual(0.7);
+	});
+
+	it("penalizes uniform multi-line lists where every line has the same word count", () => {
+		const uniformLines = Array.from({ length: 6 }, (_, i) => `item number ${i} here`).join("\n");
+		const metrics = evaluateDecoyQuality(uniformLines);
+		expect(metrics.burstinessStdDev).toBe(0);
+		expect(metrics.score).toBeLessThan(0.5);
+	});
+
+	it("still penalizes low-burstiness uniform prose with a trailing newline or paragraph break", () => {
+		const para1 = Array.from({ length: 5 }, (_, i) => `This is sentence number ${i} today.`).join(" ");
+		const para2 = Array.from({ length: 5 }, (_, i) => `Here is sentence number ${i} again.`).join(" ");
+
+		const trailingNewlineMetrics = evaluateDecoyQuality(`${para1} ${para2}\n`);
+		expect(trailingNewlineMetrics.score).toBeLessThan(0.5);
+
+		const paragraphBreakMetrics = evaluateDecoyQuality(`${para1}\n\n${para2}\n`);
+		expect(paragraphBreakMetrics.score).toBeLessThan(0.5);
+	});
 });

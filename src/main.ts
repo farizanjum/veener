@@ -863,6 +863,7 @@ export default class VeneerPlugin extends Plugin {
 				generator: this.generator,
 				llmAvailable: this.modelFileStatus().exists,
 				realWordCount,
+				realText: content,
 				onProtect: async ({ decoy, password }) => {
 					if (!this.isLive()) return;
 					const startEpoch = this.sessions.currentKillEpoch();
@@ -993,13 +994,31 @@ export default class VeneerPlugin extends Plugin {
 			return;
 		}
 		const startEpoch = this.sessions.currentKillEpoch();
+		let realText: string | null = null;
 		try {
 			for (const session of this.sessions.getAllByPath(file.path)) {
+				if (
+					realText === null &&
+					session.state === "unlocked" &&
+					session.view.file === file &&
+					session.view.editor &&
+					typeof session.view.editor.getValue === "function"
+				) {
+					const editorText = session.view.editor.getValue();
+					if (
+						typeof editorText === "string" &&
+						editorText !== session.decoyBody &&
+						parseFileContent(editorText) === null
+					) {
+						realText = editorText;
+					}
+				}
 				if (session.state === "unlocked" || session.lockingPromise !== null) {
 					await this.sessions.lock(session, "refresh-decoy");
 				}
 			}
 		} catch {
+			realText = null;
 			return;
 		}
 		if (!this.isLive() || this.sessions.currentKillEpoch() !== startEpoch) return;
@@ -1014,17 +1033,25 @@ export default class VeneerPlugin extends Plugin {
 			new Notice("The model is being deleted. Try again after deletion finishes.");
 			return;
 		}
-		const result = await this.generator.generate(
-			"auto",
-			this.settings.interests,
-			null,
-			Date.now() % 100000,
-			{
-				persona: this.settings.coverPersona || undefined,
-				names: this.settings.coverNames.length > 0 ? [...this.settings.coverNames] : undefined,
-				now: new Date(),
-			},
-		);
+		let result: Awaited<ReturnType<DecoyGenerator["generate"]>>;
+		try {
+			const realWordCount =
+				realText !== null ? realText.trim().split(/\s+/).filter(Boolean).length : undefined;
+			result = await this.generator.generate(
+				"auto",
+				this.settings.interests,
+				realText,
+				Date.now() % 100000,
+				{
+					persona: this.settings.coverPersona || undefined,
+					names: this.settings.coverNames.length > 0 ? [...this.settings.coverNames] : undefined,
+					now: new Date(),
+					...(realWordCount !== undefined ? { realWordCount } : {}),
+				},
+			);
+		} finally {
+			realText = null;
+		}
 		if (!this.isLive() || this.sessions.currentKillEpoch() !== startEpoch) return;
 		if (this.modelDeletionInFlight || this.modelDeletionEpoch !== deletionEpoch) {
 			new Notice("The model is being deleted. Try again after deletion finishes.");

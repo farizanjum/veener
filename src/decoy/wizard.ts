@@ -21,6 +21,7 @@ export interface WizardDeps {
 	generator: DecoyGenerator;
 	llmAvailable: boolean;
 	realWordCount?: number;
+	realText?: string | null;
 	onProtect: (result: ProtectResult) => Promise<void>;
 }
 
@@ -35,6 +36,7 @@ export class ProtectWizard extends Modal {
 	private decoyText = "";
 	private busy = false;
 	private isOpenModal = false;
+	private realText: string | null;
 
 	/** Creates a protect-note wizard modal initialized to local generation when an LLM is available. */
 	constructor(
@@ -43,6 +45,7 @@ export class ProtectWizard extends Modal {
 	) {
 		super(app);
 		this.source = deps.llmAvailable ? "generate" : "template";
+		this.realText = deps.realText ?? null;
 	}
 
 	/** Weaves the initial template cover and renders the wizard UI when the modal opens. */
@@ -164,7 +167,7 @@ export class ProtectWizard extends Modal {
 						const result = await this.deps.generator.generate(
 							this.coverType,
 							this.deps.interests,
-							null,
+							this.realText,
 							Date.now() % 100000,
 							{
 								persona: this.deps.persona || undefined,
@@ -279,6 +282,7 @@ export class ProtectWizard extends Modal {
 	/** Clears the wizard DOM container when the modal closes. */
 	onClose(): void {
 		this.isOpenModal = false;
+		this.realText = null;
 		this.contentEl.empty();
 	}
 }

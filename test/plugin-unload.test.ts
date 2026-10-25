@@ -1449,7 +1449,7 @@ describe("VeneerPlugin.onunload and registered cleanup lifecycle regressions (Is
 			source: "llm" | "template";
 			error?: string;
 		}>();
-		const generateSpy = vi.fn(() => generateGate.promise);
+		const generateSpy = vi.fn((..._args: unknown[]) => generateGate.promise);
 
 		const makeMockGenerator = (): DecoyGenerator =>
 			({
@@ -1650,6 +1650,7 @@ describe("VeneerPlugin.onunload and registered cleanup lifecycle regressions (Is
 			persona: "backend engineer",
 			generator: mockGenerator,
 			llmAvailable: true,
+			realText: "Secret note body for overlap check",
 			onProtect: async () => undefined,
 		});
 		const onlineContent = makeContentEl();
@@ -1672,8 +1673,13 @@ describe("VeneerPlugin.onunload and registered cleanup lifecycle regressions (Is
 		expect(generateClick).toBeDefined();
 		const inFlightGenerate = Promise.resolve(generateClick!());
 		expect(generateSpy).toHaveBeenCalledTimes(1);
+		expect(generateSpy.mock.calls[0]?.[2]).toBe("Secret note body for overlap check");
+		expect((onlineWizard as unknown as { realText: string | null }).realText).toBe(
+			"Secret note body for overlap check",
+		);
 
 		onlineWizard.onClose();
+		expect((onlineWizard as unknown as { realText: string | null }).realText).toBeNull();
 		const emptyCallsAtClose = onlineContent.getEmptyCalls();
 		const createElCallsAtClose = onlineContent.getCreateElCalls();
 
@@ -1791,6 +1797,57 @@ describe("VeneerPlugin.onunload and registered cleanup lifecycle regressions (Is
 		readdirSpy.mockRestore();
 		statSpy.mockRestore();
 		unlinkSpy.mockRestore();
+		harness.unloadPlugin("onunload-first");
+		harness.restorePrototype();
+		activeHarness = null;
+	});
+
+	it("forwards realText from an unlocked session to generator.generate() in refreshDecoy() and passes null when already locked", async () => {
+		const harness = createPluginUnloadHarness(VeneerPlugin);
+		activeHarness = harness;
+
+		const { file, pane, session } = await harness.seedProtectedNote({
+			path: "RefreshOverlapCheck.md",
+			realText: SECRET_P0,
+		});
+
+		const generateSpy = vi.fn(
+			async (
+				_type: unknown,
+				_interests: unknown,
+				_realText: string | null,
+				_seed: number,
+				_options?: unknown,
+			) => ({
+				text: "# Fresh Cover\n\nfresh decoy body",
+				source: "llm" as const,
+				attempts: 1,
+			}),
+		);
+		(harness.plugin as unknown as { generator: DecoyGenerator }).generator = {
+			warmup: vi.fn(),
+			generate: generateSpy,
+			unload: vi.fn(async () => undefined),
+		} as unknown as DecoyGenerator;
+
+		const refreshDecoy = (
+			harness.plugin as unknown as { refreshDecoy: (target: typeof file) => Promise<void> }
+		).refreshDecoy.bind(harness.plugin);
+
+		expect(await harness.sessions.unlock(session, TEST_PASSWORD)).toBe("ok");
+		pane.typeInEditor("Unlocked secret note text in editor");
+
+		await refreshDecoy(file);
+		expect(generateSpy).toHaveBeenCalledTimes(1);
+		expect(generateSpy.mock.calls[0]?.[2]).toBe("Unlocked secret note text in editor");
+		expect(generateSpy.mock.calls[0]?.[4]).toMatchObject({ realWordCount: 6 });
+		expect(session.state).toBe("locked");
+
+		await refreshDecoy(file);
+		expect(generateSpy).toHaveBeenCalledTimes(2);
+		expect(generateSpy.mock.calls[1]?.[2]).toBeNull();
+		expect(generateSpy.mock.calls[1]?.[4]).not.toHaveProperty("realWordCount");
+
 		harness.unloadPlugin("onunload-first");
 		harness.restorePrototype();
 		activeHarness = null;
