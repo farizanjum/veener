@@ -71,7 +71,7 @@ function resolveWindowFromBridge(bridge: RemoteLike | null): BrowserWindowLike |
 		if (win) return win;
 	}
 	const bw = tryGet(() => bridge.BrowserWindow);
-	if (bw && typeof bw === "object") {
+	if (bw && (typeof bw === "object" || typeof bw === "function")) {
 		const getFocused = tryGet(() => bw.getFocusedWindow);
 		if (typeof getFocused === "function") {
 			const focused = tryGet(() => getFocused.call(bw));
@@ -93,7 +93,7 @@ function hasWindowResolver(bridge: RemoteLike | null): boolean {
 	const bw = tryGet(() => bridge.BrowserWindow);
 	return Boolean(
 		bw &&
-			typeof bw === "object" &&
+			(typeof bw === "object" || typeof bw === "function") &&
 			(typeof tryGet(() => bw.getFocusedWindow) === "function" ||
 				typeof tryGet(() => bw.getAllWindows) === "function"),
 	);

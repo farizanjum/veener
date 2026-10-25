@@ -477,11 +477,12 @@ describe("Electron power/content-protection bridge and absence of host-wide stor
 			}
 			if (request === "@electron/remote") {
 				if (useGetAllWindowsOnly) {
+					const BrowserWindow = Object.assign(function BrowserWindow() {}, {
+						getAllWindows: () => [{ setContentProtection: setProtectionSpy }],
+					});
 					return {
 						powerMonitor: { on: onSpy, removeListener: removeSpy },
-						BrowserWindow: {
-							getAllWindows: () => [{ setContentProtection: setProtectionSpy }],
-						},
+						BrowserWindow,
 					};
 				}
 				return {
