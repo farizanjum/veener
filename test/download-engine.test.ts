@@ -738,6 +738,113 @@ describe("startModelDownload integration", () => {
 		expect(fs.existsSync(`${partPath}.meta.json`)).toBe(false);
 		expect(fs.existsSync(legacyMetaPath)).toBe(false);
 	});
+
+	it("skips a wrong-shape .meta.json and reads the valid legacy .part.meta.json", async () => {
+		const total = 128;
+		const payload = Buffer.alloc(total);
+		for (let i = 0; i < total; i++) payload[i] = (i * 29 + 5) & 0xff;
+
+		const destPath = path.join(tmpDir, "malformed-meta-fallback.gguf");
+		const partPath = `${destPath}.part`;
+		const legacyMetaPath = `${partPath}.part.meta.json`;
+		const url = "https://huggingface.co/org/repo/resolve/main/malformed-meta-fallback.gguf";
+
+		const initialPart = Buffer.alloc(total, 0);
+		payload.copy(initialPart, 0, 0, 64);
+		fs.writeFileSync(partPath, initialPart);
+		fs.writeFileSync(`${partPath}.meta.json`, "{}");
+		fs.writeFileSync(
+			legacyMetaPath,
+			JSON.stringify({
+				url,
+				total,
+				have: [32, 32, 0, 0],
+				done: [true, true, false, false],
+			}),
+		);
+
+		const requestedRanges: string[] = [];
+		vi.spyOn(https, "get").mockImplementation(((
+			_urlInput: string | URL,
+			options: { headers?: Record<string, string> },
+			callback?: (res: http.IncomingMessage) => void,
+		) => {
+			const req = createMockClientRequest();
+			const range = options?.headers?.Range ?? "";
+			requestedRanges.push(range);
+			const match = /^bytes=(\d+)-(\d+)$/.exec(range);
+			const start = Number(match?.[1] ?? 0);
+			const end = Number(match?.[2] ?? 0);
+			const slice = payload.subarray(start, end + 1);
+
+			queueMicrotask(() => {
+				const res = createMockResponse(206, {
+					"content-range": `bytes ${start}-${end}/${total}`,
+					"content-length": String(slice.length),
+				});
+				callback?.(res);
+				queueMicrotask(() => {
+					res.end(slice);
+				});
+			});
+			return req;
+		}) as unknown as typeof https.get);
+
+		const handle = startModelDownload(url, destPath, null, () => undefined, {
+			minParallelBytes: 64,
+		});
+		await handle.promise;
+
+		expect(requestedRanges).toEqual(["bytes=64-95", "bytes=96-127"]);
+		expect(fs.readFileSync(destPath).equals(payload)).toBe(true);
+	});
+
+	it("rejects a 206 resume response in singleStreamDownload when Content-Range is missing or mismatched", async () => {
+		const url = "https://huggingface.co/org/repo/resolve/main/bad-range.gguf";
+		const destMissing = path.join(tmpDir, "missing-range.gguf");
+		fs.writeFileSync(`${destMissing}.part`, Buffer.from("0123456789abcdef", "utf8"));
+
+		vi.spyOn(https, "get").mockImplementation(((
+			_urlInput: string | URL,
+			_options: unknown,
+			callback?: (res: http.IncomingMessage) => void,
+		) => {
+			const req = createMockClientRequest();
+			queueMicrotask(() => {
+				const res = createMockResponse(206, { "content-length": "16" });
+				callback?.(res);
+			});
+			return req;
+		}) as unknown as typeof https.get);
+
+		await expect(
+			startModelDownload(url, destMissing, 32, () => undefined).promise,
+		).rejects.toThrow("invalid resume Content-Range: missing");
+
+		vi.restoreAllMocks();
+		const destMismatch = path.join(tmpDir, "mismatch-range.gguf");
+		fs.writeFileSync(`${destMismatch}.part`, Buffer.from("0123456789abcdef", "utf8"));
+
+		vi.spyOn(https, "get").mockImplementation(((
+			_urlInput: string | URL,
+			_options: unknown,
+			callback?: (res: http.IncomingMessage) => void,
+		) => {
+			const req = createMockClientRequest();
+			queueMicrotask(() => {
+				const res = createMockResponse(206, {
+					"content-length": "16",
+					"content-range": "bytes 0-15/32",
+				});
+				callback?.(res);
+			});
+			return req;
+		}) as unknown as typeof https.get);
+
+		await expect(
+			startModelDownload(url, destMismatch, 32, () => undefined).promise,
+		).rejects.toThrow("invalid resume Content-Range: bytes 0-15/32");
+	});
 });
 
 describe("ModelDownloadModal lifecycle and start-over race safety", () => {
@@ -1076,5 +1183,38 @@ describe("ModelDownloadModal lifecycle and start-over race safety", () => {
 		await renamedPromise;
 		await new Promise((r) => setTimeout(r, 50));
 		expect(onDoneUnload).not.toHaveBeenCalled();
+
+		vi.restoreAllMocks();
+		mockHttps();
+		const destInactiveHost = path.join(tmpDir, "inactive-host-verify.gguf");
+		const onDoneInactiveHost = vi.fn();
+		let hostActive = true;
+
+		const modalInactiveHost = new ModelDownloadModal({} as unknown as App, {
+			url,
+			file: "verified.gguf",
+			label: "Verified Model",
+			isHostActive: () => hostActive,
+			getDest: async () => ({ abs: destInactiveHost, rel: "inactive-host-verify.gguf" }),
+			removeFile: async () => undefined,
+			onDone: onDoneInactiveHost,
+		});
+
+		let notifyInactiveRenamed!: () => void;
+		const inactiveRenamedPromise = new Promise<void>((resolve) => {
+			notifyInactiveRenamed = resolve;
+		});
+		vi.spyOn(fs.promises, "rename").mockImplementation(async (oldPath, newPath) => {
+			await origRename(oldPath, newPath);
+			modalInactiveHost.close();
+			hostActive = false;
+			notifyInactiveRenamed();
+		});
+
+		modalInactiveHost.open();
+		await inactiveRenamedPromise;
+		await new Promise((r) => setTimeout(r, 50));
+		expect(modalInactiveHost.isFinished()).toBe(true);
+		expect(onDoneInactiveHost).not.toHaveBeenCalled();
 	});
 });

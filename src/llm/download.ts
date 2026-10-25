@@ -493,7 +493,17 @@ function readPartMeta(partPath: string): PartMeta | null {
 	for (const suffix of [META_SUFFIX, LEGACY_META_SUFFIX]) {
 		try {
 			const raw: unknown = JSON.parse(fs.readFileSync(partPath + suffix, "utf8"));
-			return raw as PartMeta;
+			if (raw !== null && typeof raw === "object") {
+				const candidate = raw as Partial<PartMeta>;
+				if (
+					typeof candidate.url === "string" &&
+					typeof candidate.total === "number" &&
+					Array.isArray(candidate.have) &&
+					Array.isArray(candidate.done)
+				) {
+					return candidate as PartMeta;
+				}
+			}
 		} catch {
 			void 0;
 		}
@@ -590,16 +600,18 @@ async function streamChunk(
 		throw new RangeUnsupportedError("server refused ranges");
 	}
 	const contentRange = response.headers["content-range"];
-	if (typeof contentRange === "string") {
-		const match = contentRange.match(/^bytes\s+(\d+)-(\d+)\/(\d+|\*)$/i);
-		if (
-			!match ||
-			Number(match[1]) !== expectedRange.start ||
-			Number(match[2]) !== expectedRange.end
-		) {
-			response.destroy();
-			throw new RangeUnsupportedError("unexpected Content-Range");
-		}
+	if (typeof contentRange !== "string") {
+		response.destroy();
+		throw new RangeUnsupportedError("missing Content-Range");
+	}
+	const match = contentRange.match(/^bytes\s+(\d+)-(\d+)\/(\d+|\*)$/i);
+	if (
+		!match ||
+		Number(match[1]) !== expectedRange.start ||
+		Number(match[2]) !== expectedRange.end
+	) {
+		response.destroy();
+		throw new RangeUnsupportedError("unexpected Content-Range");
 	}
 	active.add(response);
 	try {
@@ -876,6 +888,17 @@ async function singleStreamDownload(
 	if (isCancelled()) {
 		response.destroy();
 		throw new Error("paused");
+	}
+	if (existing > 0 && response.statusCode === 206) {
+		const contentRange = response.headers["content-range"];
+		const match =
+			typeof contentRange === "string"
+				? /^bytes\s+(\d+)-(\d+)\/(?:\d+|\*)$/i.exec(contentRange)
+				: null;
+		if (!match || Number(match[1]) !== existing) {
+			response.destroy();
+			throw new Error(`invalid resume Content-Range: ${contentRange ?? "missing"}`);
+		}
 	}
 	if (existing > 0 && response.statusCode === 200) {
 		existing = 0;

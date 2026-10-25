@@ -48,6 +48,7 @@ export type ClosableModal = {
 	cancelAndClose?: () => void;
 	close?: () => void;
 	onClose?: () => void;
+	isFinished?: () => boolean;
 };
 
 export default class VeneerPlugin extends Plugin {
@@ -72,7 +73,7 @@ export default class VeneerPlugin extends Plugin {
 	}
 
 	/** Returns true while this plugin instance is active and has not entered teardown or session disposal. */
-	private isLive(): boolean {
+	isLive(): boolean {
 		if (this.isShuttingDown || this.teardownDone) return false;
 		if (this.sessions && this.sessions.isDisposed()) return false;
 		return true;
@@ -86,7 +87,9 @@ export default class VeneerPlugin extends Plugin {
 		this.activeModals.add(modal);
 		const origOnClose = modal.onClose?.bind(modal);
 		modal.onClose = (): void => {
-			this.activeModals?.delete(modal);
+			if (modal.isFinished?.() !== false) {
+				this.activeModals?.delete(modal);
+			}
 			origOnClose?.();
 		};
 		return modal;

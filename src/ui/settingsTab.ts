@@ -355,11 +355,13 @@ export class VeneerSettingTab extends PluginSettingTab {
 			new Notice("This model was imported from disk; nothing to download.");
 			return;
 		}
+		const targetFile = model.file;
 		this.plugin.trackModal(
 			new ModelDownloadModal(this.app, {
 				url: model.url,
 				file: model.file,
 				label: model.label,
+				isHostActive: () => this.plugin.isLive(),
 				getDest: async () => {
 					const dir = await this.plugin.modelsDir();
 					return { abs: `${dir.abs}/${model.file}`, rel: `${dir.rel}/${model.file}` };
@@ -367,11 +369,16 @@ export class VeneerSettingTab extends PluginSettingTab {
 				removeFile: (rel) => this.plugin.removeModelFile(rel),
 				onDone: (ok, verified) => {
 					void (async () => {
+						if (!this.plugin.isLive()) return;
 						if (ok) {
-							this.plugin.settings.modelDownloaded = true;
-							this.plugin.settings.modelVerified = verified;
-							await this.plugin.saveSettings();
-							this.plugin.rebuildGenerator();
+							if (activeModel(this.plugin.settings).file === targetFile) {
+								this.plugin.settings.modelDownloaded = true;
+								this.plugin.settings.modelVerified = verified;
+								await this.plugin.saveSettings();
+								if (!this.plugin.isLive()) return;
+								await this.plugin.rebuildGenerator();
+							}
+							if (!this.plugin.isLive()) return;
 							new Notice(
 								verified
 									? "Model ready. SHA-256 verified against Hugging Face's record."

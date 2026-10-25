@@ -19,6 +19,7 @@ export interface DownloadModalDeps {
 	getDest: () => Promise<{ abs: string; rel: string }>;
 	removeFile: (rel: string) => Promise<void>;
 	onDone: (ok: boolean, verified: boolean) => void;
+	isHostActive?: () => boolean;
 }
 
 /** Obsidian modal that manages resumable GGUF model downloads, progress reporting, and SHA-256 verification. */
@@ -73,6 +74,14 @@ export class ModelDownloadModal extends Modal {
 		this.cancelledByUnload = true;
 		this.cancelActiveRun();
 		this.close();
+	}
+
+	isFinished(): boolean {
+		return this.finished;
+	}
+
+	private canReportCompletion(): boolean {
+		return !this.cancelledByUnload && (this.deps.isHostActive ? this.deps.isHostActive() : true);
 	}
 
 	/** Renders the download progress UI and starts the model download workflow for the current epoch. */
@@ -157,7 +166,9 @@ export class ModelDownloadModal extends Modal {
 				this.statusEl.setText("Model file already present.");
 				this.statsEl.setText("You can close this window.");
 				this.finished = true;
-				this.deps.onDone(true, false);
+				if (this.canReportCompletion()) {
+					this.deps.onDone(true, false);
+				}
 				return;
 			}
 			await this.offerStartOver(dest.abs, epoch);
@@ -228,7 +239,7 @@ export class ModelDownloadModal extends Modal {
 				if (actual.toLowerCase() !== expectedHash.toLowerCase()) {
 					await this.deps.removeFile(dest.rel);
 					this.finished = true;
-					if (!this.cancelledByUnload) {
+					if (this.canReportCompletion()) {
 						this.deps.onDone(false, false);
 					}
 					if (isStale()) return;
@@ -238,7 +249,7 @@ export class ModelDownloadModal extends Modal {
 				verified = true;
 			}
 			this.finished = true;
-			if (this.cancelledByUnload) return;
+			if (!this.canReportCompletion()) return;
 			if (isStale()) {
 				this.deps.onDone(true, verified);
 				return;
