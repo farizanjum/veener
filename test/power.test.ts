@@ -1,12 +1,13 @@
 import Module from "module";
-import type { Plugin, Workspace } from "obsidian";
+import { MarkdownView, type Plugin, type Workspace } from "obsidian";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { LockEngine } from "../src/lock/LockEngine";
+import { ACTIVITY_THROTTLE_MS, LockEngine } from "../src/lock/LockEngine";
 import * as powerModule from "../src/lock/power";
 import { setContentProtection, wirePowerMonitor } from "../src/lock/power";
+import { ProtectedRegistry } from "../src/registry";
 import { DEFAULT_SETTINGS, type VeneerSettings } from "../src/settings";
 import { executeShred } from "../src/shred/duress";
-import type { SessionManager } from "../src/view/session";
+import { SessionManager, type ViewSession } from "../src/view/session";
 
 type ElectronMockMode =
 	| "working"
@@ -208,6 +209,7 @@ describe("Electron power/content-protection bridge and absence of host-wide stor
 	afterEach(() => {
 		activeBridge?.restore();
 		activeBridge = null;
+		vi.useRealTimers();
 		vi.restoreAllMocks();
 	});
 
@@ -710,6 +712,342 @@ describe("Electron power/content-protection bridge and absence of host-wide stor
 			} else {
 				Reflect.deleteProperty(globalThis, "document");
 			}
+		}
+	});
+
+	it("gates idle timers on unlocked sessions, throttles rapid activity to 1,000 ms, and honors trailing sub-second activity (Issue #9)", async () => {
+		vi.useFakeTimers();
+		const bridge = installElectronMock({ mode: "scoped-remote-only" });
+		activeBridge = bridge;
+
+		const origDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+		Object.defineProperty(globalThis, "document", {
+			value: { visibilityState: "visible" as DocumentVisibilityState },
+			configurable: true,
+		});
+
+		const domListeners = new Map<string, Array<() => void>>();
+		const mockPlugin = {
+			registerDomEvent: (target: unknown, event: string, cb: () => void) => {
+				const key = `${target === globalThis.document ? "document" : "window"}:${event}`;
+				const list = domListeners.get(key) ?? [];
+				list.push(cb);
+				domListeners.set(key, list);
+			},
+			registerEvent: () => undefined,
+			register: () => undefined,
+		} as unknown as Plugin;
+
+		const mockWorkspace = {
+			on: () => ({ id: "workspace-event" }),
+		} as unknown as Workspace;
+
+		const mockSession: { state: "locked" | "unlocked" } = { state: "locked" };
+		const lockAllSpy = vi.fn(async (_reason?: string) => {
+			mockSession.state = "locked";
+		});
+		const mockSessions = {
+			isDisposed: () => false,
+			all: () => [mockSession],
+			lockAll: lockAllSpy,
+		} as unknown as SessionManager;
+
+		const settings: VeneerSettings = {
+			...DEFAULT_SETTINGS,
+			idleTimeoutSec: 15,
+			contentProtection: true,
+			clearClipboardOnLock: false,
+		};
+
+		const lockEngine = new LockEngine(
+			mockPlugin,
+			mockWorkspace,
+			mockSessions,
+			() => settings,
+		);
+
+		try {
+			lockEngine.start();
+			expect(vi.getTimerCount()).toBe(0);
+
+			for (const eventName of ["window:wheel", "window:keydown", "window:mousedown", "window:touchstart"]) {
+				const handlers = domListeners.get(eventName) ?? [];
+				expect(handlers).toHaveLength(1);
+				handlers[0]?.();
+				expect(vi.getTimerCount()).toBe(0);
+			}
+
+			mockSession.state = "unlocked";
+			lockEngine.onSessionUnlocked();
+			expect(vi.getTimerCount()).toBe(1);
+
+			const setTimeoutSpy = vi.spyOn(window, "setTimeout");
+			setTimeoutSpy.mockClear();
+
+			const wheelHandler = domListeners.get("window:wheel")?.[0];
+			expect(wheelHandler).toBeDefined();
+
+			for (let i = 0; i < 20; i += 1) {
+				vi.advanceTimersByTime(10);
+				wheelHandler?.();
+			}
+			expect(setTimeoutSpy).not.toHaveBeenCalled();
+			expect(vi.getTimerCount()).toBe(1);
+
+			vi.advanceTimersByTime(300);
+			wheelHandler?.();
+			expect(setTimeoutSpy).not.toHaveBeenCalled();
+
+			await vi.advanceTimersByTimeAsync(14_500);
+			expect(lockAllSpy).not.toHaveBeenCalled();
+			expect(mockSession.state).toBe("unlocked");
+			expect(vi.getTimerCount()).toBe(1);
+
+			await vi.advanceTimersByTimeAsync(500);
+			expect(lockAllSpy).toHaveBeenCalledTimes(1);
+			expect(lockAllSpy).toHaveBeenCalledWith("idle-timeout");
+			expect(mockSession.state).toBe("locked");
+			expect(vi.getTimerCount()).toBe(0);
+
+			mockSession.state = "unlocked";
+			lockEngine.onSessionUnlocked();
+			expect(vi.getTimerCount()).toBe(1);
+
+			setTimeoutSpy.mockClear();
+			vi.advanceTimersByTime(ACTIVITY_THROTTLE_MS);
+			wheelHandler?.();
+			expect(setTimeoutSpy).toHaveBeenCalledTimes(1);
+			expect(vi.getTimerCount()).toBe(1);
+
+			mockSession.state = "locked";
+			lockEngine.onSessionLocked();
+			expect(vi.getTimerCount()).toBe(0);
+			expect(bridge.browserWindow.setContentProtection).toHaveBeenLastCalledWith(false);
+		} finally {
+			lockEngine.stop();
+			vi.useRealTimers();
+			if (origDocument) {
+				Object.defineProperty(globalThis, "document", origDocument);
+			} else {
+				Reflect.deleteProperty(globalThis, "document");
+			}
+		}
+	});
+
+	it("selectively masks only inactive or detached sessions on active-leaf-change and layout-change (Issue #9)", async () => {
+		vi.useFakeTimers();
+		const bridge = installElectronMock({ mode: "scoped-remote-only" });
+		activeBridge = bridge;
+
+		const origDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+		Object.defineProperty(globalThis, "document", {
+			value: { visibilityState: "visible" as DocumentVisibilityState },
+			configurable: true,
+		});
+
+		const workspaceListeners = new Map<string, Array<() => void>>();
+		const mockPlugin = {
+			registerDomEvent: () => undefined,
+			registerEvent: () => undefined,
+			register: () => undefined,
+		} as unknown as Plugin;
+
+		const viewA = new MarkdownView(null as never);
+		const viewB = new MarkdownView(null as never);
+		let activeView: MarkdownView | null = viewA;
+		let attachedViews: MarkdownView[] = [viewA, viewB];
+
+		const mockWorkspace = {
+			on: (event: string, cb: () => void) => {
+				const list = workspaceListeners.get(event) ?? [];
+				list.push(cb);
+				workspaceListeners.set(event, list);
+				return { id: event };
+			},
+			getActiveViewOfType: vi.fn((_ctor: unknown) => activeView),
+			iterateAllLeaves: vi.fn((cb: (leaf: { view: unknown }) => void) => {
+				for (const view of attachedViews) {
+					cb({ view });
+				}
+			}),
+		} as unknown as Workspace;
+
+		const sessionA = {
+			view: viewA,
+			file: { path: "note-a.md" },
+			state: "unlocked" as "locked" | "unlocked",
+		} as unknown as ViewSession;
+		const sessionB = {
+			view: viewB,
+			file: { path: "note-b.md" },
+			state: "locked" as "locked" | "unlocked",
+		} as unknown as ViewSession;
+
+		const lockSpy = vi.fn(async (session: ViewSession, _reason: string) => {
+			session.state = "locked";
+		});
+		const lockAllSpy = vi.fn(async (_reason?: string) => {
+			sessionA.state = "locked";
+			sessionB.state = "locked";
+		});
+		const mockSessions = {
+			isDisposed: () => false,
+			all: () => [sessionA, sessionB],
+			lock: lockSpy,
+			lockAll: lockAllSpy,
+		} as unknown as SessionManager;
+
+		const settings: VeneerSettings = {
+			...DEFAULT_SETTINGS,
+			idleTimeoutSec: 60,
+			contentProtection: true,
+			clearClipboardOnLock: false,
+		};
+
+		const lockEngine = new LockEngine(
+			mockPlugin,
+			mockWorkspace,
+			mockSessions,
+			() => settings,
+		);
+
+		try {
+			lockEngine.start();
+			lockEngine.onSessionUnlocked();
+			expect(vi.getTimerCount()).toBe(1);
+			expect(bridge.browserWindow.setContentProtection).toHaveBeenLastCalledWith(true);
+
+			const leafChangeHandler = workspaceListeners.get("active-leaf-change")?.[0];
+			const layoutChangeHandler = workspaceListeners.get("layout-change")?.[0];
+			expect(leafChangeHandler).toBeDefined();
+			expect(layoutChangeHandler).toBeDefined();
+
+			leafChangeHandler?.();
+			layoutChangeHandler?.();
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(lockSpy).not.toHaveBeenCalled();
+			expect(lockAllSpy).not.toHaveBeenCalled();
+			expect(sessionA.state).toBe("unlocked");
+			expect(bridge.browserWindow.setContentProtection).toHaveBeenLastCalledWith(true);
+
+			sessionB.state = "unlocked";
+			activeView = viewB;
+			leafChangeHandler?.();
+			await Promise.resolve();
+			await Promise.resolve();
+			await Promise.resolve();
+
+			expect(lockSpy).toHaveBeenCalledTimes(1);
+			expect(lockSpy).toHaveBeenCalledWith(sessionA, "leaf-change");
+			expect(sessionA.state).toBe("locked");
+			expect(sessionB.state).toBe("unlocked");
+			expect(bridge.browserWindow.setContentProtection).toHaveBeenLastCalledWith(true);
+			expect(vi.getTimerCount()).toBe(1);
+
+			lockSpy.mockClear();
+			activeView = null;
+			attachedViews = [];
+			layoutChangeHandler?.();
+			await Promise.resolve();
+			await Promise.resolve();
+			await Promise.resolve();
+
+			expect(lockSpy).toHaveBeenCalledTimes(1);
+			expect(lockSpy).toHaveBeenCalledWith(sessionB, "layout-change");
+			expect(sessionB.state).toBe("locked");
+			expect(bridge.browserWindow.setContentProtection).toHaveBeenLastCalledWith(false);
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			lockEngine.stop();
+			vi.useRealTimers();
+			if (origDocument) {
+				Object.defineProperty(globalThis, "document", origDocument);
+			} else {
+				Reflect.deleteProperty(globalThis, "document");
+			}
+		}
+	});
+
+	it("skips loadData and saveData in ProtectedRegistry.remove when deleting an untracked file (Issue #9)", async () => {
+		let persisted: Record<string, unknown> = {};
+		const loadData = vi.fn(async () => persisted);
+		const saveData = vi.fn(async (next: Record<string, unknown>) => {
+			persisted = next;
+		});
+		const mockPlugin = {
+			loadData,
+			saveData,
+		} as unknown as Plugin;
+
+		const registry = new ProtectedRegistry(mockPlugin);
+		await registry.add("tracked.md", { noteId: "n1", addedAt: 1, mode: "portable" });
+		expect(registry.has("tracked.md")).toBe(true);
+
+		loadData.mockClear();
+		saveData.mockClear();
+
+		await registry.remove("untracked-file.md");
+		expect(loadData).toHaveBeenCalledTimes(0);
+		expect(saveData).toHaveBeenCalledTimes(0);
+		expect(registry.has("tracked.md")).toBe(true);
+
+		await registry.remove("tracked.md");
+		expect(saveData).toHaveBeenCalledTimes(1);
+		expect(registry.has("tracked.md")).toBe(false);
+	});
+
+	it("removes a detached session from byView and byPath in pruneDetached when lockingPromise rejects without unhandled rejection (Issue #9)", async () => {
+		const sessions = new SessionManager(
+			{} as never,
+			{
+				onUnlocked: () => undefined,
+				onLocked: () => undefined,
+				onUnlockBlocked: () => undefined,
+			},
+			() => "::",
+			() => null,
+		);
+		const view = new MarkdownView(null as never);
+		const path = "detached-note.md";
+		let rejectLock!: (reason?: unknown) => void;
+		const lockingPromise = new Promise<void>((_resolve, reject) => {
+			rejectLock = reject;
+		});
+		const session = {
+			view,
+			file: { path },
+			state: "unlocked",
+			lockingPromise,
+		} as unknown as ViewSession;
+
+		const internal = sessions as unknown as {
+			byView: WeakMap<MarkdownView, ViewSession>;
+			byPath: Map<string, Set<ViewSession>>;
+		};
+		internal.byView.set(view, session);
+		internal.byPath.set(path, new Set([session]));
+
+		expect(sessions.get(view)).toBe(session);
+		expect(sessions.getAllByPath(path)).toEqual([session]);
+
+		const unhandled: unknown[] = [];
+		const onUnhandledRejection = (reason: unknown): void => {
+			unhandled.push(reason);
+		};
+		process.on("unhandledRejection", onUnhandledRejection);
+		try {
+			sessions.pruneDetached(new Set());
+			expect(sessions.get(view)).toBe(session);
+
+			rejectLock(new Error("simulated lock failure"));
+			await new Promise<void>((resolve) => setImmediate(resolve));
+
+			expect(unhandled).toEqual([]);
+			expect(sessions.get(view)).toBeNull();
+			expect(sessions.getAllByPath(path)).toEqual([]);
+		} finally {
+			process.off("unhandledRejection", onUnhandledRejection);
 		}
 	});
 });

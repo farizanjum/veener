@@ -18,21 +18,35 @@ interface RegistryData {
 
 export class ProtectedRegistry {
 	private data: RegistryData = { entries: {} };
+	private saveChain: Promise<void> = Promise.resolve();
 
+	/** Creates a `ProtectedRegistry` persisted via `plugin.loadData()` and `plugin.saveData()`. */
 	constructor(private readonly plugin: Plugin) {}
 
+	/** Loads persisted registry entries from plugin data storage. */
 	async load(): Promise<void> {
 		const raw = (await this.plugin.loadData()) as { entries?: Record<string, RegistryEntry> } | null;
-		if (raw && typeof raw === "object" && raw.entries) {
-			this.data = { entries: raw.entries };
+		if (raw && typeof raw === "object" && raw.entries && typeof raw.entries === "object") {
+			this.data = { entries: { ...raw.entries } };
 		}
 	}
 
+	/** Persists current registry entries into plugin data storage while preserving other plugin keys. */
 	async save(): Promise<void> {
-		const raw = (await this.plugin.loadData()) as Record<string, unknown> | null;
-		await this.plugin.saveData({ ...(raw ?? {}), entries: this.data.entries });
+		const run = async (): Promise<void> => {
+			const snapshot = { ...this.data.entries };
+			const raw = (await this.plugin.loadData()) as Record<string, unknown> | null;
+			await this.plugin.saveData({ ...(raw ?? {}), entries: snapshot });
+		};
+		const next = this.saveChain.then(run, run);
+		this.saveChain = next.then(
+			() => undefined,
+			() => undefined,
+		);
+		return next;
 	}
 
+	/** Returns a shallow copy of the path-to-entry mapping. */
 	entriesRecord(): Record<string, RegistryEntry> {
 		return { ...this.data.entries };
 	}
@@ -48,17 +62,22 @@ export class ProtectedRegistry {
 		await this.add(path, entry);
 	}
 
+	/** Adds or updates `path` in the protected-note registry and persists the change. */
 	async add(path: string, entry: RegistryEntry): Promise<void> {
 		this.data.entries[path] = entry;
 		await this.save();
 	}
 
+	/** Removes `path` from the protected-note registry if present and persists the change. */
 	async remove(path: string): Promise<void> {
+		if (!this.has(path)) return;
 		delete this.data.entries[path];
 		await this.save();
 	}
 
+	/** Moves the registry entry from `oldPath` to `newPath` if `oldPath` is tracked, then persists the change. */
 	async rename(oldPath: string, newPath: string): Promise<void> {
+		if (!this.has(oldPath) || oldPath === newPath) return;
 		const entry = this.data.entries[oldPath];
 		if (!entry) return;
 		delete this.data.entries[oldPath];
@@ -66,10 +85,12 @@ export class ProtectedRegistry {
 		await this.save();
 	}
 
+	/** Lists all tracked protected notes as `{ path, entry }` pairs. */
 	list(): { path: string; entry: RegistryEntry }[] {
 		return Object.entries(this.data.entries).map(([path, entry]) => ({ path, entry }));
 	}
 
+	/** Clears all entries from the protected-note registry and persists the empty state. */
 	async clear(): Promise<void> {
 		this.data = { entries: {} };
 		await this.save();
