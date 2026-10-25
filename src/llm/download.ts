@@ -892,6 +892,10 @@ async function singleStreamDownload(
 		response.destroy();
 		throw new Error("paused");
 	}
+	if (existing === 0 && response.statusCode === 206) {
+		response.destroy();
+		throw new Error("unexpected 206 Partial Content for a full download");
+	}
 	if (existing > 0 && response.statusCode === 206) {
 		const contentRange = response.headers["content-range"];
 		const match =
