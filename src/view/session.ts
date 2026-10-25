@@ -2261,7 +2261,15 @@ export class SessionManager {
 			if (!activeViews.has(session.view)) {
 				if (session.lockingPromise !== null) {
 					const cleanup = (): void => {
-						if (!this.isDisposed() && this.byView.get(session.view) === session) {
+						if (this.isDisposed()) return;
+						if (typeof this.app?.workspace?.iterateAllLeaves === "function") {
+							const open = new Set<unknown>();
+							this.app.workspace.iterateAllLeaves((leaf) => {
+								if (leaf && leaf.view) open.add(leaf.view);
+							});
+							if (open.has(session.view)) return;
+						}
+						if (this.byView.get(session.view) === session) {
 							this.byView.delete(session.view);
 							this.removeFromPath(session.file.path, session);
 						}
