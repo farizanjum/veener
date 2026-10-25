@@ -1803,7 +1803,24 @@ describe("VeneerPlugin.onunload and registered cleanup lifecycle regressions (Is
 	});
 
 	it("forwards realText from an unlocked session to generator.generate() in refreshDecoy() and passes null when already locked", async () => {
-		const harness = createPluginUnloadHarness(VeneerPlugin);
+		const lockModifyGate = createDeferred<void>();
+		const lockModifyStarted = createDeferred<void>();
+		let holdLockModify = false;
+
+		const harness = createPluginUnloadHarness(VeneerPlugin, {
+			onModifyStart: () => {
+				if (holdLockModify) {
+					lockModifyStarted.resolve();
+				}
+			},
+			modifyGateForPath: () => {
+				if (holdLockModify) {
+					holdLockModify = false;
+					return lockModifyGate.promise;
+				}
+				return null;
+			},
+		});
 		activeHarness = harness;
 
 		const {
@@ -1828,7 +1845,7 @@ describe("VeneerPlugin.onunload and registered cleanup lifecycle regressions (Is
 				_seed: number,
 				_options?: unknown,
 			) => ({
-				text: "# Fresh Cover\n\nfresh decoy body with enough words to pass validation checks cleanly today for the test",
+				text: "# RefreshOverlapCheck\n\nfresh decoy body with enough words to pass validation checks cleanly today for the test and plenty of extra harmless everyday prose about weekend grocery shopping and afternoon coffee walks in the neighborhood park",
 				source: "llm" as const,
 				attempts: 1,
 			}),
@@ -1862,8 +1879,25 @@ describe("VeneerPlugin.onunload and registered cleanup lifecycle regressions (Is
 		expect(generateSpy.mock.calls[1]?.[2]).toBeNull();
 		expect(generateSpy.mock.calls[1]?.[4]).not.toHaveProperty("realWordCount");
 
+		expect(await harness.sessions.unlock(session, TEST_PASSWORD)).toBe("ok");
+		pane.typeInEditor("First secret text A saved by in-flight lock");
+		holdLockModify = true;
+		const inFlightLock = harness.sessions.lock(session, "blur");
+
+		pane.typeInEditor("Second secret text B typed during disk write");
+		const joinedRefresh = refreshDecoy(file);
+		await lockModifyStarted.promise;
+		lockModifyGate.resolve();
+		await Promise.all([inFlightLock, joinedRefresh]);
+
+		expect(generateSpy).toHaveBeenCalledTimes(3);
+		expect(generateSpy.mock.calls[2]?.[2]).toBe(
+			"First secret text A saved by in-flight lock\0Second secret text B typed during disk write",
+		);
+		expect(session.state).toBe("locked");
+
 		harness.unloadPlugin("onunload-first");
 		harness.restorePrototype();
 		activeHarness = null;
-	});
+	}, 20000);
 });

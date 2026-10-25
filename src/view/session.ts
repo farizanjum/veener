@@ -195,6 +195,7 @@ export class SessionManager {
 	private readonly reservedPaths = new Map<string, number>();
 	private readonly pendingLocks = new Set<ViewSession>();
 	private readonly lockTextObservers = new WeakMap<ViewSession, Set<(text: string) => void>>();
+	private readonly activeLockSnapshots = new WeakMap<ViewSession, string[]>();
 	private readonly deferredSaves = new Map<string, Set<() => void>>();
 
 	/** Monotonic epoch fencing duress writes; `runReservedWrite` declines stale snapshots. */
@@ -2298,6 +2299,8 @@ export class SessionManager {
 			session.reencryptTimer = null;
 		}
 		this.pendingLocks.delete(session);
+		this.lockTextObservers.delete(session);
+		this.activeLockSnapshots.delete(session);
 		this.byView.delete(session.view);
 		this.removeFromPath(session.file.path, session);
 		this.hooks.onLocked(session);
@@ -2692,6 +2695,16 @@ export class SessionManager {
 				this.lockTextObservers.set(session, observers);
 			}
 			observers.add(onTextCaptured);
+			const priorSnapshots = this.activeLockSnapshots.get(session);
+			if (priorSnapshots) {
+				for (const snap of priorSnapshots) {
+					try {
+						onTextCaptured(snap);
+					} catch {
+						// Ignore observer errors during lock replay
+					}
+				}
+			}
 			if (
 				this.isAttached(session) &&
 				session.view.file === session.file &&
@@ -2712,9 +2725,20 @@ export class SessionManager {
 		if (session.lockingPromise !== null) return session.lockingPromise;
 		if (session.state !== "unlocked") {
 			this.lockTextObservers.delete(session);
+			this.activeLockSnapshots.delete(session);
 			return Promise.resolve();
 		}
+		this.activeLockSnapshots.set(session, []);
 		const notifyLockText = (text: string): void => {
+			if (!text) return;
+			let snapshots = this.activeLockSnapshots.get(session);
+			if (!snapshots) {
+				snapshots = [];
+				this.activeLockSnapshots.set(session, snapshots);
+			}
+			if (!snapshots.includes(text)) {
+				snapshots.push(text);
+			}
 			const observers = this.lockTextObservers.get(session);
 			if (!observers) return;
 			for (const cb of observers) {
@@ -2918,6 +2942,7 @@ export class SessionManager {
 				lockError = error;
 			} finally {
 				this.lockTextObservers.delete(session);
+				this.activeLockSnapshots.delete(session);
 				releaseLocalDek();
 				const ownedOnExit =
 					!this.isDisposed() &&

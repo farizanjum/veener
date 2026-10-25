@@ -1007,6 +1007,7 @@ export default class VeneerPlugin extends Plugin {
 			for (const session of this.sessions.getAllByPath(file.path)) {
 				if (
 					session.state === "unlocked" &&
+					session.lockingPromise === null &&
 					session.view.file === file &&
 					session.view.editor &&
 					typeof session.view.editor.getValue === "function"
@@ -1107,13 +1108,18 @@ export default class VeneerPlugin extends Plugin {
 			const seed = Date.now() % 100000;
 			const template =
 				DECOY_TEMPLATES[seed % DECOY_TEMPLATES.length] ?? DECOY_TEMPLATES[0]!;
+			const replacement = weaveTemplate(template, {
+				topics: [...this.settings.interests],
+				names: [...this.settings.coverNames],
+				now: new Date(),
+				seed,
+			});
+			if (!validateDecoy(replacement.trim(), capturedSnapshots.join("\0")).ok) {
+				capturedSnapshots.length = 0;
+				return;
+			}
 			result = {
-				text: weaveTemplate(template, {
-					topics: [...this.settings.interests],
-					names: [...this.settings.coverNames],
-					now: new Date(),
-					seed,
-				}),
+				text: replacement,
 				source: "template",
 				attempts: result.attempts,
 			};
