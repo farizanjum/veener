@@ -994,11 +994,18 @@ export default class VeneerPlugin extends Plugin {
 			return;
 		}
 		const startEpoch = this.sessions.currentKillEpoch();
-		let realText: string | null = null;
+		const capturedSnapshots: string[] = [];
+		let latestRealText: string | null = null;
+		const recordSnapshot = (text: string): void => {
+			if (!text) return;
+			latestRealText = text;
+			if (!capturedSnapshots.includes(text)) {
+				capturedSnapshots.push(text);
+			}
+		};
 		try {
 			for (const session of this.sessions.getAllByPath(file.path)) {
 				if (
-					realText === null &&
 					session.state === "unlocked" &&
 					session.view.file === file &&
 					session.view.editor &&
@@ -1010,37 +1017,59 @@ export default class VeneerPlugin extends Plugin {
 						editorText !== session.decoyBody &&
 						parseFileContent(editorText) === null
 					) {
-						realText = editorText;
+						recordSnapshot(editorText);
 					}
 				}
 				if (session.state === "unlocked" || session.lockingPromise !== null) {
-					await this.sessions.lock(session, "refresh-decoy");
+					await this.sessions.lock(session, "refresh-decoy", recordSnapshot);
 				}
 			}
 		} catch {
-			realText = null;
+			capturedSnapshots.length = 0;
+			latestRealText = null;
 			return;
 		}
-		if (!this.isLive() || this.sessions.currentKillEpoch() !== startEpoch) return;
+		if (!this.isLive() || this.sessions.currentKillEpoch() !== startEpoch) {
+			capturedSnapshots.length = 0;
+			latestRealText = null;
+			return;
+		}
 		const content = await this.app.vault.read(file);
-		if (!this.isLive() || this.sessions.currentKillEpoch() !== startEpoch) return;
+		if (!this.isLive() || this.sessions.currentKillEpoch() !== startEpoch) {
+			capturedSnapshots.length = 0;
+			latestRealText = null;
+			return;
+		}
 		const parsed = parseFileContent(content);
 		if (!parsed) {
+			capturedSnapshots.length = 0;
+			latestRealText = null;
 			new Notice("Not a protected note.");
 			return;
 		}
 		if (this.modelDeletionInFlight || this.modelDeletionEpoch !== deletionEpoch) {
+			capturedSnapshots.length = 0;
+			latestRealText = null;
 			new Notice("The model is being deleted. Try again after deletion finishes.");
 			return;
 		}
 		let result: Awaited<ReturnType<DecoyGenerator["generate"]>>;
 		try {
+			const combinedRealText =
+				capturedSnapshots.length === 0
+					? null
+					: capturedSnapshots.length === 1
+						? capturedSnapshots[0]!
+						: capturedSnapshots.join("\0");
+			const latestSnapshot = latestRealText as string | null;
 			const realWordCount =
-				realText !== null ? realText.trim().split(/\s+/).filter(Boolean).length : undefined;
+				latestSnapshot !== null
+					? latestSnapshot.trim().split(/\s+/).filter(Boolean).length
+					: undefined;
 			result = await this.generator.generate(
 				"auto",
 				this.settings.interests,
-				realText,
+				combinedRealText,
 				Date.now() % 100000,
 				{
 					persona: this.settings.coverPersona || undefined,
@@ -1050,24 +1079,48 @@ export default class VeneerPlugin extends Plugin {
 				},
 			);
 		} finally {
-			realText = null;
+			latestRealText = null;
 		}
-		if (!this.isLive() || this.sessions.currentKillEpoch() !== startEpoch) return;
+		if (!this.isLive() || this.sessions.currentKillEpoch() !== startEpoch) {
+			capturedSnapshots.length = 0;
+			return;
+		}
 		if (this.modelDeletionInFlight || this.modelDeletionEpoch !== deletionEpoch) {
+			capturedSnapshots.length = 0;
 			new Notice("The model is being deleted. Try again after deletion finishes.");
 			return;
 		}
-		const { title: rawTitle, body: decoyBody } = splitTitleFromBody(result.text.trim());
-		const finalBody = decoyBody.length > 0 ? decoyBody : result.text.trim();
 		try {
 			for (const session of this.sessions.getAllByPath(file.path)) {
 				if (session.state === "unlocked" || session.lockingPromise !== null) {
-					await this.sessions.lock(session, "refresh-decoy");
+					await this.sessions.lock(session, "refresh-decoy", recordSnapshot);
 				}
 			}
 		} catch {
+			capturedSnapshots.length = 0;
 			return;
 		}
+		if (
+			capturedSnapshots.length > 0 &&
+			!validateDecoy(result.text.trim(), capturedSnapshots.join("\0")).ok
+		) {
+			const seed = Date.now() % 100000;
+			const template =
+				DECOY_TEMPLATES[seed % DECOY_TEMPLATES.length] ?? DECOY_TEMPLATES[0]!;
+			result = {
+				text: weaveTemplate(template, {
+					topics: [...this.settings.interests],
+					names: [...this.settings.coverNames],
+					now: new Date(),
+					seed,
+				}),
+				source: "template",
+				attempts: result.attempts,
+			};
+		}
+		capturedSnapshots.length = 0;
+		const { title: rawTitle, body: decoyBody } = splitTitleFromBody(result.text.trim());
+		const finalBody = decoyBody.length > 0 ? decoyBody : result.text.trim();
 		if (!this.isLive() || this.sessions.currentKillEpoch() !== startEpoch) return;
 		if (this.abortIfLiveSession(file, "Note was unlocked during refresh. Mask it and try again.")) {
 			return;

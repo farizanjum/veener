@@ -1806,10 +1806,19 @@ describe("VeneerPlugin.onunload and registered cleanup lifecycle regressions (Is
 		const harness = createPluginUnloadHarness(VeneerPlugin);
 		activeHarness = harness;
 
-		const { file, pane, session } = await harness.seedProtectedNote({
+		const {
+			file,
+			pane,
+			session,
+			initialFileContent,
+		} = await harness.seedProtectedNote({
 			path: "RefreshOverlapCheck.md",
 			realText: SECRET_P0,
 		});
+		const pane2 = harness.createPane(file, DEFAULT_DECOY);
+		pane2.view.setViewData(initialFileContent, true);
+		const session2 = harness.sessions.get(pane2.view);
+		expect(session2).not.toBeNull();
 
 		const generateSpy = vi.fn(
 			async (
@@ -1819,7 +1828,7 @@ describe("VeneerPlugin.onunload and registered cleanup lifecycle regressions (Is
 				_seed: number,
 				_options?: unknown,
 			) => ({
-				text: "# Fresh Cover\n\nfresh decoy body",
+				text: "# Fresh Cover\n\nfresh decoy body with enough words to pass validation checks cleanly today for the test",
 				source: "llm" as const,
 				attempts: 1,
 			}),
@@ -1835,13 +1844,18 @@ describe("VeneerPlugin.onunload and registered cleanup lifecycle regressions (Is
 		).refreshDecoy.bind(harness.plugin);
 
 		expect(await harness.sessions.unlock(session, TEST_PASSWORD)).toBe("ok");
+		expect(await harness.sessions.unlock(session2!, TEST_PASSWORD)).toBe("ok");
 		pane.typeInEditor("Unlocked secret note text in editor");
+		pane2.typeInEditor("Second unlocked pane with newer secret edit");
 
 		await refreshDecoy(file);
 		expect(generateSpy).toHaveBeenCalledTimes(1);
-		expect(generateSpy.mock.calls[0]?.[2]).toBe("Unlocked secret note text in editor");
-		expect(generateSpy.mock.calls[0]?.[4]).toMatchObject({ realWordCount: 6 });
+		expect(generateSpy.mock.calls[0]?.[2]).toBe(
+			"Unlocked secret note text in editor\0Second unlocked pane with newer secret edit",
+		);
+		expect(generateSpy.mock.calls[0]?.[4]).toMatchObject({ realWordCount: 7 });
 		expect(session.state).toBe("locked");
+		expect(session2!.state).toBe("locked");
 
 		await refreshDecoy(file);
 		expect(generateSpy).toHaveBeenCalledTimes(2);

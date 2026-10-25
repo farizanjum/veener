@@ -19,6 +19,21 @@ describe("validateDecoy", () => {
 		expect(result.reason).toBe("echoes real content");
 	});
 
+	it("checks every null-delimited snapshot in realText without creating cross-boundary shingles", () => {
+		const snap1 = "first secret pane has alpha bravo charlie delta echo foxtrot golf hotel";
+		const snap2 = "second secret pane has india juliet kilo lima mike november oscar papa";
+		const combined = `${snap1}\0${snap2}`;
+
+		const echoesSecond = `${CLEAN} india juliet kilo lima mike november oscar papa`;
+		expect(validateDecoy(echoesSecond, combined)).toEqual({
+			ok: false,
+			reason: "echoes real content",
+		});
+
+		const boundarySpan = `${CLEAN} echo foxtrot golf hotel second secret pane has`;
+		expect(validateDecoy(boundarySpan, combined).ok).toBe(true);
+	});
+
 	it("rejects emails, urls, and phone numbers", () => {
 		expect(validateDecoy(`${CLEAN} contact me at fariz@example.com`, null).reason).toBe(
 			"contains email",

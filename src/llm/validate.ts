@@ -141,7 +141,12 @@ export function validateDecoy(
 		if (lowered.includes(cliche)) return { ok: false, reason: "contains AI cliche" };
 	}
 	if (realText !== null) {
-		const real = shinglesOf(realText, options.shingleSize);
+		const real = new Set<string>();
+		for (const snapshot of realText.split("\0")) {
+			for (const shingle of shinglesOf(snapshot, options.shingleSize)) {
+				real.add(shingle);
+			}
+		}
 		if (real.size > 0) {
 			for (const shingle of shinglesOf(candidate, options.shingleSize)) {
 				if (real.has(shingle)) {
