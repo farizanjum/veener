@@ -26,7 +26,9 @@ const FRONTMATTER_SUFFIX = "\n---\n";
 const FRONTMATTER_BLOCK_RE = /^\s*---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
 const STACKED_FRONTMATTER_RE = /^\s*---\r?\ndraft_cache:\s*"deocy:v1:[^"]*"\r?\n---\r?\n?/;
 const ORPHANED_FRONTMATTER_RE = /^\s*draft_cache:\s*"deocy:v1:[^"]*"\r?\n---\r?\n?/;
+const CANONICAL_B64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
 
+/** Strips leading stacked or orphaned `draft_cache` YAML frontmatter blocks from `text`. */
 export function stripDraftCacheBlocks(text: string): string {
 	let current = text;
 	while (true) {
@@ -49,17 +51,20 @@ const WRAP_NONCE_LENGTH = 12;
 const DEK_LENGTH = 32;
 const NOTE_ID_BYTES = 16;
 
+/** Encrypted binary attachment entry stored inside a `PayloadV1` envelope. */
 export interface EncryptedImageEntry {
 	mime: string;
 	nonce: string; // base64
 	ct: string; // base64
 }
 
+/** Encrypted real note title stored inside a `PayloadV1` envelope. */
 export interface EncryptedTitle {
 	nonce: string; // base64
 	ct: string; // base64
 }
 
+/** Version 1 encrypted note envelope persisted in the file's frontmatter or trailing HTML comment. */
 export interface PayloadV1 {
 	v: 1;
 	note_id: string; // random hex UUID, survives file renames
@@ -71,18 +76,52 @@ export interface PayloadV1 {
 	title?: EncryptedTitle;
 }
 
+/** Result of parsing a protected note into its visible decoy markdown and encrypted `PayloadV1` envelope. */
 export interface ParsedFile {
 	decoyBody: string;
 	payload: PayloadV1;
 }
 
+/** Snapshot of an encrypted image entry used to verify cache freshness against in-place mutations. */
+interface CachedImageSnapshot {
+	readonly key: string;
+	readonly mime: string;
+	readonly nonce: string;
+	readonly ct: string;
+}
+
+/** Cached frontmatter block and field-reference snapshot for a `PayloadV1` object. */
+interface CachedFrontmatterEntry {
+	readonly keyCount: number;
+	readonly noteId: string;
+	readonly kdfAlgo: string;
+	readonly kdfSalt: string;
+	readonly kdfTime: number;
+	readonly kdfMem: number;
+	readonly kdfPar: number;
+	readonly cipherAlgo: string;
+	readonly cipherNonce: string;
+	readonly cipherCt: string;
+	readonly dekWrap: string;
+	readonly pad: number;
+	readonly hasTitle: boolean;
+	readonly titleNonce: string | undefined;
+	readonly titleCt: string | undefined;
+	readonly imagesSnapshot: readonly CachedImageSnapshot[] | null;
+	readonly frontmatter: string;
+}
+
+const frontmatterCache = new WeakMap<PayloadV1, CachedFrontmatterEntry>();
+
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
+/** Encodes a `Uint8Array` into a standard base64 string. */
 export function toB64(bytes: Uint8Array): string {
 	return Buffer.from(bytes).toString("base64");
 }
 
+/** Decodes a base64 string into an `ArrayBuffer`-backed `Uint8Array`. */
 export function fromB64(b64: string): Uint8Array<ArrayBuffer> {
 	return new Uint8Array(Buffer.from(b64, "base64"));
 }
@@ -97,12 +136,14 @@ function aadFor(noteId: string): Uint8Array<ArrayBuffer> {
 	return encoder.encode(`${NOTE_AAD_PREFIX}${noteId}`);
 }
 
+/** Parses `fileContent` for a Veneer `PayloadV1` in either YAML frontmatter or a legacy HTML comment. */
 export function parseFileContent(fileContent: string): ParsedFile | null {
 	const frontmatterResult = parseFrontmatterPayload(fileContent);
 	if (frontmatterResult) return frontmatterResult;
 	return parseCommentPayload(fileContent);
 }
 
+/** Decodes and validates a base64-encoded JSON string as a `PayloadV1` object. */
 function decodePayloadB64(b64: string): PayloadV1 | null {
 	if (!b64) return null;
 	try {
@@ -110,12 +151,20 @@ function decodePayloadB64(b64: string): PayloadV1 | null {
 		if (parsed === null || typeof parsed !== "object") return null;
 		const candidate = parsed as PayloadV1;
 		if (candidate.v !== 1 || typeof candidate.note_id !== "string") return null;
+		if (b64.length % 4 === 0 && CANONICAL_B64_RE.test(b64)) {
+			const frontmatter = `${FRONTMATTER_PREFIX}${FRONTMATTER_KEY}: "deocy:v1:${b64}"${FRONTMATTER_SUFFIX}`;
+			const entry = buildFrontmatterCacheEntry(candidate, frontmatter);
+			if (entry) {
+				frontmatterCache.set(candidate, entry);
+			}
+		}
 		return candidate;
 	} catch {
 		return null;
 	}
 }
 
+/** Extracts a `ParsedFile` from a `draft_cache` YAML frontmatter block if present and valid. */
 function parseFrontmatterPayload(fileContent: string): ParsedFile | null {
 	let cursor = fileContent;
 	while (true) {
@@ -140,6 +189,7 @@ function parseFrontmatterPayload(fileContent: string): ParsedFile | null {
 	}
 }
 
+/** Extracts a `ParsedFile` from a trailing legacy `<!--deocy:v1:...-->` HTML comment if present and valid. */
 function parseCommentPayload(fileContent: string): ParsedFile | null {
 	const markerIndex = fileContent.lastIndexOf(PAYLOAD_MARKER_PREFIX);
 	if (markerIndex === -1) return null;
@@ -156,37 +206,227 @@ function parseCommentPayload(fileContent: string): ParsedFile | null {
 	return { decoyBody, payload };
 }
 
+function buildFrontmatterCacheEntry(
+	payload: PayloadV1,
+	frontmatter: string,
+): CachedFrontmatterEntry | null {
+	if (
+		payload.v !== 1 ||
+		typeof payload.note_id !== "string" ||
+		typeof payload.dek_wrap !== "string" ||
+		typeof payload.pad !== "number"
+	) {
+		return null;
+	}
+	const expectedTopKeys =
+		6 + (payload.images !== undefined ? 1 : 0) + (payload.title !== undefined ? 1 : 0);
+	if (Object.keys(payload).length !== expectedTopKeys) {
+		return null;
+	}
+	const kdf = payload.kdf;
+	if (
+		!kdf ||
+		typeof kdf !== "object" ||
+		Object.keys(kdf).length !== 5 ||
+		typeof kdf.algo !== "string" ||
+		typeof kdf.salt !== "string" ||
+		typeof kdf.time !== "number" ||
+		typeof kdf.mem !== "number" ||
+		typeof kdf.par !== "number"
+	) {
+		return null;
+	}
+	const cipher = payload.cipher;
+	if (
+		!cipher ||
+		typeof cipher !== "object" ||
+		Object.keys(cipher).length !== 3 ||
+		typeof cipher.algo !== "string" ||
+		typeof cipher.nonce !== "string" ||
+		typeof cipher.ct !== "string"
+	) {
+		return null;
+	}
+	const title = payload.title;
+	let titleNonce: string | undefined;
+	let titleCt: string | undefined;
+	if (title !== undefined) {
+		if (
+			!title ||
+			typeof title !== "object" ||
+			Object.keys(title).length !== 2 ||
+			typeof title.nonce !== "string" ||
+			typeof title.ct !== "string"
+		) {
+			return null;
+		}
+		titleNonce = title.nonce;
+		titleCt = title.ct;
+	}
+	const images = payload.images;
+	let imagesSnapshot: CachedImageSnapshot[] | null = null;
+	if (images !== undefined) {
+		if (!images || typeof images !== "object" || Array.isArray(images)) {
+			return null;
+		}
+		const keys = Object.keys(images);
+		imagesSnapshot = [];
+		for (const key of keys) {
+			const img = images[key];
+			if (
+				!img ||
+				typeof img !== "object" ||
+				Object.keys(img).length !== 3 ||
+				typeof img.mime !== "string" ||
+				typeof img.nonce !== "string" ||
+				typeof img.ct !== "string"
+			) {
+				return null;
+			}
+			imagesSnapshot.push({
+				key,
+				mime: img.mime,
+				nonce: img.nonce,
+				ct: img.ct,
+			});
+		}
+	}
+	return {
+		keyCount: expectedTopKeys,
+		noteId: payload.note_id,
+		kdfAlgo: kdf.algo,
+		kdfSalt: kdf.salt,
+		kdfTime: kdf.time,
+		kdfMem: kdf.mem,
+		kdfPar: kdf.par,
+		cipherAlgo: cipher.algo,
+		cipherNonce: cipher.nonce,
+		cipherCt: cipher.ct,
+		dekWrap: payload.dek_wrap,
+		pad: payload.pad,
+		hasTitle: title !== undefined,
+		titleNonce,
+		titleCt,
+		imagesSnapshot,
+		frontmatter,
+	};
+}
+
+/** Verifies that `payload` has not been mutated in place since `entry` was cached. */
+function isFrontmatterCacheValid(payload: PayloadV1, entry: CachedFrontmatterEntry): boolean {
+	const expectedTopKeys =
+		6 + (payload.images !== undefined ? 1 : 0) + (payload.title !== undefined ? 1 : 0);
+	if (
+		payload.v !== 1 ||
+		payload.note_id !== entry.noteId ||
+		payload.dek_wrap !== entry.dekWrap ||
+		payload.pad !== entry.pad ||
+		expectedTopKeys !== entry.keyCount ||
+		Object.keys(payload).length !== expectedTopKeys
+	) {
+		return false;
+	}
+	const kdf = payload.kdf;
+	if (
+		!kdf ||
+		typeof kdf !== "object" ||
+		Object.keys(kdf).length !== 5 ||
+		kdf.algo !== entry.kdfAlgo ||
+		kdf.salt !== entry.kdfSalt ||
+		kdf.time !== entry.kdfTime ||
+		kdf.mem !== entry.kdfMem ||
+		kdf.par !== entry.kdfPar
+	) {
+		return false;
+	}
+	const cipher = payload.cipher;
+	if (
+		!cipher ||
+		typeof cipher !== "object" ||
+		Object.keys(cipher).length !== 3 ||
+		cipher.algo !== entry.cipherAlgo ||
+		cipher.nonce !== entry.cipherNonce ||
+		cipher.ct !== entry.cipherCt
+	) {
+		return false;
+	}
+	const title = payload.title;
+	if (title === undefined) {
+		if (entry.hasTitle) return false;
+	} else {
+		if (
+			!entry.hasTitle ||
+			!title ||
+			typeof title !== "object" ||
+			Object.keys(title).length !== 2 ||
+			title.nonce !== entry.titleNonce ||
+			title.ct !== entry.titleCt
+		) {
+			return false;
+		}
+	}
+	const images = payload.images;
+	if (images === undefined) {
+		if (entry.imagesSnapshot !== null) return false;
+	} else {
+		if (
+			entry.imagesSnapshot === null ||
+			!images ||
+			typeof images !== "object" ||
+			Array.isArray(images)
+		) {
+			return false;
+		}
+		const keys = Object.keys(images);
+		if (keys.length !== entry.imagesSnapshot.length) return false;
+		for (let i = 0; i < keys.length; i += 1) {
+			const key = keys[i]!;
+			const img = images[key];
+			const snap = entry.imagesSnapshot[i]!;
+			if (
+				!img ||
+				typeof img !== "object" ||
+				Object.keys(img).length !== 3 ||
+				key !== snap.key ||
+				img.mime !== snap.mime ||
+				img.nonce !== snap.nonce ||
+				img.ct !== snap.ct
+			) {
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+/** Returns the cached or freshly encoded `draft_cache` YAML frontmatter block for `payload`. */
+function encodeFrontmatterForPayload(payload: PayloadV1): string {
+	const cached = frontmatterCache.get(payload);
+	if (cached && isFrontmatterCacheValid(payload, cached)) {
+		return cached.frontmatter;
+	}
+	const b64 = Buffer.from(JSON.stringify(payload), "utf8").toString("base64");
+	const frontmatter = `${FRONTMATTER_PREFIX}${FRONTMATTER_KEY}: "deocy:v1:${b64}"${FRONTMATTER_SUFFIX}`;
+	const entry = buildFrontmatterCacheEntry(payload, frontmatter);
+	if (entry) {
+		frontmatterCache.set(payload, entry);
+	} else {
+		frontmatterCache.delete(payload);
+	}
+	return frontmatter;
+}
+
+/** Serializes a decoy markdown body and encrypted `PayloadV1` envelope into on-disk file content. */
 export function serializeFile(decoyBody: string, payload: PayloadV1): string {
 	if (!payload || payload.v !== 1 || typeof payload.note_id !== "string") {
 		throw new Error("Invalid Veneer payload");
 	}
 	const cleanDecoy = stripDraftCacheBlocks(decoyBody);
-	const b64 = toB64(encoder.encode(JSON.stringify(payload)));
-	const frontmatter = `${FRONTMATTER_PREFIX}${FRONTMATTER_KEY}: "deocy:v1:${b64}"${FRONTMATTER_SUFFIX}`;
-	const rawFile = `${frontmatter}${cleanDecoy}\n`;
-	return matchDecoyToFileSize(rawFile, cleanDecoy, b64, frontmatter);
+	const frontmatter = encodeFrontmatterForPayload(payload);
+	return `${frontmatter}${cleanDecoy}\n`;
 }
 
-function matchDecoyToFileSize(rawFile: string, decoyBody: string, payloadB64: string, frontmatter: string): string {
-	const payloadBytes = frontmatter.length + payloadB64.length;
-	const targetDecoyBytes = Math.max(decoyBody.length, payloadBytes);
-	if (decoyBody.length >= targetDecoyBytes) return rawFile;
-	const padNeeded = targetDecoyBytes - decoyBody.length;
-	const padding = buildInvisiblePadding(padNeeded);
-	return `${frontmatter}${decoyBody}${padding}\n`;
-}
-
-function buildInvisiblePadding(byteCount: number): string {
-	const lines: string[] = [];
-	let remaining = byteCount;
-	while (remaining > 2) {
-		const lineLen = Math.min(remaining - 2, 80);
-		lines.push(" ".repeat(lineLen));
-		remaining -= lineLen + 1;
-	}
-	return lines.join("\n");
-}
-
+/** Wraps a per-note DEK under the password-derived KEK using AES-256-GCM and returns base64(nonce || ciphertext). */
 async function wrapDek(kek: Uint8Array, dek: Uint8Array<ArrayBuffer>): Promise<string> {
 	const { nonce, ciphertext } = await aesGcmEncrypt(kek, dek, encoder.encode(DEK_WRAP_AAD));
 	const packed = new Uint8Array(nonce.length + ciphertext.length);
@@ -207,11 +447,13 @@ async function unwrapDek(kek: Uint8Array, wrapped: string): Promise<Uint8Array<A
 	);
 }
 
+/** Newly created protected note containing serialized on-disk content and its `PayloadV1` envelope. */
 export interface CreatedFile {
 	fileContent: string;
 	payload: PayloadV1;
 }
 
+/** Encrypts a map of raw binary images under `dek`, binding each entry's AAD to `noteId` and image key. */
 export async function encryptImageMap(
 	dek: Uint8Array<ArrayBuffer>,
 	noteId: string,
@@ -233,6 +475,7 @@ export async function encryptImageMap(
 	return result;
 }
 
+/** Decrypts a map of encrypted image entries under `dek`, verifying each entry's note- and key-bound AAD. */
 export async function decryptImageMap(
 	dek: Uint8Array<ArrayBuffer>,
 	noteId: string,
@@ -255,6 +498,7 @@ export async function decryptImageMap(
 	return result;
 }
 
+/** Encrypts a note's real title under `dek` with title-bound AAD. */
 export async function encryptTitle(
 	dek: Uint8Array<ArrayBuffer>,
 	noteId: string,
@@ -271,6 +515,7 @@ export async function encryptTitle(
 	};
 }
 
+/** Decrypts an `EncryptedTitle` under `dek`, or returns `null` when no encrypted title is present. */
 export async function decryptTitle(
 	dek: Uint8Array<ArrayBuffer>,
 	noteId: string,
@@ -338,6 +583,7 @@ export async function createFile(
 	}
 }
 
+/** Decrypted note contents and live session DEK returned after a successful `unlockPayload` call. */
 export interface UnlockedNote {
 	realText: string;
 	/** Live session DEK for re-encryption on save. Caller owns and must zero it on lock. */

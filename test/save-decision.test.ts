@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { vi, describe, expect, it } from "vitest";
 import { computeSavedContent } from "../src/view/saveDecision";
 import { createFile, parseFileContent } from "../src/crypto/payload";
 
@@ -58,5 +58,47 @@ describe("computeSavedContent", () => {
 		const parsed = parseFileContent(saved)!;
 		expect(parsed.decoyBody).toBe(DECOY);
 		expect(saved.includes(REAL)).toBe(false);
+	});
+
+	it("reuses cached frontmatter across repeated locked and unlocked computeSavedContent calls without JSON.stringify", async () => {
+		const { payload } = await createFile(REAL, "pw", DECOY);
+		const { unlockPayload, reencryptRealText } = await import("../src/crypto/payload");
+		const { dek } = await unlockPayload(payload, "pw");
+		const pending = await reencryptRealText(payload, dek, EDITED_REAL);
+		dek.fill(0);
+
+		computeSavedContent({
+			unlocked: true,
+			editorValue: EDITED_REAL,
+			decoyBody: DECOY,
+			originalPayload: payload,
+			pendingPayload: pending,
+		});
+
+		const stringifySpy = vi.spyOn(JSON, "stringify");
+		try {
+			for (let i = 0; i < 10; i++) {
+				const lockedSaved = computeSavedContent({
+					unlocked: false,
+					editorValue: `${DECOY}\n- item ${i}`,
+					decoyBody: DECOY,
+					originalPayload: payload,
+					pendingPayload: null,
+				});
+				expect(lockedSaved.endsWith(`\n${DECOY}\n- item ${i}\n`)).toBe(true);
+
+				const unlockedSaved = computeSavedContent({
+					unlocked: true,
+					editorValue: `${EDITED_REAL}\nline ${i}`,
+					decoyBody: DECOY,
+					originalPayload: payload,
+					pendingPayload: pending,
+				});
+				expect(unlockedSaved.endsWith(`\n${DECOY}\n`)).toBe(true);
+			}
+			expect(stringifySpy).toHaveBeenCalledTimes(0);
+		} finally {
+			stringifySpy.mockRestore();
+		}
 	});
 });

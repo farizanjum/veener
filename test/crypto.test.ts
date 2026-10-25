@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { vi, describe, expect, it } from "vitest";
 import {
 	changePassword,
 	createFile,
@@ -239,5 +239,84 @@ describe("file parsing edge cases", () => {
 		expect(parsed?.decoyBody.startsWith("- curd")).toBe(true);
 		expect(parsed?.decoyBody).not.toContain("draft_cache");
 		expect(parsed?.decoyBody).not.toContain("bnVsbA==");
+	});
+
+	it("emits zero trailing whitespace padding in serializeFile even with absorbed images", async () => {
+		const { fileContent } = await createFile(REAL, PASSWORD, DECOY, undefined, {
+			"screen.png": { mime: "image/png", data: new Uint8Array(64 * 1024) },
+		});
+		expect(fileContent.endsWith(`\n${DECOY}\n`)).toBe(true);
+		expect(fileContent.split("---\n")[2]).toBe(`${DECOY}\n`);
+	});
+
+	it("maintains backward compatibility with legacy space-padded files", async () => {
+		const { fileContent } = await createFile(REAL, PASSWORD, DECOY);
+		const legacyPadded =
+			fileContent +
+			Array.from({ length: 50 }, () => " ".repeat(80)).join("\n") +
+			"\n";
+		const parsed = parseFileContent(legacyPadded);
+		expect(parsed).not.toBeNull();
+		expect(parsed!.decoyBody).toBe(DECOY);
+		const { realText, dek } = await unlockPayload(parsed!.payload, PASSWORD);
+		expect(realText).toBe(REAL);
+		dek.fill(0);
+	});
+
+	it("reuses WeakMap frontmatter cache in serializeFile without calling JSON.stringify", async () => {
+		const { fileContent, payload } = await createFile(REAL, PASSWORD, DECOY);
+		const parsed = parseFileContent(fileContent)!;
+		const stringifySpy = vi.spyOn(JSON, "stringify");
+		try {
+			for (let i = 0; i < 10; i++) {
+				serializeFile(DECOY, payload);
+				serializeFile(`${DECOY}\n- extra item`, payload);
+				serializeFile(`${DECOY}\n- edited decoy on parsed payload`, parsed.payload);
+			}
+			expect(stringifySpy).toHaveBeenCalledTimes(0);
+		} finally {
+			stringifySpy.mockRestore();
+		}
+	});
+
+	it("invalidates cached frontmatter when PayloadV1 is mutated in place", async () => {
+		const { payload } = await createFile(REAL, PASSWORD, DECOY);
+		payload.cipher.ct = Buffer.from("mutated-ct").toString("base64");
+		const mutatedSerialized = serializeFile(DECOY, payload);
+		expect(parseFileContent(mutatedSerialized)?.payload.cipher.ct).toBe(
+			payload.cipher.ct,
+		);
+
+		const stringifySpy = vi.spyOn(JSON, "stringify");
+		try {
+			(payload as unknown as Record<string, unknown>).extraTop = "unexpected";
+			serializeFile(DECOY, payload);
+			expect(stringifySpy).toHaveBeenCalledTimes(1);
+			delete (payload as unknown as Record<string, unknown>).extraTop;
+
+			stringifySpy.mockClear();
+			serializeFile(DECOY, payload);
+			expect(stringifySpy).toHaveBeenCalledTimes(1);
+
+			stringifySpy.mockClear();
+			serializeFile(DECOY, payload);
+			expect(stringifySpy).toHaveBeenCalledTimes(0);
+
+			(payload.kdf as unknown as Record<string, unknown>).extraKdf = 123;
+			serializeFile(DECOY, payload);
+			expect(stringifySpy).toHaveBeenCalledTimes(1);
+			delete (payload.kdf as unknown as Record<string, unknown>).extraKdf;
+
+			stringifySpy.mockClear();
+			serializeFile(DECOY, payload);
+			expect(stringifySpy).toHaveBeenCalledTimes(1);
+
+			stringifySpy.mockClear();
+			(payload.cipher as unknown as Record<string, unknown>).extraCipher = "x";
+			serializeFile(DECOY, payload);
+			expect(stringifySpy).toHaveBeenCalledTimes(1);
+		} finally {
+			stringifySpy.mockRestore();
+		}
 	});
 });
