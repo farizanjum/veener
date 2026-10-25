@@ -813,4 +813,247 @@ describe("ViewLifecycleCoordinator (Wave 2 Task 2)", () => {
 		expect(retiredRes.status).toBe("declined");
 		expect(retiredTaskRan).toBe(false);
 	});
+
+	it("preserves an external third-party save wrapper across Owner 1 retirement and Owner 2 reload without clobbering or double-wrapping", async () => {
+		const app = { id: "vault-external-wrapper-reload" };
+		const coordinator = getSharedLifecycleCoordinator();
+		const proto = MarkdownView.prototype as unknown as {
+			setViewData: (this: MarkdownView, data: string, clear: boolean) => void;
+			getViewData: (this: MarkdownView) => string;
+			save: (this: MarkdownView, clear?: boolean) => Promise<void>;
+		};
+
+		const callTrace: string[] = [];
+		const nativeSet = function (this: MarkdownView, data: string, clear: boolean): void {
+			callTrace.push(`native:set:${data}:${String(clear)}`);
+		};
+		const nativeGet = function (this: MarkdownView): string {
+			callTrace.push("native:get");
+			return "native-data";
+		};
+		const nativeSave = async function (this: MarkdownView): Promise<void> {
+			callTrace.push("native:save");
+		};
+
+		proto.setViewData = nativeSet;
+		proto.getViewData = nativeGet;
+		proto.save = nativeSave;
+
+		const owner1 = coordinator.registerOwner(app, "owner-1");
+		const lease1 = coordinator.acquirePrototypeLease(
+			owner1,
+			{
+				setViewData: function (data, clear) {
+					callTrace.push(`owner1:set:${data}:${String(clear)}`);
+					lease1.baseOriginals.setViewData.call(this, data, clear);
+				},
+				getViewData: function () {
+					callTrace.push("owner1:get");
+					return lease1.baseOriginals.getViewData.call(this);
+				},
+				save: async function (clear) {
+					callTrace.push("owner1:save");
+					await lease1.baseOriginals.save.call(this, clear);
+				},
+			},
+			proto,
+		);
+
+		const previousSaveOnProto = proto.save;
+		const externalSaveWrapper = async function (this: MarkdownView, clear?: boolean): Promise<void> {
+			callTrace.push("external:save");
+			await previousSaveOnProto.call(this, clear);
+		};
+		proto.save = externalSaveWrapper;
+
+		await coordinator.beginRetirement(app, owner1);
+		lease1.releaseOwnerHandlers();
+
+		expect(proto.setViewData).toBe(nativeSet);
+		expect(proto.getViewData).toBe(nativeGet);
+		expect(proto.save).toBe(externalSaveWrapper);
+
+		const owner2 = coordinator.registerOwner(app, "owner-2");
+		const lease2 = coordinator.acquirePrototypeLease(
+			owner2,
+			{
+				setViewData: function (data, clear) {
+					callTrace.push(`owner2:set:${data}:${String(clear)}`);
+					lease2.baseOriginals.setViewData.call(this, data, clear);
+				},
+				getViewData: function () {
+					callTrace.push("owner2:get");
+					return lease2.baseOriginals.getViewData.call(this);
+				},
+				save: async function (clear) {
+					callTrace.push("owner2:save");
+					await lease2.baseOriginals.save.call(this, clear);
+				},
+			},
+			proto,
+		);
+
+		expect(proto.save).toBe(externalSaveWrapper);
+
+		const view = Object.create(MarkdownView.prototype) as MarkdownView;
+		callTrace.length = 0;
+		await view.save();
+
+		expect(callTrace).toEqual(["external:save", "owner2:save", "native:save"]);
+
+		proto.save = previousSaveOnProto;
+		await coordinator.beginRetirement(app, owner2);
+		coordinator.clearSettledVaultState(app);
+		const restored = lease2.releaseOwnerHandlers();
+
+		expect(restored).toBe(true);
+		expect(proto.setViewData).toBe(nativeSet);
+		expect(proto.getViewData).toBe(nativeGet);
+		expect(proto.save).toBe(nativeSave);
+		expect(peekSharedLifecycleCoordinator(proto)).toBeNull();
+		expect(
+			Object.prototype.hasOwnProperty.call(proto, VIEW_LIFECYCLE_SYMBOL),
+		).toBe(false);
+	});
+
+	it("preserves external wrappers across all three methods (setViewData, getViewData, save) on Owner 1 retirement and Owner 2 reload", async () => {
+		const app = { id: "vault-external-all-three-reload" };
+		const coordinator = getSharedLifecycleCoordinator();
+		const proto = MarkdownView.prototype as unknown as {
+			setViewData: (this: MarkdownView, data: string, clear: boolean) => void;
+			getViewData: (this: MarkdownView) => string;
+			save: (this: MarkdownView, clear?: boolean) => Promise<void>;
+		};
+
+		const callTrace: string[] = [];
+		const nativeSet = function (this: MarkdownView, data: string, clear: boolean): void {
+			callTrace.push(`native:set:${data}:${String(clear)}`);
+		};
+		const nativeGet = function (this: MarkdownView): string {
+			callTrace.push("native:get");
+			return "native-data";
+		};
+		const nativeSave = async function (this: MarkdownView): Promise<void> {
+			callTrace.push("native:save");
+		};
+
+		proto.setViewData = nativeSet;
+		proto.getViewData = nativeGet;
+		proto.save = nativeSave;
+
+		const owner1 = coordinator.registerOwner(app, "owner-1");
+		const lease1 = coordinator.acquirePrototypeLease(
+			owner1,
+			{
+				setViewData: function (data, clear) {
+					callTrace.push(`owner1:set:${data}:${String(clear)}`);
+					lease1.baseOriginals.setViewData.call(this, data, clear);
+				},
+				getViewData: function () {
+					callTrace.push("owner1:get");
+					return lease1.baseOriginals.getViewData.call(this);
+				},
+				save: async function (clear) {
+					callTrace.push("owner1:save");
+					await lease1.baseOriginals.save.call(this, clear);
+				},
+			},
+			proto,
+		);
+
+		const prevSetOnProto = proto.setViewData;
+		const prevGetOnProto = proto.getViewData;
+		const prevSaveOnProto = proto.save;
+
+		const externalSetWrapper = function (
+			this: MarkdownView,
+			data: string,
+			clear: boolean,
+		): void {
+			callTrace.push(`external:set:${data}:${String(clear)}`);
+			prevSetOnProto.call(this, data, clear);
+		};
+		const externalGetWrapper = function (this: MarkdownView): string {
+			callTrace.push("external:get");
+			return prevGetOnProto.call(this);
+		};
+		const externalSaveWrapper = async function (
+			this: MarkdownView,
+			clear?: boolean,
+		): Promise<void> {
+			callTrace.push("external:save");
+			await prevSaveOnProto.call(this, clear);
+		};
+
+		proto.setViewData = externalSetWrapper;
+		proto.getViewData = externalGetWrapper;
+		proto.save = externalSaveWrapper;
+
+		await coordinator.beginRetirement(app, owner1);
+		const restoredAfterOwner1 = lease1.releaseOwnerHandlers();
+
+		expect(restoredAfterOwner1).toBe(false);
+		expect(proto.setViewData).toBe(externalSetWrapper);
+		expect(proto.getViewData).toBe(externalGetWrapper);
+		expect(proto.save).toBe(externalSaveWrapper);
+
+		const owner2 = coordinator.registerOwner(app, "owner-2");
+		const lease2 = coordinator.acquirePrototypeLease(
+			owner2,
+			{
+				setViewData: function (data, clear) {
+					callTrace.push(`owner2:set:${data}:${String(clear)}`);
+					lease2.baseOriginals.setViewData.call(this, data, clear);
+				},
+				getViewData: function () {
+					callTrace.push("owner2:get");
+					return lease2.baseOriginals.getViewData.call(this);
+				},
+				save: async function (clear) {
+					callTrace.push("owner2:save");
+					await lease2.baseOriginals.save.call(this, clear);
+				},
+			},
+			proto,
+		);
+
+		expect(proto.setViewData).toBe(externalSetWrapper);
+		expect(proto.getViewData).toBe(externalGetWrapper);
+		expect(proto.save).toBe(externalSaveWrapper);
+
+		const view = Object.create(MarkdownView.prototype) as MarkdownView;
+		callTrace.length = 0;
+		view.setViewData("hello", true);
+		const got = view.getViewData();
+		await view.save();
+
+		expect(got).toBe("native-data");
+		expect(callTrace).toEqual([
+			"external:set:hello:true",
+			"owner2:set:hello:true",
+			"native:set:hello:true",
+			"external:get",
+			"owner2:get",
+			"native:get",
+			"external:save",
+			"owner2:save",
+			"native:save",
+		]);
+
+		proto.setViewData = prevSetOnProto;
+		proto.getViewData = prevGetOnProto;
+		proto.save = prevSaveOnProto;
+		await coordinator.beginRetirement(app, owner2);
+		coordinator.clearSettledVaultState(app);
+		const restored = lease2.releaseOwnerHandlers();
+
+		expect(restored).toBe(true);
+		expect(proto.setViewData).toBe(nativeSet);
+		expect(proto.getViewData).toBe(nativeGet);
+		expect(proto.save).toBe(nativeSave);
+		expect(peekSharedLifecycleCoordinator(proto)).toBeNull();
+		expect(
+			Object.prototype.hasOwnProperty.call(proto, VIEW_LIFECYCLE_SYMBOL),
+		).toBe(false);
+	});
 });

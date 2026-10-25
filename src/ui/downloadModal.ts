@@ -35,7 +35,7 @@ export class ModelDownloadModal extends Modal {
 	private pauseRequested = false;
 	private cancelledByUnload = false;
 	private runEpoch = 0;
-	private startOverTimer: ReturnType<typeof setTimeout> | null = null;
+	private startOverTimer: ReturnType<typeof window.setTimeout> | number | null = null;
 	private startOverWake: (() => void) | null = null;
 
 	/** Creates a model download modal bound to the active Obsidian app and download callbacks. */
@@ -49,7 +49,7 @@ export class ModelDownloadModal extends Modal {
 	/** Clears any pending start-over resume notice timer and wakes the awaiting coroutine. */
 	private clearStartOverWait(): void {
 		if (this.startOverTimer !== null) {
-			clearTimeout(this.startOverTimer);
+			window.clearTimeout(this.startOverTimer);
 			this.startOverTimer = null;
 		}
 		if (this.startOverWake !== null) {
@@ -132,7 +132,7 @@ export class ModelDownloadModal extends Modal {
 		try {
 			await new Promise<void>((resolve) => {
 				this.startOverWake = resolve;
-				this.startOverTimer = setTimeout(() => {
+				this.startOverTimer = window.setTimeout(() => {
 					this.startOverTimer = null;
 					this.startOverWake = null;
 					resolve();

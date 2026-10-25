@@ -10,7 +10,7 @@ import { setContentProtection, wirePowerMonitor } from "./power";
  * unlocked session is masked, keys zeroed, clipboard cleared if tainted.
  */
 export class LockEngine {
-	private idleTimer: ReturnType<typeof setTimeout> | null = null;
+	private idleTimer: ReturnType<typeof window.setTimeout> | number | null = null;
 	private removePowerListener: (() => void) | null = null;
 	private stopped = false;
 	readonly clipboard = new ClipboardGuard();
@@ -74,7 +74,7 @@ export class LockEngine {
 	stop(): void {
 		this.stopped = true;
 		if (this.idleTimer !== null) {
-			clearTimeout(this.idleTimer);
+			window.clearTimeout(this.idleTimer);
 			this.idleTimer = null;
 		}
 		this.removePowerListener?.();
@@ -85,9 +85,9 @@ export class LockEngine {
 	/** Resets the inactivity countdown timer that masks all sessions upon expiration. */
 	armIdleTimer(): void {
 		if (this.isStopped()) return;
-		if (this.idleTimer !== null) clearTimeout(this.idleTimer);
+		if (this.idleTimer !== null) window.clearTimeout(this.idleTimer);
 		const timeoutMs = Math.max(15, this.settings().idleTimeoutSec) * 1000;
-		this.idleTimer = setTimeout(() => {
+		this.idleTimer = window.setTimeout(() => {
 			if (this.isStopped()) return;
 			void this.maskAll("idle-timeout");
 		}, timeoutMs);

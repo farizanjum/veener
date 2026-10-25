@@ -197,8 +197,13 @@ interface PrototypeChainState {
 		getViewData: (this: MarkdownView) => string;
 		save: (this: MarkdownView, clear?: boolean) => Promise<void>;
 	};
-	capturedPredecessors: NativeMethodsSnapshot;
+	capturedPredecessors: {
+		setViewData: (this: MarkdownView, data: string, clear: boolean) => void;
+		getViewData: (this: MarkdownView) => string;
+		save: (this: MarkdownView, clear?: boolean) => Promise<void>;
+	};
 	installedWrappers: NativeMethodsSnapshot | null;
+	deferredOuterWrappers: Partial<NativeMethodsSnapshot>;
 	readonly activeOwnerHandlers: Map<symbol, PrototypeWrapperHandlers>;
 	ownerOrder: symbol[];
 }
@@ -1505,6 +1510,7 @@ export class ViewLifecycleCoordinator {
 					save: targetProto.save,
 				},
 				installedWrappers: null,
+				deferredOuterWrappers: {},
 				activeOwnerHandlers: new Map<symbol, PrototypeWrapperHandlers>(),
 				ownerOrder: [],
 			};
@@ -1515,26 +1521,52 @@ export class ViewLifecycleCoordinator {
 				getViewData: targetProto.getViewData,
 				save: targetProto.save,
 			};
-		} else if (
-			targetProto.setViewData !== chain.installedWrappers.setViewData ||
-			targetProto.getViewData !== chain.installedWrappers.getViewData ||
-			targetProto.save !== chain.installedWrappers.save
-		) {
-			chain.capturedPredecessors = {
-				setViewData:
-					targetProto.setViewData !== chain.installedWrappers.setViewData
-						? targetProto.setViewData
-						: chain.capturedPredecessors.setViewData,
-				getViewData:
-					targetProto.getViewData !== chain.installedWrappers.getViewData
-						? targetProto.getViewData
-						: chain.capturedPredecessors.getViewData,
-				save:
-					targetProto.save !== chain.installedWrappers.save
-						? targetProto.save
-						: chain.capturedPredecessors.save,
-			};
-			chain.installedWrappers = null;
+			chain.deferredOuterWrappers = {};
+		} else {
+			const methods = ["setViewData", "getViewData", "save"] as const;
+			const activeChain = chain;
+			const prevInstalled = chain.installedWrappers;
+			const hasReplacedWrapper = methods.some(
+				(method) =>
+					targetProto[method] !== prevInstalled[method] &&
+					targetProto[method] !== activeChain.capturedPredecessors[method] &&
+					targetProto[method] !== activeChain.deferredOuterWrappers[method],
+			);
+
+			if (hasReplacedWrapper) {
+				chain.capturedPredecessors = {
+					setViewData:
+						targetProto.setViewData !== prevInstalled.setViewData
+							? targetProto.setViewData
+							: chain.capturedPredecessors.setViewData,
+					getViewData:
+						targetProto.getViewData !== prevInstalled.getViewData
+							? targetProto.getViewData
+							: chain.capturedPredecessors.getViewData,
+					save:
+						targetProto.save !== prevInstalled.save
+							? targetProto.save
+							: chain.capturedPredecessors.save,
+				};
+				chain.installedWrappers = null;
+				chain.deferredOuterWrappers = {};
+			} else {
+				for (const method of methods) {
+					if (targetProto[method] === chain.installedWrappers[method]) {
+						delete (chain.deferredOuterWrappers as Record<string, unknown>)[method];
+					} else if (targetProto[method] === chain.capturedPredecessors[method]) {
+						(targetProto as Record<string, unknown>)[method] =
+							chain.installedWrappers[method];
+						delete (chain.deferredOuterWrappers as Record<string, unknown>)[method];
+					} else if (
+						chain.deferredOuterWrappers[method] !== undefined &&
+						targetProto[method] === chain.deferredOuterWrappers[method]
+					) {
+						// External wrapper that wrapped our installedWrapper before unload is still on top;
+						// keep it intact so it continues to call installedWrappers[method] -> new owner.
+					}
+				}
+			}
 		}
 
 		chain.activeOwnerHandlers.set(owner.id, handlers);
@@ -1547,6 +1579,9 @@ export class ViewLifecycleCoordinator {
 
 		if (chain.installedWrappers === null) {
 			const currentChain = chain;
+			const wrapperPredecessors: NativeMethodsSnapshot = {
+				...currentChain.capturedPredecessors,
+			};
 			let wrapperSet!: NativeMethodsSnapshot;
 			const resolveCurrentHandler = (): PrototypeWrapperHandlers | null => {
 				for (let i = currentChain.ownerOrder.length - 1; i >= 0; i -= 1) {
@@ -1570,8 +1605,10 @@ export class ViewLifecycleCoordinator {
 						h.setViewData.call(this, data, clear);
 						return;
 					}
+					currentChain.capturedPredecessors.setViewData.call(this, data, clear);
+					return;
 				}
-				boundPredecessors.setViewData.call(this, data, clear);
+				wrapperPredecessors.setViewData.call(this, data, clear);
 			};
 
 			const getViewDataWrapper = function (this: MarkdownView): string {
@@ -1580,8 +1617,9 @@ export class ViewLifecycleCoordinator {
 					if (h) {
 						return h.getViewData.call(this);
 					}
+					return currentChain.capturedPredecessors.getViewData.call(this);
 				}
-				return boundPredecessors.getViewData.call(this);
+				return wrapperPredecessors.getViewData.call(this);
 			};
 
 			const saveWrapper = function (
@@ -1593,8 +1631,9 @@ export class ViewLifecycleCoordinator {
 					if (h) {
 						return h.save.call(this, clear);
 					}
+					return Promise.resolve(currentChain.capturedPredecessors.save.call(this, clear));
 				}
-				return Promise.resolve(boundPredecessors.save.call(this, clear));
+				return Promise.resolve(wrapperPredecessors.save.call(this, clear));
 			};
 
 			wrapperSet = {
@@ -1752,15 +1791,23 @@ export class ViewLifecycleCoordinator {
 		let allPrototypePropertiesRestored = true;
 		const chain = this.prototypeChain;
 		if (chain && chain.installedWrappers !== null) {
-			const { targetProto, installedWrappers, capturedPredecessors } = chain;
-			if (targetProto.setViewData === installedWrappers.setViewData) {
-				targetProto.setViewData = capturedPredecessors.setViewData;
-			}
-			if (targetProto.getViewData === installedWrappers.getViewData) {
-				targetProto.getViewData = capturedPredecessors.getViewData;
-			}
-			if (targetProto.save === installedWrappers.save) {
-				targetProto.save = capturedPredecessors.save;
+			const {
+				targetProto,
+				installedWrappers,
+				capturedPredecessors,
+				deferredOuterWrappers,
+			} = chain;
+			for (const method of ["setViewData", "getViewData", "save"] as const) {
+				if (targetProto[method] === installedWrappers[method]) {
+					(targetProto as Record<string, unknown>)[method] =
+						capturedPredecessors[method];
+					delete (deferredOuterWrappers as Record<string, unknown>)[method];
+				} else if (targetProto[method] !== capturedPredecessors[method]) {
+					(deferredOuterWrappers as Record<string, unknown>)[method] =
+						targetProto[method];
+				} else {
+					delete (deferredOuterWrappers as Record<string, unknown>)[method];
+				}
 			}
 			if (
 				targetProto.setViewData === capturedPredecessors.setViewData &&

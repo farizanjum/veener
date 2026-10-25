@@ -1,4 +1,4 @@
-import { addIcon, MarkdownView, Notice, Plugin, TFile } from "obsidian";
+import { addIcon, FileSystemAdapter, MarkdownView, normalizePath, Notice, Plugin, TFile } from "obsidian";
 import fs from "fs";
 import path from "path";
 import type { EditorState } from "@codemirror/state";
@@ -51,6 +51,7 @@ export type ClosableModal = {
 };
 
 export default class VeneerPlugin extends Plugin {
+	private static pendingGeneratorUnload: Promise<void> | null = null;
 	settings: VeneerSettings = { ...DEFAULT_SETTINGS };
 	registry!: ProtectedRegistry;
 	sessions!: SessionManager;
@@ -65,6 +66,7 @@ export default class VeneerPlugin extends Plugin {
 	private modelDeletionInFlight = false;
 	private modelDeletionEpoch = 0;
 	private activeModals?: Set<ClosableModal>;
+	private legacyDeocyMigrated = false;
 
 	/** Returns the shared `ViewLifecycleCoordinator` from the active session manager or global singleton. */
 	private getCoordinator(): ViewLifecycleCoordinator {
@@ -112,6 +114,90 @@ export default class VeneerPlugin extends Plugin {
 		}
 	}
 
+	/**
+	 * Migrates settings, destruction PIN records, and protected-note registry entries from
+	 * a legacy `deocy/data.json` installation when upgrading to `veneer`.
+	 */
+	async migrateLegacyPluginDataIfNeeded(): Promise<void> {
+		try {
+			const configDir = this.app?.vault?.configDir || ".obsidian";
+			const legacyPluginId = "deocy";
+			const legacyDirRel = normalizePath(`${configDir}/plugins/${legacyPluginId}`);
+			if (this.pluginDirPaths().rel === legacyDirRel) return;
+
+			const legacyDataRel = normalizePath(`${legacyDirRel}/data.json`);
+			const adapter = this.app?.vault?.adapter as
+				| {
+						exists?: (p: string) => Promise<boolean>;
+						read?: (p: string) => Promise<string>;
+						getBasePath?: () => string;
+				  }
+				| undefined;
+
+			let legacyRawText: string | null = null;
+			if (typeof adapter?.read === "function") {
+				const exists =
+					typeof adapter.exists === "function" ? await adapter.exists(legacyDataRel) : true;
+				if (exists) {
+					try {
+						legacyRawText = await adapter.read(legacyDataRel);
+					} catch {
+						legacyRawText = null;
+					}
+				}
+			} else {
+				const root =
+					adapter instanceof FileSystemAdapter
+						? adapter.getBasePath()
+						: (adapter?.getBasePath?.() ?? "");
+				if (root) {
+					const legacyAbs = path.join(root, ...legacyDataRel.split("/"));
+					if (fs.existsSync(legacyAbs)) {
+						legacyRawText = fs.readFileSync(legacyAbs, "utf8");
+					}
+				}
+			}
+			if (!legacyRawText) return;
+
+			const parsedLegacy: unknown = JSON.parse(legacyRawText);
+			if (!parsedLegacy || typeof parsedLegacy !== "object") return;
+			const legacyObj = parsedLegacy as Record<string, unknown>;
+
+			const currentRaw = (await this.loadData()) as Record<string, unknown> | null;
+			if (currentRaw?.legacyDeocyMigrated === true) {
+				this.legacyDeocyMigrated = true;
+				return;
+			}
+			const legacyEntries =
+				legacyObj.entries && typeof legacyObj.entries === "object"
+					? (legacyObj.entries as Record<string, unknown>)
+					: {};
+			const currentEntries =
+				currentRaw?.entries && typeof currentRaw.entries === "object"
+					? (currentRaw.entries as Record<string, unknown>)
+					: {};
+
+			const mergedEntries = { ...legacyEntries, ...currentEntries };
+			const mergedData: Record<string, unknown> =
+				currentRaw === null
+					? { ...legacyObj, entries: mergedEntries, legacyDeocyMigrated: true }
+					: {
+							...legacyObj,
+							...currentRaw,
+							duressPinSalt:
+								currentRaw.duressPinSalt ?? legacyObj.duressPinSalt ?? null,
+							duressPinHash:
+								currentRaw.duressPinHash ?? legacyObj.duressPinHash ?? null,
+							entries: mergedEntries,
+							legacyDeocyMigrated: true,
+					  };
+			this.legacyDeocyMigrated = true;
+			await this.saveData(mergedData);
+		} catch (error) {
+			console.warn("Veneer: legacy deocy data migration skipped", error);
+		}
+	}
+
 	/** Initializes plugin state, lifecycle coordination, view patches, lock engine, and commands. */
 	async onload(): Promise<void> {
 		this.isShuttingDown = false;
@@ -128,6 +214,8 @@ export default class VeneerPlugin extends Plugin {
 			"veneer-layers",
 			`<svg viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"><path d="M24 12 H76 A8 8 0 0 1 84 20 V56 L58 82 H24 A8 8 0 0 1 16 74 V20 A8 8 0 0 1 24 12 Z"/><path d="M84 56 H64 A6 6 0 0 0 58 62 V82"/><line x1="30" y1="30" x2="68" y2="30"/><line x1="30" y1="44" x2="58" y2="44"/><line x1="30" y1="58" x2="46" y2="58"/><path d="M58 88 H78 A10 10 0 0 0 88 78 V58" stroke-opacity="0.65"/></svg>`,
 		);
+		await this.migrateLegacyPluginDataIfNeeded();
+		if (!this.isLive()) return;
 		this.registry = new ProtectedRegistry(this);
 		await this.registry.load();
 		if (!this.isLive()) return;
@@ -166,6 +254,15 @@ export default class VeneerPlugin extends Plugin {
 						"Veneer: could not save your latest edits before masking. The note is masked; unlock it to check for missing changes.",
 					);
 				},
+				onAttached: (file, payload) => {
+					if (!this.isLive() || !this.registry) return;
+					if (this.registry.has(file.path)) return;
+					void this.registry.ensure(file.path, {
+						noteId: payload.note_id,
+						addedAt: Date.now(),
+						mode: "portable",
+					});
+				},
 			},
 			() => this.settings.triggerPrefix,
 			() =>
@@ -182,7 +279,7 @@ export default class VeneerPlugin extends Plugin {
 		});
 		this.patchController = controller;
 		this.viewPatchController = controller;
-		this.generator = this.buildGenerator();
+		this.generator = this.buildGenerator(VeneerPlugin.pendingGeneratorUnload ?? undefined);
 		this.lockEngine = new LockEngine(this, this.app.workspace, this.sessions, () => this.settings);
 		this.lockEngine.start();
 		void this.attachAlreadyOpenViews();
@@ -291,11 +388,17 @@ export default class VeneerPlugin extends Plugin {
 		} catch {}
 
 		try {
-			const unloadRes = this.generator?.unload();
+			const unloadRes = this.generator?.unload(true);
 			if (unloadRes) {
-				void Promise.resolve(unloadRes).catch((error) => {
+				const trackedUnload = Promise.resolve(unloadRes).catch((error) => {
 					console.warn("Veneer: generator unload failed", error);
 				});
+				const settledUnload = trackedUnload.finally(() => {
+					if (VeneerPlugin.pendingGeneratorUnload === settledUnload) {
+						VeneerPlugin.pendingGeneratorUnload = null;
+					}
+				});
+				VeneerPlugin.pendingGeneratorUnload = settledUnload;
 			}
 		} catch (error) {
 			console.warn("Veneer: generator unload failed", error);
@@ -438,7 +541,8 @@ export default class VeneerPlugin extends Plugin {
 		const coordinator = this.getCoordinator();
 		const targets: ShredTarget[] = this.registry
 			.list()
-			.map(({ path, entry }) => ({ path, mode: entry.mode }));
+			.map(({ path: p, entry }) => ({ path: p, mode: entry.mode }));
+		const seenPaths = new Set(targets.map((t) => t.path));
 		const targetFiles = new Map<string, TFile>();
 		const coordinatorTargets: Array<{ file?: TFile; path: string }> = [];
 		for (const t of targets) {
@@ -451,7 +555,37 @@ export default class VeneerPlugin extends Plugin {
 			}
 		}
 
-		const destruction = coordinator.beginDestruction(this.app, coordinatorTargets);
+		let destruction = coordinator.beginDestruction(this.app, coordinatorTargets);
+		await this.sessions.hardKillAll();
+
+		const scannedPortablePaths = new Set<string>();
+		if (typeof this.app.vault.getMarkdownFiles === "function") {
+			const extraCoordinatorTargets: Array<{ file?: TFile; path: string }> = [];
+			for (const mdFile of this.app.vault.getMarkdownFiles()) {
+				if (seenPaths.has(mdFile.path)) continue;
+				try {
+					const raw =
+						typeof this.app.vault.cachedRead === "function"
+							? await this.app.vault.cachedRead(mdFile)
+							: await this.app.vault.read(mdFile);
+					if (parseFileContent(raw) !== null) {
+						seenPaths.add(mdFile.path);
+						scannedPortablePaths.add(mdFile.path);
+						targets.push({ path: mdFile.path, mode: "portable" });
+						targetFiles.set(mdFile.path, mdFile);
+						extraCoordinatorTargets.push({ file: mdFile, path: mdFile.path });
+					}
+				} catch {
+					// Ignore unreadable files during emergency vault scan
+				}
+			}
+			if (extraCoordinatorTargets.length > 0) {
+				destruction = coordinator.beginDestruction(this.app, [
+					...coordinatorTargets,
+					...extraCoordinatorTargets,
+				]);
+			}
+		}
 
 		const report = await executeShred(targets, {
 			zeroSessions: async () => {
@@ -477,6 +611,12 @@ export default class VeneerPlugin extends Plugin {
 						destructionGeneration: destruction.generation,
 						task: async () => {
 							const content = await this.app.vault.read(file);
+							if (
+								scannedPortablePaths.has(targetPath) &&
+								parseFileContent(content) === null
+							) {
+								throw new Error("Scanned portable payload is no longer present");
+							}
 							const stripped = stripPortablePayload(content, fallbackDecoy);
 							await this.app.vault.modify(file, stripped);
 						},
@@ -524,7 +664,6 @@ export default class VeneerPlugin extends Plugin {
 		this.addCommand({
 			id: "panic-mask",
 			name: "Panic: mask all protected notes",
-			hotkeys: [{ modifiers: ["Mod", "Shift"], key: "X" }],
 			callback: () => {
 				if (!this.isLive()) return;
 				this.lockEngine.panic();
@@ -533,58 +672,83 @@ export default class VeneerPlugin extends Plugin {
 		this.addCommand({
 			id: "protect-note",
 			name: "Protect this note",
-			callback: () => {
-				if (!this.isLive()) return;
+			checkCallback: (checking: boolean) => {
+				if (!this.isLive()) return false;
 				const file = this.app.workspace.getActiveFile();
-				if (file) void this.protectFile(file);
+				if (!file || file.extension !== "md") return false;
+				if (!checking) {
+					void this.protectFile(file);
+				}
+				return true;
 			},
 		});
 		this.addCommand({
 			id: "refresh-decoy",
 			name: "Refresh decoy cover of this note",
-			callback: () => {
-				if (!this.isLive()) return;
+			checkCallback: (checking: boolean) => {
+				if (!this.isLive()) return false;
 				const file = this.app.workspace.getActiveFile();
-				if (file) void this.refreshDecoy(file);
+				if (!file || file.extension !== "md") return false;
+				if (!checking) {
+					void this.refreshDecoy(file);
+				}
+				return true;
 			},
 		});
 		this.addCommand({
 			id: "unlock-note",
 			name: "Unlock this note",
-			callback: () => {
-				if (!this.isLive()) return;
-				void this.unlockViaModal();
+			checkCallback: (checking: boolean) => {
+				if (!this.isLive()) return false;
+				const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+				if (!view || !view.file || view.file.extension !== "md") return false;
+				if (!checking) {
+					void this.unlockViaModal();
+				}
+				return true;
 			},
 		});
 		this.addCommand({
 			id: "unprotect-note",
 			name: "Unprotect this note (decrypt permanently)",
-			callback: () => {
-				if (!this.isLive()) return;
-				void this.unprotectViaModal();
+			checkCallback: (checking: boolean) => {
+				if (!this.isLive()) return false;
+				const file = this.app.workspace.getActiveFile();
+				if (!file || file.extension !== "md") return false;
+				if (!checking) {
+					void this.unprotectViaModal();
+				}
+				return true;
 			},
 		});
 		this.addCommand({
 			id: "change-password",
 			name: "Change password of this note",
-			callback: () => {
-				if (!this.isLive()) return;
-				void this.changePasswordViaModal();
+			checkCallback: (checking: boolean) => {
+				if (!this.isLive()) return false;
+				const file = this.app.workspace.getActiveFile();
+				if (!file || file.extension !== "md") return false;
+				if (!checking) {
+					void this.changePasswordViaModal();
+				}
+				return true;
 			},
 		});
 		this.addCommand({
 			id: "mask-note",
 			name: "Mask this note (return to cover)",
-			callback: () => {
-				if (!this.isLive()) return;
+			checkCallback: (checking: boolean) => {
+				if (!this.isLive()) return false;
 				const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (!view) return;
+				if (!view) return false;
 				const session = this.sessions.get(view);
-				if (session) {
+				if (!session) return false;
+				if (!checking) {
 					void this.sessions.lock(session, "manual").catch((error) => {
 						console.warn("Veneer: manual mask failed", error);
 					});
 				}
+				return true;
 			},
 		});
 		this.addCommand({
@@ -728,6 +892,9 @@ export default class VeneerPlugin extends Plugin {
 						const restorePreProtectViewIfLive = (): void => {
 							if (!this.isLive()) {
 								return;
+							}
+							if (this.registry?.has(file.path)) {
+								void this.registry.remove(file.path);
 							}
 							if (view && view.file === file) {
 								const attached = this.sessions.get(view);
@@ -1353,12 +1520,24 @@ export default class VeneerPlugin extends Plugin {
 		});
 	}
 
+	/** Resolves the vault-relative and absolute filesystem paths for this plugin's directory. */
+	pluginDirPaths(): { abs: string; rel: string } {
+		const configDir = this.app?.vault?.configDir || ".obsidian";
+		const pluginId = this.manifest?.id || "veneer";
+		const rel = normalizePath(this.manifest?.dir || `${configDir}/plugins/${pluginId}`);
+		const adapter = this.app?.vault?.adapter;
+		const root =
+			adapter instanceof FileSystemAdapter
+				? adapter.getBasePath()
+				: ((adapter as unknown as { getBasePath?: () => string })?.getBasePath?.() ?? "");
+		const abs = root ? path.join(root, ...rel.split("/")) : path.join(...rel.split("/"));
+		return { abs, rel };
+	}
+
 	/** Selects and constructs the preferred local LLM runtime (`NativeRuntime` or `WllamaRuntime`). */
 	private buildRuntime(): LlmRuntime {
 		const model = activeModel(this.settings);
-		const adapter = this.app.vault.adapter as unknown as { getBasePath?: () => string };
-		const root = adapter.getBasePath?.() ?? "";
-		const base = path.join(root, this.app.vault.configDir, "plugins", "deocy");
+		const base = this.pluginDirPaths().abs;
 		const modelPath = path.join(base, "models", model.file);
 		
 		const wllama = new WllamaRuntime(
@@ -1383,9 +1562,7 @@ export default class VeneerPlugin extends Plugin {
 		partial: { downloaded: number; total: number | null } | null;
 	} {
 		const model = activeModel(this.settings);
-		const adapter = this.app.vault.adapter as unknown as { getBasePath?: () => string };
-		const root = adapter.getBasePath?.() ?? "";
-		const abs = `${root}/${this.app.vault.configDir}/plugins/deocy/models/${model.file}`;
+		const abs = path.join(this.pluginDirPaths().abs, "models", model.file);
 		let exists = false;
 		let sizeBytes = 0;
 		try {
@@ -1400,15 +1577,13 @@ export default class VeneerPlugin extends Plugin {
 
 	/** Lists all non-empty `.gguf` model files currently present in the plugin models directory. */
 	downloadedModels(): { fileName: string; sizeBytes: number; modelId: ModelId | "custom" }[] {
-		const adapter = this.app.vault.adapter as unknown as { getBasePath?: () => string };
-		const root = adapter.getBasePath?.() ?? "";
-		const dir = `${root}/${this.app.vault.configDir}/plugins/deocy/models`;
+		const dir = path.join(this.pluginDirPaths().abs, "models");
 		const results: { fileName: string; sizeBytes: number; modelId: ModelId | "custom" }[] = [];
 		try {
 			const files = fs.readdirSync(dir);
 			for (const file of files) {
 				if (!file.endsWith(".gguf")) continue;
-				const stat = fs.statSync(`${dir}/${file}`);
+				const stat = fs.statSync(path.join(dir, file));
 				if (!stat.isFile() || stat.size === 0) continue;
 				const builtin = Object.entries(MODEL_INFO).find(([, info]) => info.file === file);
 				results.push({
@@ -1431,9 +1606,7 @@ export default class VeneerPlugin extends Plugin {
 		const activeFile = activeModel(this.settings).file;
 		const fileName = targetFileName ?? activeFile;
 		const wasActiveModel = fileName === activeFile;
-		const adapter = this.app.vault.adapter as unknown as { getBasePath?: () => string };
-		const root = adapter.getBasePath?.() ?? "";
-		const abs = `${root}/${this.app.vault.configDir}/plugins/deocy/models/${fileName}`;
+		const abs = path.join(this.pluginDirPaths().abs, "models", fileName);
 		if (wasActiveModel && this.modelDeletionInFlight) {
 			return false;
 		}
@@ -1508,10 +1681,10 @@ export default class VeneerPlugin extends Plugin {
 
 	/** Ensures the plugin models directory exists and returns its absolute and vault-relative paths. */
 	async modelsDir(): Promise<{ abs: string; rel: string }> {
-		const rel = `${this.app.vault.configDir}/plugins/deocy/models`;
+		const pluginDir = this.pluginDirPaths();
+		const rel = normalizePath(`${pluginDir.rel}/models`);
 		await this.app.vault.adapter.mkdir(rel);
-		const adapter = this.app.vault.adapter as unknown as { getBasePath?: () => string };
-		return { abs: `${adapter.getBasePath?.() ?? ""}/${rel}`, rel };
+		return { abs: path.join(pluginDir.abs, "models"), rel };
 	}
 
 	/** Removes a model file at the given vault-relative path via the vault adapter. */
@@ -1544,7 +1717,7 @@ export default class VeneerPlugin extends Plugin {
 			}
 			const dir = await this.modelsDir();
 			const fileName = sourcePath.split(/[\\/]/).pop() ?? "custom-model.gguf";
-			const dest = `${dir.abs}/${fileName}`;
+			const dest = path.join(dir.abs, fileName);
 			fs.copyFileSync(sourcePath, dest);
 			const sizeBytes = fs.statSync(dest).size;
 			const sha256 = await sha256HexOfFile(dest);
@@ -1581,8 +1754,13 @@ export default class VeneerPlugin extends Plugin {
 
 	/** Loads persisted plugin settings while stripping the registry `entries` map. */
 	async loadSettings(): Promise<void> {
-		const raw = (await this.loadData()) as (Partial<VeneerSettings> & { entries?: unknown }) | null;
-		const { entries: _entries, ...rest } = raw ?? {};
+		const raw = (await this.loadData()) as
+			| (Partial<VeneerSettings> & { entries?: unknown; legacyDeocyMigrated?: unknown })
+			| null;
+		if (raw?.legacyDeocyMigrated === true) {
+			this.legacyDeocyMigrated = true;
+		}
+		const { entries: _entries, legacyDeocyMigrated: _migrated, ...rest } = raw ?? {};
 		this.settings = { ...DEFAULT_SETTINGS, ...rest };
 	}
 
@@ -1591,6 +1769,7 @@ export default class VeneerPlugin extends Plugin {
 		await this.saveData({
 			...this.settings,
 			entries: this.registry ? this.registry.entriesRecord() : {},
+			...(this.legacyDeocyMigrated ? { legacyDeocyMigrated: true } : {}),
 		});
 	}
 }
