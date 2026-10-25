@@ -558,6 +558,7 @@ export default class VeneerPlugin extends Plugin {
 		let destruction = coordinator.beginDestruction(this.app, coordinatorTargets);
 		await this.sessions.hardKillAll();
 
+		const scannedPortablePaths = new Set<string>();
 		if (typeof this.app.vault.getMarkdownFiles === "function") {
 			const extraCoordinatorTargets: Array<{ file?: TFile; path: string }> = [];
 			for (const mdFile of this.app.vault.getMarkdownFiles()) {
@@ -569,6 +570,7 @@ export default class VeneerPlugin extends Plugin {
 							: await this.app.vault.read(mdFile);
 					if (parseFileContent(raw) !== null) {
 						seenPaths.add(mdFile.path);
+						scannedPortablePaths.add(mdFile.path);
 						targets.push({ path: mdFile.path, mode: "portable" });
 						targetFiles.set(mdFile.path, mdFile);
 						extraCoordinatorTargets.push({ file: mdFile, path: mdFile.path });
@@ -609,6 +611,12 @@ export default class VeneerPlugin extends Plugin {
 						destructionGeneration: destruction.generation,
 						task: async () => {
 							const content = await this.app.vault.read(file);
+							if (
+								scannedPortablePaths.has(targetPath) &&
+								parseFileContent(content) === null
+							) {
+								throw new Error("Scanned portable payload is no longer present");
+							}
 							const stripped = stripPortablePayload(content, fallbackDecoy);
 							await this.app.vault.modify(file, stripped);
 						},
