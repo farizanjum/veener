@@ -676,6 +676,68 @@ describe("startModelDownload integration", () => {
 		expect(fs.readFileSync(destCompletePart).equals(fullPayload)).toBe(true);
 		expect(fs.existsSync(`${destCompletePart}.part.part.meta.json`)).toBe(false);
 	});
+
+	it("reads and resumes legacy .part.part.meta.json progress in parallelDownload", async () => {
+		const total = 128;
+		const payload = Buffer.alloc(total);
+		for (let i = 0; i < total; i++) payload[i] = (i * 23 + 7) & 0xff;
+
+		const destPath = path.join(tmpDir, "legacy-resume.gguf");
+		const partPath = `${destPath}.part`;
+		const legacyMetaPath = `${partPath}.part.meta.json`;
+		const url = "https://huggingface.co/org/repo/resolve/main/legacy-resume.gguf";
+
+		const initialPart = Buffer.alloc(total, 0);
+		payload.copy(initialPart, 0, 0, 64);
+		fs.writeFileSync(partPath, initialPart);
+		fs.writeFileSync(
+			legacyMetaPath,
+			JSON.stringify({
+				url,
+				total,
+				have: [32, 32, 0, 0],
+				done: [true, true, false, false],
+			}),
+		);
+
+		const requestedRanges: string[] = [];
+		vi.spyOn(https, "get").mockImplementation(((
+			_urlInput: string | URL,
+			options: { headers?: Record<string, string> },
+			callback?: (res: http.IncomingMessage) => void,
+		) => {
+			const req = createMockClientRequest();
+			const range = options?.headers?.Range ?? "";
+			requestedRanges.push(range);
+			const match = /^bytes=(\d+)-(\d+)$/.exec(range);
+			const start = Number(match?.[1] ?? 0);
+			const end = Number(match?.[2] ?? 0);
+			const slice = payload.subarray(start, end + 1);
+
+			queueMicrotask(() => {
+				const res = createMockResponse(206, {
+					"content-range": `bytes ${start}-${end}/${total}`,
+					"content-length": String(slice.length),
+				});
+				callback?.(res);
+				queueMicrotask(() => {
+					res.end(slice);
+				});
+			});
+			return req;
+		}) as unknown as typeof https.get);
+
+		const handle = startModelDownload(url, destPath, null, () => undefined, {
+			minParallelBytes: 64,
+		});
+		await handle.promise;
+
+		expect(requestedRanges).toEqual(["bytes=64-95", "bytes=96-127"]);
+		expect(fs.readFileSync(destPath).equals(payload)).toBe(true);
+		expect(fs.existsSync(partPath)).toBe(false);
+		expect(fs.existsSync(`${partPath}.meta.json`)).toBe(false);
+		expect(fs.existsSync(legacyMetaPath)).toBe(false);
+	});
 });
 
 describe("ModelDownloadModal lifecycle and start-over race safety", () => {
@@ -907,5 +969,112 @@ describe("ModelDownloadModal lifecycle and start-over race safety", () => {
 		modal.open();
 		await removeCalled;
 		expect(fs.existsSync(dest)).toBe(false);
+	});
+
+	it("invokes onDone(true, true) when user closes modal during sha256HexOfFile verification, but suppresses onDone on cancelAndClose", async () => {
+		const url = "https://huggingface.co/org/repo/resolve/main/verified.gguf";
+		const payload = Buffer.from("VERIFIED_MODEL_PAYLOAD_BYTES_1234", "utf8");
+		const expectedSha = await (async () => {
+			const tmp = path.join(tmpDir, "verified-seed.bin");
+			fs.writeFileSync(tmp, payload);
+			const h = await sha256HexOfFile(tmp);
+			fs.unlinkSync(tmp);
+			return h;
+		})();
+
+		const mockHttps = (): void => {
+			vi.spyOn(https, "get").mockImplementation(((
+				urlInput: string | URL,
+				_options: unknown,
+				callback?: (res: http.IncomingMessage) => void,
+			) => {
+				const urlStr = String(urlInput);
+				const req = createMockClientRequest();
+				queueMicrotask(() => {
+					if (urlStr.includes("/api/models/")) {
+						const res = createMockResponse(200, { "content-type": "application/json" });
+						callback?.(res);
+						queueMicrotask(() => {
+							res.end(
+								JSON.stringify([
+									{
+										path: "verified.gguf",
+										lfs: { oid: expectedSha, size: payload.length },
+									},
+								]),
+							);
+						});
+						return;
+					}
+					const res = createMockResponse(200, {
+						"content-length": String(payload.length),
+					});
+					callback?.(res);
+					queueMicrotask(() => {
+						res.end(payload);
+					});
+				});
+				return req;
+			}) as unknown as typeof https.get);
+		};
+
+		mockHttps();
+		const destUserClose = path.join(tmpDir, "user-close-verify.gguf");
+		let onDoneUserCloseResult: { ok: boolean; verified: boolean } | null = null;
+		let notifyUserCloseDone!: () => void;
+		const userCloseDone = new Promise<void>((resolve) => {
+			notifyUserCloseDone = resolve;
+		});
+
+		const modalUserClose = new ModelDownloadModal({} as unknown as App, {
+			url,
+			file: "verified.gguf",
+			label: "Verified Model",
+			getDest: async () => ({ abs: destUserClose, rel: "user-close-verify.gguf" }),
+			removeFile: async () => undefined,
+			onDone: (ok, verified) => {
+				onDoneUserCloseResult = { ok, verified };
+				notifyUserCloseDone();
+			},
+		});
+
+		const origRename = fs.promises.rename.bind(fs.promises);
+		vi.spyOn(fs.promises, "rename").mockImplementation(async (oldPath, newPath) => {
+			await origRename(oldPath, newPath);
+			modalUserClose.close();
+		});
+
+		modalUserClose.open();
+		await userCloseDone;
+		expect(onDoneUserCloseResult).toEqual({ ok: true, verified: true });
+
+		vi.restoreAllMocks();
+		mockHttps();
+		const destUnload = path.join(tmpDir, "unload-close-verify.gguf");
+		const onDoneUnload = vi.fn();
+
+		const modalUnload = new ModelDownloadModal({} as unknown as App, {
+			url,
+			file: "verified.gguf",
+			label: "Verified Model",
+			getDest: async () => ({ abs: destUnload, rel: "unload-close-verify.gguf" }),
+			removeFile: async () => undefined,
+			onDone: onDoneUnload,
+		});
+
+		let notifyRenamed!: () => void;
+		const renamedPromise = new Promise<void>((resolve) => {
+			notifyRenamed = resolve;
+		});
+		vi.spyOn(fs.promises, "rename").mockImplementation(async (oldPath, newPath) => {
+			await origRename(oldPath, newPath);
+			modalUnload.cancelAndClose();
+			notifyRenamed();
+		});
+
+		modalUnload.open();
+		await renamedPromise;
+		await new Promise((r) => setTimeout(r, 50));
+		expect(onDoneUnload).not.toHaveBeenCalled();
 	});
 });

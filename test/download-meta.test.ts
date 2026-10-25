@@ -136,6 +136,32 @@ describe("parseTreeResponse", () => {
 		expect(meta.sha256).toBeNull();
 		expect(meta.sizeBytes).toBeNull();
 	});
+
+	it("decodes a percent-encoded literal %20 in the filename once and matches in parseTreeResponse", () => {
+		const url =
+			"https://huggingface.co/org/repo/resolve/main/subdir/my%2520model.gguf?download=true";
+		const parsed = parseHuggingFaceResolveUrl(url);
+		expect(parsed.filePath).toBe("subdir/my%20model.gguf");
+		expect(parsed.fileName).toBe("my%20model.gguf");
+		const body = JSON.stringify([
+			{
+				type: "file",
+				path: "subdir/my%20model.gguf",
+				size: 4096,
+				lfs: { oid: "1122334455667788", size: 4096 },
+			},
+			{
+				type: "file",
+				path: "subdir/my model.gguf",
+				size: 9999,
+				lfs: { oid: "wrong_double_decoded", size: 9999 },
+			},
+		]);
+		expect(parseTreeResponse(body, parsed.filePath)).toEqual({
+			sha256: "1122334455667788",
+			sizeBytes: 4096,
+		});
+	});
 });
 
 describe("fetchModelMetadata", () => {

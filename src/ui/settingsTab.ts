@@ -7,24 +7,11 @@ import { collectHygiene } from "../shred/hygiene";
 import { DuressPinModal } from "./modals";
 import { sanitizeInterests, sanitizePersona } from "../llm/prompt";
 
-type TrackableModal = {
-	cancelAndClose?: () => void;
-	close?: () => void;
-	onClose?: () => void;
-};
-
-type VeneerPluginHost = { [K in keyof VeneerPlugin]: VeneerPlugin[K] } & {
-	trackModal<T extends TrackableModal>(modal: T): T;
-};
-
 /** Obsidian settings tab for configuring Veneer masking, cover identity, local LLM models, and hygiene checks. */
 export class VeneerSettingTab extends PluginSettingTab {
-	private readonly plugin: VeneerPluginHost;
-
 	/** Creates the Veneer settings tab bound to the active Obsidian app and plugin instance. */
-	constructor(app: App, plugin: VeneerPlugin) {
+	constructor(app: App, private readonly plugin: VeneerPlugin) {
 		super(app, plugin);
-		this.plugin = plugin as unknown as VeneerPluginHost;
 	}
 
 	/** Renders the Veneer settings controls into the settings tab container. */

@@ -32,6 +32,7 @@ export class ModelDownloadModal extends Modal {
 	private finished = false;
 	private isOpenModal = false;
 	private pauseRequested = false;
+	private cancelledByUnload = false;
 	private runEpoch = 0;
 	private startOverTimer: ReturnType<typeof setTimeout> | null = null;
 	private startOverWake: (() => void) | null = null;
@@ -69,6 +70,7 @@ export class ModelDownloadModal extends Modal {
 
 	/** Cancels any in-flight download or metadata check and closes the modal immediately. */
 	cancelAndClose(): void {
+		this.cancelledByUnload = true;
 		this.cancelActiveRun();
 		this.close();
 	}
@@ -78,6 +80,7 @@ export class ModelDownloadModal extends Modal {
 		this.isOpenModal = true;
 		this.finished = false;
 		this.pauseRequested = false;
+		this.cancelledByUnload = false;
 		const epoch = ++this.runEpoch;
 		const { contentEl } = this;
 		contentEl.empty();
@@ -224,15 +227,22 @@ export class ModelDownloadModal extends Modal {
 				const actual = await sha256HexOfFile(dest.abs);
 				if (actual.toLowerCase() !== expectedHash.toLowerCase()) {
 					await this.deps.removeFile(dest.rel);
+					this.finished = true;
+					if (!this.cancelledByUnload) {
+						this.deps.onDone(false, false);
+					}
 					if (isStale()) return;
 					this.statusEl.setText("Download corrupted: file does not match the record. Deleted. Close and try again.");
-					this.finished = true;
-					this.deps.onDone(false, false);
 					return;
 				}
 				verified = true;
 			}
-			if (isStale()) return;
+			this.finished = true;
+			if (this.cancelledByUnload) return;
+			if (isStale()) {
+				this.deps.onDone(true, verified);
+				return;
+			}
 			this.barEl.value = 1;
 			this.statusEl.setText(
 				verified
@@ -240,7 +250,6 @@ export class ModelDownloadModal extends Modal {
 					: "Model ready. No hash record to verify against.",
 			);
 			this.statsEl.setText("You can close this window.");
-			this.finished = true;
 			this.deps.onDone(true, verified);
 		} catch (error) {
 			if (isStale()) return;

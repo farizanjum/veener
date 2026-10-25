@@ -44,11 +44,11 @@ interface EditorWithCm {
 	cm?: { state: EditorState };
 }
 
-interface ClosableModal {
+export type ClosableModal = {
 	cancelAndClose?: () => void;
 	close?: () => void;
 	onClose?: () => void;
-}
+};
 
 export default class VeneerPlugin extends Plugin {
 	settings: VeneerSettings = { ...DEFAULT_SETTINGS };
@@ -79,7 +79,7 @@ export default class VeneerPlugin extends Plugin {
 	}
 
 	/** Tracks an open modal so it can be synchronously cancelled and closed during plugin teardown. */
-	private trackModal<T extends ClosableModal>(modal: T): T {
+	trackModal<T extends ClosableModal>(modal: T): T {
 		if (!this.activeModals) {
 			this.activeModals = new Set<ClosableModal>();
 		}

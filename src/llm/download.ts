@@ -180,13 +180,7 @@ export function parseTreeResponse(body: string, fileName: string): ModelMetadata
 	if (!Array.isArray(parsed)) {
 		return { sha256: null, sizeBytes: null };
 	}
-	let normalized = fileName;
-	try {
-		normalized = decodeURIComponent(fileName);
-	} catch {
-		void 0;
-	}
-	normalized = normalized.replace(/^\/+/, "");
+	const normalized = fileName.replace(/^\/+/, "");
 	const entries = parsed as Array<{ path?: string; lfs?: { oid?: string; size?: number } }>;
 	const entry =
 		entries.find((e) => e.path === normalized) ??
@@ -441,6 +435,7 @@ export interface PartMeta {
 }
 
 const META_SUFFIX = ".meta.json";
+const LEGACY_META_SUFFIX = ".part.meta.json";
 
 /**
  * Validates raw parsed JSON from `.part.meta.json` against the expected URL, total size,
@@ -495,12 +490,15 @@ export function remainingChunkIndices(meta: PartMeta): number[] {
  * Reads and parses `.part.meta.json` if present on disk, returning `null` on missing or corrupt files.
  */
 function readPartMeta(partPath: string): PartMeta | null {
-	try {
-		const raw: unknown = JSON.parse(fs.readFileSync(partPath + META_SUFFIX, "utf8"));
-		return raw as PartMeta;
-	} catch {
-		return null;
+	for (const suffix of [META_SUFFIX, LEGACY_META_SUFFIX]) {
+		try {
+			const raw: unknown = JSON.parse(fs.readFileSync(partPath + suffix, "utf8"));
+			return raw as PartMeta;
+		} catch {
+			void 0;
+		}
 	}
+	return null;
 }
 
 /**
