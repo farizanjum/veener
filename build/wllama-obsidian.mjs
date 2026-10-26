@@ -7,16 +7,27 @@ const UPSTREAM_WORKER_FACTORY = `var createWorker = (workerCode) => {
   return new Worker(workerURL, { type: "module" });
 };`;
 
-const OBSIDIAN_WORKER_FACTORY = `var createWorker = (workerCode) => {
+const OBSIDIAN_WORKER_FACTORY = `var toBase64Utf8 = (value) => {
+  if (typeof Buffer === "function") {
+    return Buffer.from(value, "utf8").toString("base64");
+  }
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 1) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+};
+var createWorker = (workerCode) => {
   if (!isString(workerCode)) {
     throw new Error("Obsidian worker factory requires inline source");
   }
-  const workerURL = "data:text/javascript;charset=utf-8," + encodeURIComponent(workerCode);
+  const workerURL = "data:text/javascript;base64," + toBase64Utf8(workerCode);
   return new Worker(workerURL, { type: "module" });
 };`;
 
 const UPSTREAM_INNER_WORKER = `if(typeof pthreadMainJs!="string"){pthreadMainJs=URL.createObjectURL(pthreadMainJs)}}worker=new Worker(pthreadMainJs,{workerData:"em-pthread",name:"em-pthread"});`;
-const OBSIDIAN_INNER_WORKER = `if(typeof pthreadMainJs!=="string"){throw new Error("Obsidian worker factory requires inline source");}}worker=ENVIRONMENT_IS_NODE?new Worker(pthreadMainJs,{eval:true,workerData:"em-pthread",name:"em-pthread"}):new Worker(new URL("data:text/javascript;charset=utf-8,"+encodeURIComponent(pthreadMainJs)),{workerData:"em-pthread",name:"em-pthread"});`;
+const OBSIDIAN_INNER_WORKER = `if(typeof pthreadMainJs!=="string"){throw new Error("Obsidian worker factory requires inline source");}}worker=ENVIRONMENT_IS_NODE?new Worker(pthreadMainJs,{eval:true,workerData:"em-pthread",name:"em-pthread"}):new Worker(new URL("data:text/javascript;base64,"+(typeof Buffer==="function"?Buffer.from(pthreadMainJs,"utf8").toString("base64"):btoa(Array.from(new TextEncoder().encode(pthreadMainJs),(b)=>String.fromCharCode(b)).join("")))),{workerData:"em-pthread",name:"em-pthread"});`;
 
 const UPSTREAM_MODULE_BLOB = `new Blob([moduleCode], { type: "text/javascript" })`;
 const OBSIDIAN_MODULE_BLOB = `moduleCode`;
