@@ -4,7 +4,9 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 const DEFAULT_ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const STRICT_SEMVER_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+/** Strict SemVer 2.0.0 validator rejecting leading-zero numeric identifiers while allowing prerelease and build metadata. */
+export const STRICT_SEMVER_RE =
+	/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
 const DESCRIPTION_CHARSET_RE = /^[A-Za-z0-9\s.,!?'"-]+$/;
 
 /**

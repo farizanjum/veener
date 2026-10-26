@@ -13,5 +13,6 @@ export interface PreflightResult {
 	bundleBytes: number;
 }
 
+export declare const STRICT_SEMVER_RE: RegExp;
 export declare function collectTsFiles(dirPath: string): string[];
 export declare function runObsidianPreflight(options?: PreflightOptions): PreflightResult;

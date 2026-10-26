@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { describe, expect, it, vi } from "vitest";
 import { FileSystemAdapter, MarkdownView, TFile, type App, type Command } from "obsidian";
+import { STRICT_SEMVER_RE } from "../build/obsidian-preflight.mjs";
 import VeneerPlugin from "../src/main";
 import { ProtectedRegistry } from "../src/registry";
 import { serializeFile, type PayloadV1 } from "../src/crypto/payload";
@@ -51,7 +52,7 @@ describe("Obsidian Community Plugin Store compliance", () => {
 		it("enforces manifest.json identity, version, authorUrl, and desktop-only flag", () => {
 			expect(manifest.id).toBe("veneer");
 			expect(manifest.name).toBe("Veneer");
-			expect(manifest.version).toMatch(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
+			expect(manifest.version).toMatch(STRICT_SEMVER_RE);
 			expect(manifest.authorUrl).toBe("https://github.com/farizanjum");
 			expect(manifest.isDesktopOnly).toBe(true);
 		});
