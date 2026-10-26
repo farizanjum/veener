@@ -615,7 +615,7 @@ describe("CI/CD workflows, Obsidian preflight, deterministic release packaging, 
 				"ref: ${{ inputs.tag != '' && format('refs/tags/{0}', inputs.tag) || github.ref }}",
 			);
 			expect(releaseYaml).toContain(
-				'if [[ ! "$RELEASE_TAG" =~ ^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then',
+				'if [[ ! "$RELEASE_TAG" =~ ^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?$ ]]; then',
 			);
 		});
 
