@@ -7,6 +7,16 @@ import { fileURLToPath } from "node:url";
 const DEFAULT_ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_SITE_DIR = path.join(DEFAULT_ROOT_DIR, "site");
 
+/** @type {Record<string, string>} */
+const REQUIRED_PAGE_TITLES = {
+	"/privacy": "Privacy Policy | Veneer for Obsidian",
+	"/privacy.html": "Privacy Policy | Veneer for Obsidian",
+	"/security": "Security Policy &amp; Cryptographic Specification | Veneer for Obsidian",
+	"/security.html": "Security Policy &amp; Cryptographic Specification | Veneer for Obsidian",
+	"/terms": "Terms &amp; Conditions | Veneer for Obsidian",
+	"/terms.html": "Terms &amp; Conditions | Veneer for Obsidian",
+};
+
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 /** @type {Record<string, string>} */
@@ -69,6 +79,10 @@ export function verifyHtmlSmoke(html, pagePath = "/") {
 	}
 	if (!html.includes("<title>") || !html.includes("Veneer")) {
 		errors.push(`${pagePath}: missing <title> containing "Veneer"`);
+	}
+	const expectedTitle = REQUIRED_PAGE_TITLES[pagePath];
+	if (expectedTitle && !html.includes(`<title>${expectedTitle}</title>`)) {
+		errors.push(`${pagePath}: response is not the required page`);
 	}
 
 	if (pagePath === "/" || pagePath === "/index.html") {
@@ -260,7 +274,20 @@ export async function runSiteSmokeCheck(options = {}) {
 		for (const pagePath of htmlPages) {
 			const url = `${targetBaseUrl}${pagePath}`;
 			try {
-				const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+				let res = await fetch(url, {
+					redirect: "manual",
+					signal: AbortSignal.timeout(timeoutMs),
+				});
+				if (
+					(res.status === 301 || res.status === 308) &&
+					pagePath.endsWith(".html") &&
+					res.headers.get("location") === pagePath.slice(0, -5)
+				) {
+					res = await fetch(`${targetBaseUrl}${pagePath.slice(0, -5)}`, {
+						redirect: "manual",
+						signal: AbortSignal.timeout(timeoutMs),
+					});
+				}
 				checkedPaths.push(pagePath);
 				if (res.status !== 200) {
 					errors.push(`${pagePath}: expected HTTP 200, got ${res.status}`);
