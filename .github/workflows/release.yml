@@ -1,0 +1,99 @@
+name: Obsidian Release & SLSA Provenance
+
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+      - "[0-9]+.[0-9]+.[0-9]+-*"
+      - "[0-9]+.[0-9]+.[0-9]+\\+*"
+      - "[0-9]+.[0-9]+.[0-9]+-*\\+*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "SemVer release tag (without 'v' prefix, matching manifest.json)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build, Attest SLSA Provenance & Publish Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.tag != '' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: Install deterministic dependencies
+        run: npm ci
+
+      - name: Run strict TypeScript typecheck
+        run: npm run typecheck
+
+      - name: Run Vitest unit and integration suite
+        run: npm test
+
+      - name: Build production Obsidian plugin bundle
+        run: npm run build
+
+      - name: Verify tag synchronization and package release artifacts
+        env:
+          RAW_INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          RELEASE_TAG="${RAW_INPUT_TAG:-$REF_NAME}"
+          if [[ ! "$RELEASE_TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Invalid SemVer release tag: $RELEASE_TAG"
+            exit 1
+          fi
+          node build/obsidian-preflight.mjs --require-dist --tag "$RELEASE_TAG"
+          node build/package-release.mjs --out-dir dist/release --tag "$RELEASE_TAG"
+          echo "RELEASE_TAG=$RELEASE_TAG" >> "$GITHUB_ENV"
+
+      - name: Generate SLSA build provenance attestations
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: |
+            dist/release/main.js
+            dist/release/manifest.json
+            dist/release/styles.css
+            dist/release/veneer-${{ env.RELEASE_TAG }}.zip
+
+      - name: Publish GitHub Release with Obsidian store assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ env.RELEASE_TAG }}
+        run: |
+          ASSETS=(
+            "dist/release/main.js"
+            "dist/release/manifest.json"
+            "dist/release/styles.css"
+            "dist/release/veneer-${TAG_NAME}.zip"
+            "dist/release/SHA256SUMS.txt"
+          )
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release upload "$TAG_NAME" "${ASSETS[@]}" --clobber
+          else
+            gh release create "$TAG_NAME" "${ASSETS[@]}" \
+              --verify-tag \
+              --title "$TAG_NAME" \
+              --generate-notes
+          fi

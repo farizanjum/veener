@@ -9,7 +9,11 @@
 		"dev": "node esbuild.config.mjs",
 		"build": "node esbuild.config.mjs production",
 		"typecheck": "tsc --noEmit",
-		"test": "vitest run"
+		"test": "vitest run",
+		"preflight": "node build/obsidian-preflight.mjs",
+		"preflight:dist": "node build/obsidian-preflight.mjs --require-dist",
+		"package:release": "node build/package-release.mjs",
+		"smoke:site": "node build/site-smoke-check.mjs"
 	},
 	"devDependencies": {
 		"@codemirror/state": "^6.5.0",
