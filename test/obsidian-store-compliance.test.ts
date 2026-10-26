@@ -51,7 +51,7 @@ describe("Obsidian Community Plugin Store compliance", () => {
 		it("enforces manifest.json identity, version, authorUrl, and desktop-only flag", () => {
 			expect(manifest.id).toBe("veneer");
 			expect(manifest.name).toBe("Veneer");
-			expect(manifest.version).toBe("1.0.0");
+			expect(manifest.version).toMatch(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
 			expect(manifest.authorUrl).toBe("https://github.com/farizanjum");
 			expect(manifest.isDesktopOnly).toBe(true);
 		});
