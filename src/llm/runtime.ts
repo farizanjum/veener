@@ -28,6 +28,25 @@ export function gpuLayersForModel(_sizeBytes: number): number {
 	return 0;
 }
 
+/** Context window size in tokens for wllama CPU fallback inference. */
+export const WLLAMA_CONTEXT_SIZE = 1024;
+
+/** Computes the optimal thread count for wllama based on `navigator.hardwareConcurrency` and `SharedArrayBuffer` support. */
+export function cpuThreadsForRuntime(
+	hardwareConcurrency: number | undefined = typeof navigator !== "undefined"
+		? navigator.hardwareConcurrency
+		: undefined,
+	sharedArrayBufferAvailable: boolean = typeof SharedArrayBuffer !== "undefined",
+): number {
+	if (!sharedArrayBufferAvailable) return 1;
+	const cores =
+		typeof hardwareConcurrency === "number" && Number.isFinite(hardwareConcurrency)
+			? Math.floor(hardwareConcurrency)
+			: 1;
+	if (cores <= 1) return 1;
+	return Math.min(8, Math.max(2, Math.floor(cores / 2)));
+}
+
 /** Error thrown when both wllama generation and subsequent worker cleanup fail. */
 class WllamaRecoveryError extends Error {
 	constructor(
@@ -278,8 +297,8 @@ export class WllamaRuntime implements LlmRuntime {
 			this.loadingEngine = engine;
 			try {
 				await engine.loadModel([modelBlob], {
-					n_ctx: 2048,
-					n_threads: 1,
+					n_ctx: WLLAMA_CONTEXT_SIZE,
+					n_threads: cpuThreadsForRuntime(),
 					n_gpu_layers: gpuLayers,
 					flash_attn: false,
 				});
@@ -317,7 +336,7 @@ export class WllamaRuntime implements LlmRuntime {
 					messages: [{ role: "user", content: prompt }],
 					max_tokens: maxTokens,
 					temperature: 0.8,
-					cache_prompt: false,
+					cache_prompt: true,
 					chat_template_kwargs: { enable_thinking: false },
 				});
 				return (response.choices[0]?.message.content ?? "").replace(/\s*[—–]\s*/gu, " - ");

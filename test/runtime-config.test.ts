@@ -63,10 +63,12 @@ vi.mock("@wllama/wllama/esm/index.js", () => ({
 }));
 
 import {
+	WLLAMA_CONTEXT_SIZE,
 	WLLAMA_WASM_SHA256,
 	WLLAMA_WASM_SIZE_BYTES,
 	WLLAMA_WASM_URLS,
 	WllamaRuntime,
+	cpuThreadsForRuntime,
 	gpuLayersForModel,
 } from "../src/llm/runtime";
 
@@ -77,6 +79,16 @@ describe("gpuLayersForModel", () => {
 
 	it("uses CPU for models that exceed a 2 GB adapter budget", () => {
 		expect(gpuLayersForModel(2_500_000_000)).toBe(0);
+	});
+});
+
+describe("cpuThreadsForRuntime", () => {
+	it("returns 1 when SharedArrayBuffer is unavailable or hardwareConcurrency is 1, and scales up to 8 otherwise", () => {
+		expect(cpuThreadsForRuntime(undefined, false)).toBe(1);
+		expect(cpuThreadsForRuntime(1, true)).toBe(1);
+		expect(cpuThreadsForRuntime(4, true)).toBe(2);
+		expect(cpuThreadsForRuntime(8, true)).toBe(4);
+		expect(cpuThreadsForRuntime(24, true)).toBe(8);
 	});
 });
 
@@ -476,5 +488,54 @@ describe("WllamaRuntime", () => {
 		expect(startModelDownloadMock).not.toHaveBeenCalled();
 		expect(wllamaConstructMock).not.toHaveBeenCalled();
 		expect(runtime.isReady()).toBe(false);
+	});
+
+	it("calls engine.loadModel with n_ctx: 1024 and n_threads: cpuThreadsForRuntime()", async () => {
+		const loadModelMock = vi.fn().mockResolvedValue(undefined);
+		wllamaConstructMock.mockReturnValue({
+			loadModel: loadModelMock,
+			exit: vi.fn().mockResolvedValue(undefined),
+			getChatTemplate: vi.fn().mockReturnValue(null),
+			createChatCompletion: vi.fn(),
+			createCompletion: vi.fn(),
+		});
+
+		const runtime = new WllamaRuntime("/tmp/model.gguf", "/tmp/wllama.wasm");
+		await runtime.ensureLoaded();
+
+		expect(WLLAMA_CONTEXT_SIZE).toBe(1024);
+		expect(loadModelMock).toHaveBeenCalledTimes(1);
+		expect(loadModelMock).toHaveBeenCalledWith(expect.any(Array), {
+			n_ctx: WLLAMA_CONTEXT_SIZE,
+			n_threads: cpuThreadsForRuntime(),
+			n_gpu_layers: 0,
+			flash_attn: false,
+		});
+	});
+
+	it("calls engine.createChatCompletion with cache_prompt: true when a chat template is present", async () => {
+		const createChatCompletionMock = vi.fn().mockResolvedValue({
+			choices: [{ message: { content: "generated cover — note" } }],
+		});
+		wllamaConstructMock.mockReturnValue({
+			loadModel: vi.fn().mockResolvedValue(undefined),
+			exit: vi.fn().mockResolvedValue(undefined),
+			getChatTemplate: vi.fn().mockReturnValue("{% for message in messages %}{{ message.content }}{% endfor %}"),
+			createChatCompletion: createChatCompletionMock,
+			createCompletion: vi.fn(),
+		});
+
+		const runtime = new WllamaRuntime("/tmp/model.gguf", "/tmp/wllama.wasm");
+		const output = await runtime.generate("Write a grocery list", 128);
+
+		expect(createChatCompletionMock).toHaveBeenCalledTimes(1);
+		expect(createChatCompletionMock).toHaveBeenCalledWith({
+			messages: [{ role: "user", content: "Write a grocery list" }],
+			max_tokens: 128,
+			temperature: 0.8,
+			cache_prompt: true,
+			chat_template_kwargs: { enable_thinking: false },
+		});
+		expect(output).toBe("generated cover - note");
 	});
 });
