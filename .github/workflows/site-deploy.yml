@@ -49,6 +49,7 @@ jobs:
 
       - name: Deploy static site to Vercel Preview
         id: deploy_preview
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         env:
           VERCEL_PREVIEW_TOKEN: ${{ secrets.VERCEL_PREVIEW_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
@@ -69,6 +70,7 @@ jobs:
           echo "preview_url=$PREVIEW_URL" >> "$GITHUB_OUTPUT"
 
       - name: Run remote smoke check against deployed Vercel Preview URL
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         env:
           PREVIEW_URL: ${{ steps.deploy_preview.outputs.preview_url }}
         run: |
