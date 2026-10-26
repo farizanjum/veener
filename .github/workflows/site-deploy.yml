@@ -2,16 +2,12 @@ name: Website Preview & Production Rollout
 
 on:
   pull_request:
-    branches:
-      - main
     paths:
       - "site/**"
       - "vercel.json"
       - "build/site-smoke-check.mjs"
       - ".github/workflows/site-deploy.yml"
   push:
-    branches:
-      - main
     paths:
       - "site/**"
       - "vercel.json"
@@ -26,17 +22,24 @@ concurrency:
   group: site-deploy-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
+env:
+  VERCEL_CLI_VERSION: "50.3.2"
+
 jobs:
-  preview-and-rollout:
-    name: Smoke Check & Vercel Preview-to-Production Rollout
+  preview-rollout:
+    name: Smoke Check & Vercel Preview Rollout (PR / Branch)
+    if: github.event_name == 'pull_request' || github.ref != 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    environment: preview
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Set up Node.js 22
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
           cache: "npm"
@@ -44,46 +47,91 @@ jobs:
       - name: Run local HTTP, OG image (1200x630), and mobile viewport smoke checks
         run: node build/site-smoke-check.mjs
 
-      - name: Deploy Vercel Preview and run live smoke checks (PR / Branch)
-        if: github.event_name == 'pull_request' || github.ref != 'refs/heads/main'
+      - name: Deploy static site to Vercel Preview
+        id: deploy_preview
         env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PREVIEW_TOKEN: ${{ secrets.VERCEL_PREVIEW_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
         run: |
-          if [ -z "$VERCEL_TOKEN" ] || [ -z "$VERCEL_ORG_ID" ] || [ -z "$VERCEL_PROJECT_ID" ]; then
-            echo "Vercel CLI secrets are not configured in GitHub Actions; preview deployment is handled by Vercel Git integration after local smoke verification."
-            exit 0
+          if [ -z "$VERCEL_PREVIEW_TOKEN" ] || [ -z "$VERCEL_ORG_ID" ] || [ -z "$VERCEL_PROJECT_ID" ]; then
+            echo "::error::Missing required preview secrets (VERCEL_PREVIEW_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID)"
+            exit 1
           fi
-          npx --yes vercel@latest pull --yes --environment=preview --token="$VERCEL_TOKEN"
-          npx --yes vercel@latest build --token="$VERCEL_TOKEN"
-          DEPLOY_OUT="$(npx --yes vercel@latest deploy --prebuilt --token="$VERCEL_TOKEN")"
+          cd "$RUNNER_TEMP"
+          DEPLOY_OUT="$(NPM_CONFIG_USERCONFIG=/dev/null npx --yes "vercel@${VERCEL_CLI_VERSION}" deploy "$GITHUB_WORKSPACE" --yes --scope="$VERCEL_ORG_ID" --token="$VERCEL_PREVIEW_TOKEN")"
           PREVIEW_URL="$(printf '%s\n' "$DEPLOY_OUT" | tail -n 1 | tr -d '[:space:]')"
           if [[ ! "$PREVIEW_URL" =~ ^https:// ]]; then
             echo "::error::Unexpected Vercel preview URL output: $PREVIEW_URL"
             exit 1
           fi
           echo "Deployed Vercel Preview URL: $PREVIEW_URL"
+          echo "preview_url=$PREVIEW_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Run remote smoke check against deployed Vercel Preview URL
+        env:
+          PREVIEW_URL: ${{ steps.deploy_preview.outputs.preview_url }}
+        run: |
           node build/site-smoke-check.mjs --url "$PREVIEW_URL"
 
-      - name: Deploy Vercel Production and verify rollout (main)
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+  production-rollout:
+    name: Stage, Smoke Check & Promote Production Rollout (main)
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Run local HTTP, OG image (1200x630), and mobile viewport smoke checks
+        run: node build/site-smoke-check.mjs
+
+      - name: Stage production deployment without assigning domains
+        id: stage_prod
         env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROD_TOKEN: ${{ secrets.VERCEL_PROD_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
         run: |
-          if [ -z "$VERCEL_TOKEN" ] || [ -z "$VERCEL_ORG_ID" ] || [ -z "$VERCEL_PROJECT_ID" ]; then
-            echo "Vercel CLI secrets are not configured in GitHub Actions; production deployment is handled by Vercel Git integration after local smoke verification."
-            exit 0
-          fi
-          npx --yes vercel@latest pull --yes --environment=production --token="$VERCEL_TOKEN"
-          npx --yes vercel@latest build --prod --token="$VERCEL_TOKEN"
-          DEPLOY_OUT="$(npx --yes vercel@latest deploy --prebuilt --prod --token="$VERCEL_TOKEN")"
-          PROD_URL="$(printf '%s\n' "$DEPLOY_OUT" | tail -n 1 | tr -d '[:space:]')"
-          if [[ ! "$PROD_URL" =~ ^https:// ]]; then
-            echo "::error::Unexpected Vercel production URL output: $PROD_URL"
+          if [ -z "$VERCEL_PROD_TOKEN" ] || [ -z "$VERCEL_ORG_ID" ] || [ -z "$VERCEL_PROJECT_ID" ]; then
+            echo "::error::Missing required production secrets (VERCEL_PROD_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID)"
             exit 1
           fi
-          echo "Deployed Vercel Production URL: $PROD_URL"
-          node build/site-smoke-check.mjs --url "$PROD_URL"
+          cd "$RUNNER_TEMP"
+          DEPLOY_OUT="$(NPM_CONFIG_USERCONFIG=/dev/null npx --yes "vercel@${VERCEL_CLI_VERSION}" deploy "$GITHUB_WORKSPACE" --prod --skip-domain --yes --scope="$VERCEL_ORG_ID" --token="$VERCEL_PROD_TOKEN")"
+          STAGED_URL="$(printf '%s\n' "$DEPLOY_OUT" | tail -n 1 | tr -d '[:space:]')"
+          if [[ ! "$STAGED_URL" =~ ^https:// ]]; then
+            echo "::error::Unexpected Vercel staged production URL output: $STAGED_URL"
+            exit 1
+          fi
+          echo "Staged Vercel Production URL: $STAGED_URL"
+          echo "staged_url=$STAGED_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke check staged production deployment before promoting
+        env:
+          STAGED_URL: ${{ steps.stage_prod.outputs.staged_url }}
+        run: |
+          node build/site-smoke-check.mjs --url "$STAGED_URL"
+
+      - name: Promote verified deployment to production domains
+        env:
+          VERCEL_PROD_TOKEN: ${{ secrets.VERCEL_PROD_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          STAGED_URL: ${{ steps.stage_prod.outputs.staged_url }}
+        run: |
+          cd "$RUNNER_TEMP"
+          NPM_CONFIG_USERCONFIG=/dev/null npx --yes "vercel@${VERCEL_CLI_VERSION}" promote "$STAGED_URL" --yes --scope="$VERCEL_ORG_ID" --token="$VERCEL_PROD_TOKEN"
+
+      - name: Verify live production domains
+        run: |
+          node build/site-smoke-check.mjs --url "https://veener.fariz.tech"
+          node build/site-smoke-check.mjs --url "https://veneer.fariz.tech"

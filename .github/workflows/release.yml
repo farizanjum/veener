@@ -30,15 +30,15 @@ jobs:
       attestations: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          persist-credentials: false
           ref: ${{ inputs.tag != '' && format('refs/tags/{0}', inputs.tag) || github.ref }}
 
       - name: Set up Node.js 22
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
-          cache: "npm"
 
       - name: Install deterministic dependencies
         run: npm ci
@@ -67,7 +67,7 @@ jobs:
           echo "RELEASE_TAG=$RELEASE_TAG" >> "$GITHUB_ENV"
 
       - name: Generate SLSA build provenance attestations
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-path: |
             dist/release/main.js

@@ -127,7 +127,7 @@ function extractWorkflowRunBlocks(yamlContent: string): string[] {
 		const prefixIndent = (runMatch[1] ?? "").length;
 		const inlineValue = (runMatch[2] ?? "").trim();
 
-		if (inlineValue === "|" || inlineValue === ">") {
+		if (/^[|>][+-]?\d*$/.test(inlineValue)) {
 			const blockLines: string[] = [];
 			for (let j = i + 1; j < lines.length; j += 1) {
 				const subLine = lines[j] ?? "";
@@ -162,25 +162,32 @@ afterEach(() => {
 
 describe("CI/CD workflows, Obsidian preflight, deterministic release packaging, and site smoke checks", () => {
 	describe("1. runObsidianPreflight", () => {
-		it("passes against the real repository root (requireDist: false, expectedTag: '1.0.0')", () => {
+		const REAL_VERSION = (
+			JSON.parse(fs.readFileSync(path.join(ROOT_DIR, "manifest.json"), "utf8")) as {
+				version: string;
+			}
+		).version;
+		const MISMATCHED_VERSION = `${REAL_VERSION}-mismatch`;
+
+		it("passes against the real repository root (requireDist: false, expectedTag: REAL_VERSION)", () => {
 			const result = runObsidianPreflight({
 				rootDir: ROOT_DIR,
 				requireDist: false,
-				expectedTag: "1.0.0",
+				expectedTag: REAL_VERSION,
 			});
 			expect(result.ok).toBe(true);
 			expect(result.errors).toEqual([]);
-			expect(result.version).toBe("1.0.0");
+			expect(result.version).toBe(REAL_VERSION);
 
 			const tsFiles = collectTsFiles(path.join(ROOT_DIR, "src"));
 			expect(tsFiles.length).toBeGreaterThan(10);
 		});
 
-		it("rejects a v-prefixed tag (expectedTag: 'v1.0.0') and a mismatched version tag (expectedTag: '2.0.0')", () => {
+		it("rejects a v-prefixed tag and a mismatched version tag", () => {
 			const vPrefixed = runObsidianPreflight({
 				rootDir: ROOT_DIR,
 				requireDist: false,
-				expectedTag: "v1.0.0",
+				expectedTag: `v${REAL_VERSION}`,
 			});
 			expect(vPrefixed.ok).toBe(false);
 			expect(vPrefixed.errors.some((e) => e.includes("must not start with 'v'"))).toBe(true);
@@ -188,12 +195,14 @@ describe("CI/CD workflows, Obsidian preflight, deterministic release packaging, 
 			const mismatched = runObsidianPreflight({
 				rootDir: ROOT_DIR,
 				requireDist: false,
-				expectedTag: "2.0.0",
+				expectedTag: MISMATCHED_VERSION,
 			});
 			expect(mismatched.ok).toBe(false);
 			expect(
 				mismatched.errors.some((e) =>
-					e.includes("Release tag '2.0.0' does not match manifest.json version '1.0.0'"),
+					e.includes(
+						`Release tag '${MISMATCHED_VERSION}' does not match manifest.json version '${REAL_VERSION}'`,
+					),
 				),
 			).toBe(true);
 
@@ -560,9 +569,16 @@ describe("CI/CD workflows, Obsidian preflight, deterministic release packaging, 
 			}>;
 		};
 
-		it("enforces top-level permissions: contents: read across all workflows", () => {
+		it("enforces top-level permissions: contents: read and pinned checkout/setup-node SHAs across all workflows", () => {
 			for (const yaml of [ciYaml, releaseYaml, siteDeployYaml]) {
 				expect(yaml).toMatch(/^permissions:\r?\n\s+contents:\s*read/m);
+				expect(yaml).toContain(
+					"actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+				);
+				expect(yaml).toContain("persist-credentials: false");
+				expect(yaml).toContain(
+					"actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
+				);
 			}
 		});
 
@@ -586,7 +602,10 @@ describe("CI/CD workflows, Obsidian preflight, deterministic release packaging, 
 			expect(releaseYaml).toContain("contents: write");
 			expect(releaseYaml).toContain("id-token: write");
 			expect(releaseYaml).toContain("attestations: write");
-			expect(releaseYaml).toContain("actions/attest-build-provenance@v2");
+			expect(releaseYaml).toContain(
+				"actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be",
+			);
+			expect(releaseYaml).toContain("persist-credentials: false");
 			expect(releaseYaml).toContain("dist/release/main.js");
 			expect(releaseYaml).toContain("dist/release/manifest.json");
 			expect(releaseYaml).toContain("dist/release/styles.css");
@@ -605,13 +624,17 @@ describe("CI/CD workflows, Obsidian preflight, deterministic release packaging, 
 			expect(siteDeployYaml).toContain(
 				"if: github.event_name == 'pull_request' || github.ref != 'refs/heads/main'",
 			);
-			expect(siteDeployYaml).toContain("--environment=preview");
+			expect(siteDeployYaml).toContain("VERCEL_PREVIEW_TOKEN");
+			expect(siteDeployYaml).toContain("VERCEL_PROD_TOKEN");
 			expect(siteDeployYaml).toContain('if [[ ! "$PREVIEW_URL" =~ ^https:// ]]; then');
 			expect(siteDeployYaml).toContain(
 				"if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'",
 			);
-			expect(siteDeployYaml).toContain("--environment=production");
-			expect(siteDeployYaml).toContain('if [[ ! "$PROD_URL" =~ ^https:// ]]; then');
+			expect(siteDeployYaml).toContain("--skip-domain");
+			expect(siteDeployYaml).toContain('if [[ ! "$STAGED_URL" =~ ^https:// ]]; then');
+			expect(siteDeployYaml).toContain('promote "$STAGED_URL"');
+			expect(siteDeployYaml).toContain("https://veener.fariz.tech");
+			expect(siteDeployYaml).toContain("https://veneer.fariz.tech");
 
 			expect(vercelConfig.outputDirectory).toBe("site");
 			expect(vercelConfig.cleanUrls).toBe(true);
