@@ -113,6 +113,58 @@ describe("CaptureBuffer", () => {
 		expect(buffer.isActive).toBe(false);
 		expect(buffer.currentSecret).toBe("");
 	});
+
+	it("updates trigger dynamically via a getter and resets partial progress when the trigger changes", () => {
+		let currentTrigger = ";;";
+		const buffer = new CaptureBuffer(() => currentTrigger);
+
+		expect(buffer.feed(";", true).swallowInserted).toBe(false);
+		const activatedInitial = buffer.feed(";", false);
+		expect(activatedInitial.swallowInserted).toBe(true);
+		expect(activatedInitial.deleteBefore).toBe(1);
+		expect(buffer.isActive).toBe(true);
+
+		buffer.cancel();
+		currentTrigger = "~~";
+		expect(buffer.feed(";", true).swallowInserted).toBe(false);
+		expect(buffer.feed(";", false).swallowInserted).toBe(false);
+		expect(buffer.isActive).toBe(false);
+
+		expect(buffer.feed("~", true).swallowInserted).toBe(false);
+		const activatedUpdated = buffer.feed("~", false);
+		expect(activatedUpdated.swallowInserted).toBe(true);
+		expect(activatedUpdated.deleteBefore).toBe(1);
+		expect(buffer.isActive).toBe(true);
+
+		buffer.cancel();
+		currentTrigger = ";;";
+		expect(buffer.feed(";", true).swallowInserted).toBe(false);
+		currentTrigger = "~~";
+		expect(buffer.feed("~", false).swallowInserted).toBe(false);
+		expect(buffer.isActive).toBe(false);
+	});
+
+	it("re-matches trigger prefix suffixes on character mismatch", () => {
+		const stepBuffer = new CaptureBuffer(";!");
+		expect(stepBuffer.feed(";", true).swallowInserted).toBe(false);
+		expect(stepBuffer.feed(";", false).swallowInserted).toBe(false);
+		const stepResult = stepBuffer.feed("!", false);
+		expect(stepResult.swallowInserted).toBe(true);
+		expect(stepResult.deleteBefore).toBe(1);
+		expect(stepBuffer.isActive).toBe(true);
+
+		const overlapBuffer = new CaptureBuffer("abac");
+		const overlapResult = overlapBuffer.feed("ababacsecret ", true);
+		expect(overlapResult.swallowInserted).toBe(true);
+		expect(overlapResult.events).toContainEqual({ type: "candidate", secret: "secret" });
+		expect(overlapBuffer.isActive).toBe(false);
+
+		const buffer = new CaptureBuffer("abac");
+		buffer.feed("aba", true);
+		const res = buffer.feed("bac", false);
+		expect(res.swallowInserted).toBe(true);
+		expect(res.deleteBefore).toBe(1);
+	});
 });
 
 describe("buildCaptureExtension hot-path transaction filtering", () => {
@@ -200,6 +252,45 @@ describe("buildCaptureExtension hot-path transaction filtering", () => {
 		await Promise.resolve();
 		expect(onCandidate).toHaveBeenCalledTimes(1);
 		expect(onCandidate).toHaveBeenCalledWith(mockSession, "secret");
+	});
+
+	it("swallows document-changing transactions while session.unlocking is true", () => {
+		const view = Object.create(MarkdownView.prototype) as MarkdownView;
+		const capture = new CaptureBuffer(";;");
+		const mockSession = {
+			view,
+			state: "locked",
+			lockingPromise: null,
+			unlocking: true,
+			capture,
+		} as unknown as ViewSession;
+
+		const state = EditorState.create({
+			doc: "hello world",
+			extensions: [
+				buildCaptureExtension({
+					resolveView: () => view,
+					getSession: () => mockSession,
+					lineStartOnly: () => true,
+					onCandidate: vi.fn(),
+					onProgress: vi.fn(),
+					onCaptureReset: vi.fn(),
+				}),
+			],
+		});
+
+		const typingTr = state.update({
+			changes: { from: 0, insert: "x" },
+			userEvent: "input.type",
+		});
+		expect(typingTr.state.doc.toString()).toBe("hello world");
+		expect(typingTr.docChanged).toBe(false);
+
+		const selectTr = state.update({
+			selection: { anchor: 5 },
+			userEvent: "select",
+		});
+		expect(selectTr.state.selection.main.anchor).toBe(5);
 	});
 });
 

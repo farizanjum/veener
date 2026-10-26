@@ -57,7 +57,7 @@ export function buildCaptureExtension(deps: CaptureDeps): Extension {
 		const view = deps.resolveView(tr.startState);
 		const session = view ? deps.getSession(view) : null;
 		if (!session) return tr;
-		if (session.lockingPromise !== null) {
+		if (session.lockingPromise !== null || session.unlocking) {
 			return tr.docChanged ? [] : tr;
 		}
 		if (session.state !== "locked") return tr;

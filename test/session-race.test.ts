@@ -1137,20 +1137,77 @@ describe("SessionManager race conditions (Issue #2)", () => {
 			() => ";;",
 			() => null,
 		);
+		const registerDekSpy = vi.spyOn(
+			sessions as unknown as {
+				registerOwnedDek: (dek: Uint8Array<ArrayBuffer>) => () => void;
+			},
+			"registerOwnedDek",
+		);
 		const session = sessions.attachFromLoad(harness.view, harness.file, parsed);
+		expect(session.unlocking).toBe(false);
 
 		// When: both unlock() calls are in flight at their unlockPayload await
 		const first = sessions.unlock(session, PASSWORD);
+		expect(session.unlocking).toBe(true);
 		const second = sessions.unlock(session, PASSWORD);
+		expect(session.unlocking).toBe(true);
 		const outcomes = await Promise.all([first, second]);
 
-		// Then: both report success, the winner's key survives, and only one unlock was announced
+		// Then: both report success, only one derivation ran, unlocking is reset, and only one unlock was announced
 		expect(outcomes).toEqual(["ok", "ok"]);
+		expect(session.unlocking).toBe(false);
+		expect(registerDekSpy).toHaveBeenCalledTimes(1);
 		expect(session.state).toBe("unlocked");
 		expect(session.killGeneration).toBe(0);
 		expect(session.dek).not.toBeNull();
 		expect(unlockedCalls).toBe(1);
 		expect(harness.getEditorText()).toBe(INITIAL_REAL);
+	});
+
+	it("resets session.unlocking to false after a failed unlock attempt", async () => {
+		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+		const parsed = parseFileContent(fileContent);
+		if (!parsed) throw new Error("Expected parsed payload");
+
+		const harness = createFakeHarness(DECOY);
+		const sessions = new SessionManager(
+			harness.app,
+			harness.hooks,
+			() => ";;",
+			() => null,
+		);
+		const session = sessions.attachFromLoad(harness.view, harness.file, parsed);
+		expect(session.unlocking).toBe(false);
+
+		const attempt = sessions.unlock(session, "wrong password");
+		expect(session.unlocking).toBe(true);
+		const outcome = await attempt;
+
+		expect(outcome).toBe("wrong");
+		expect(session.unlocking).toBe(false);
+		expect(session.state).toBe("locked");
+	});
+
+	it("cancels any partial capture buffer progress when unlock() begins", async () => {
+		const { fileContent } = await createFile(INITIAL_REAL, PASSWORD, DECOY);
+		const parsed = parseFileContent(fileContent);
+		if (!parsed) throw new Error("Expected parsed payload");
+
+		const harness = createFakeHarness(DECOY);
+		const sessions = new SessionManager(
+			harness.app,
+			harness.hooks,
+			() => ";;",
+			() => null,
+		);
+		const session = sessions.attachFromLoad(harness.view, harness.file, parsed);
+		session.capture.feed(";;partial", true);
+		expect(session.capture.isActive).toBe(true);
+
+		const unlockPromise = sessions.unlock(session, PASSWORD);
+		expect(session.capture.isActive).toBe(false);
+		expect(session.capture.capturedLength).toBe(0);
+		expect(await unlockPromise).toBe("ok");
 	});
 
 	it("hardKillAll detaches the killed session from its pane and path", async () => {

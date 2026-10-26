@@ -17,16 +17,20 @@ describe("patchWllamaWorkerSource", () => {
 	it("keeps module semantics while replacing Blob URLs with inline data URLs", () => {
 		const patched = patchWllamaWorkerSource(UPSTREAM_WORKER + "\n" + UPSTREAM_INNER_WORKER + "\n" + UPSTREAM_MODULE_BLOB);
 
-		expect(patched).toContain("encodeURIComponent(workerCode)");
+		expect(patched).toContain('"data:text/javascript;base64,"');
+		expect(patched).toContain('Buffer.from(value, "utf8").toString("base64")');
+		expect(patched).toContain('toBase64Utf8(workerCode)');
 		expect(patched).toContain('new Worker(workerURL, { type: "module" })');
 		expect(patched).not.toContain("URL.createObjectURL");
+		expect(patched).not.toContain("unescape");
 	});
 
 	it("transforms the inner pthread worker factory to branch on ENVIRONMENT_IS_NODE", () => {
 		const patched = patchWllamaWorkerSource(UPSTREAM_WORKER + "\n" + UPSTREAM_INNER_WORKER + "\n" + UPSTREAM_MODULE_BLOB);
 
-		expect(patched).toContain('ENVIRONMENT_IS_NODE?new Worker(pthreadMainJs,{eval:true,workerData:"em-pthread",name:"em-pthread"}):new Worker(new URL("data:text/javascript;charset=utf-8,"+encodeURIComponent(pthreadMainJs)),{workerData:"em-pthread",name:"em-pthread"})');
+		expect(patched).toContain('ENVIRONMENT_IS_NODE?new Worker(pthreadMainJs,{eval:true,workerData:"em-pthread",name:"em-pthread"}):new Worker(new URL("data:text/javascript;base64,"+(typeof Buffer==="function"?Buffer.from(pthreadMainJs,"utf8").toString("base64"):btoa(Array.from(new TextEncoder().encode(pthreadMainJs),(b)=>String.fromCharCode(b)).join("")))),{workerData:"em-pthread",name:"em-pthread"})');
 		expect(patched).not.toContain('URL.createObjectURL(pthreadMainJs)');
+		expect(patched).not.toContain("unescape");
 	});
 
 	it("transforms the moduleCode Blob creation to pass the raw string", () => {

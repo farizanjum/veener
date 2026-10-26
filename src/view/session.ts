@@ -44,6 +44,7 @@ export interface ViewSession {
 	readonly file: TFile;
 	state: "locked" | "unlocked";
 	lockingPromise: Promise<void> | null;
+	unlocking?: boolean;
 	killGeneration: number;
 	decoyBody: string;
 	originalPayload: PayloadV1;
@@ -197,6 +198,7 @@ export class SessionManager {
 	private readonly pendingLocks = new Set<ViewSession>();
 	private readonly lockTextObservers = new WeakMap<ViewSession, Set<(text: string) => void>>();
 	private readonly activeLockSnapshots = new WeakMap<ViewSession, string[]>();
+	private readonly activeUnlockPromises = new WeakMap<ViewSession, Promise<UnlockOutcome>>();
 	private readonly deferredSaves = new Map<string, Set<() => void>>();
 
 	/** Monotonic epoch fencing duress writes; `runReservedWrite` declines stale snapshots. */
@@ -1196,6 +1198,8 @@ export class SessionManager {
 
 			session.state = "locked";
 			session.lockingPromise = null;
+			session.unlocking = false;
+			this.activeUnlockPromises.delete(session);
 			this.runInternalSessionMutation(session, () => {
 				session.pendingPayload = null;
 			});
@@ -1992,13 +1996,14 @@ export class SessionManager {
 			file,
 			state: "locked" as "locked" | "unlocked",
 			lockingPromise: null as Promise<void> | null,
+			unlocking: false,
 			killGeneration: 0,
 			dek: null as Uint8Array<ArrayBuffer> | null,
 			realTitle: null as string | null,
 			imageUrls: new Map<string, string>(),
 			imageUrlsRevision: 0,
 			backoff: new BackoffTracker(),
-			capture: new CaptureBuffer(this.triggerPrefix()),
+			capture: new CaptureBuffer(this.triggerPrefix),
 			reencryptTimer: null as ReturnType<typeof window.setTimeout> | number | null,
 			reencryptSeq: 0,
 			reencryptPromise: null as Promise<void> | null,
@@ -2122,6 +2127,7 @@ export class SessionManager {
 				file,
 				state: "locked",
 				lockingPromise: null,
+				unlocking: false,
 				killGeneration: 1,
 				decoyBody: parsed.decoyBody,
 				originalPayload: parsed.payload,
@@ -2130,7 +2136,7 @@ export class SessionManager {
 				realTitle: null,
 				imageUrls: new Map<string, string>(),
 				backoff: new BackoffTracker(),
-				capture: new CaptureBuffer(this.triggerPrefix()),
+				capture: new CaptureBuffer(this.triggerPrefix),
 				reencryptTimer: null,
 				reencryptSeq: 0,
 				reencryptPromise: null,
@@ -2194,6 +2200,8 @@ export class SessionManager {
 			// an in-flight re-encrypt mid-write.
 			if (existing.lockingPromise === null) {
 				existing.killGeneration += 1;
+				existing.unlocking = false;
+				this.activeUnlockPromises.delete(existing);
 				if (existing.state === "unlocked") {
 					this.releaseOwnedDek(existing.dek);
 					existing.dek = null;
@@ -2312,6 +2320,8 @@ export class SessionManager {
 		this.revokeImageUrls(session);
 		session.state = "locked";
 		session.lockingPromise = null;
+		session.unlocking = false;
+		this.activeUnlockPromises.delete(session);
 		session.pendingPayload = null;
 		session.realTitle = null;
 		session.capture.cancel();
@@ -2628,6 +2638,10 @@ export class SessionManager {
 			return "blocked";
 		}
 		if (session.state === "unlocked") return "ok";
+		if (session.unlocking) {
+			const existingUnlock = this.activeUnlockPromises.get(session);
+			return existingUnlock ? await existingUnlock : "blocked";
+		}
 		const blockReason = this.unlockBlockReason();
 		if (blockReason !== null) {
 			this.hooks.onUnlockBlocked(blockReason);
@@ -2635,69 +2649,84 @@ export class SessionManager {
 		}
 		const now = Date.now();
 		if (!session.backoff.canAttempt(now)) return "backoff";
-		try {
-			const { realText, dek, images, realTitle } = await unlockPayload(session.originalPayload, password);
-			// Register immediately on continuation so any concurrent retirement/duress knows about it
-			const releaseDerivedDek = this.registerOwnedDek(dek);
-			// A concurrent unlock() may have won while we awaited derivation, or a mask
-			// may have started. Either way this derivation lost; zero only our freshly
-			// derived key so we never touch the winner's live key material.
-			const stateAfterDerivation = this.stateOf(session);
-			if (stateAfterDerivation === "unlocked" || session.lockingPromise !== null) {
-				releaseDerivedDek();
-				return stateAfterDerivation === "unlocked" && !this.isDisposed() ? "ok" : "blocked";
-			}
-			if (
-				this.isDisposed() ||
-				this.killEpoch !== startEpoch ||
-				session.killGeneration !== startGeneration ||
-				!this.isAttached(session) ||
-				session.view.file !== session.file ||
-				this.isPathReserved(session.file.path)
-			) {
-				releaseDerivedDek();
-				return "blocked";
-			}
-			session.backoff.recordSuccess();
-			if (session.dek && session.dek !== dek) {
-				this.releaseOwnedDek(session.dek);
-			}
-			session.dek = dek;
-			session.state = "unlocked";
-			session.realTitle = realTitle ?? session.file.basename;
-			session.pendingPayload = session.originalPayload;
-			this.revokeImageUrls(session);
-			this.populateImageUrls(session, images);
-			session.view.setViewData(realText, true);
-			this.applyDisplayedTitle(session, session.realTitle);
-			const unlockedGeneration = session.killGeneration;
-			const unlockedEpoch = this.killEpoch;
-			queueMicrotask(() => {
-				if (
-					!this.isDisposed() &&
-					this.killEpoch === unlockedEpoch &&
-					session.killGeneration === unlockedGeneration &&
-					this.isAttached(session) &&
-					session.view.file === session.file &&
-					session.state === "unlocked" &&
-					session.lockingPromise === null
-				) {
-					this.applyDisplayedTitle(session, session.realTitle ?? session.file.basename);
+		session.unlocking = true;
+		session.capture.cancel();
+		let unlockTask!: Promise<UnlockOutcome>;
+		unlockTask = (async (): Promise<UnlockOutcome> => {
+			try {
+				const { realText, dek, images, realTitle } = await unlockPayload(
+					session.originalPayload,
+					password,
+				);
+				const releaseDerivedDek = this.registerOwnedDek(dek);
+				const stateAfterDerivation = this.stateOf(session);
+				if (stateAfterDerivation === "unlocked" || session.lockingPromise !== null) {
+					releaseDerivedDek();
+					return stateAfterDerivation === "unlocked" && !this.isDisposed() ? "ok" : "blocked";
 				}
-			});
-			this.hooks.onUnlocked(session);
-			return "ok";
-		} catch {
-			if (
-				this.isDisposed() ||
-				this.killEpoch !== startEpoch ||
-				session.killGeneration !== startGeneration
-			) {
-				return "blocked";
+				if (
+					this.isDisposed() ||
+					this.killEpoch !== startEpoch ||
+					session.killGeneration !== startGeneration ||
+					!this.isAttached(session) ||
+					session.view.file !== session.file ||
+					this.isPathReserved(session.file.path)
+				) {
+					releaseDerivedDek();
+					return "blocked";
+				}
+				session.backoff.recordSuccess();
+				if (session.dek && session.dek !== dek) {
+					this.releaseOwnedDek(session.dek);
+				}
+				session.dek = dek;
+				session.unlocking = false;
+				if (this.activeUnlockPromises.get(session) === unlockTask) {
+					this.activeUnlockPromises.delete(session);
+				}
+				session.state = "unlocked";
+				session.realTitle = realTitle ?? session.file.basename;
+				session.pendingPayload = session.originalPayload;
+				this.revokeImageUrls(session);
+				this.populateImageUrls(session, images);
+				session.view.setViewData(realText, true);
+				this.applyDisplayedTitle(session, session.realTitle ?? session.file.basename);
+				const unlockedGeneration = session.killGeneration;
+				const unlockedEpoch = this.killEpoch;
+				queueMicrotask(() => {
+					if (
+						!this.isDisposed() &&
+						this.killEpoch === unlockedEpoch &&
+						session.killGeneration === unlockedGeneration &&
+						this.isAttached(session) &&
+						session.view.file === session.file &&
+						session.state === "unlocked" &&
+						session.lockingPromise === null
+					) {
+						this.applyDisplayedTitle(session, session.realTitle ?? session.file.basename);
+					}
+				});
+				this.hooks.onUnlocked(session);
+				return "ok";
+			} catch {
+				if (
+					this.isDisposed() ||
+					this.killEpoch !== startEpoch ||
+					session.killGeneration !== startGeneration
+				) {
+					return "blocked";
+				}
+				session.backoff.recordFailure(now);
+				return "wrong";
+			} finally {
+				if (this.activeUnlockPromises.get(session) === unlockTask) {
+					session.unlocking = false;
+					this.activeUnlockPromises.delete(session);
+				}
 			}
-			session.backoff.recordFailure(now);
-			return "wrong";
-		}
+		})();
+		this.activeUnlockPromises.set(session, unlockTask);
+		return await unlockTask;
 	}
 
 	/**
@@ -2978,6 +3007,8 @@ export class SessionManager {
 					this.revokeImageUrls(session);
 					session.state = "locked";
 					session.lockingPromise = null;
+					session.unlocking = false;
+					this.activeUnlockPromises.delete(session);
 					this.runInternalSessionMutation(session, () => {
 						session.pendingPayload = null;
 					});
@@ -3068,6 +3099,8 @@ export class SessionManager {
 			this.revokeImageUrls(session);
 			session.state = "locked";
 			session.lockingPromise = null;
+			session.unlocking = false;
+			this.activeUnlockPromises.delete(session);
 			session.pendingPayload = null;
 			session.capture.cancel();
 			session.reencryptSeq += 1;
