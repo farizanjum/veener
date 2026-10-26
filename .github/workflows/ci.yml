@@ -1,0 +1,53 @@
+name: Plugin CI Quality Gate
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  quality-gate:
+    name: Build, Test & Obsidian Scanner Preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install deterministic dependencies
+        run: npm ci
+
+      - name: Run strict TypeScript typecheck
+        run: npm run typecheck
+
+      - name: Run Vitest unit and integration suite
+        run: npm test
+
+      - name: Build production Obsidian plugin bundle
+        run: npm run build
+
+      - name: Run Obsidian Scanner preflight & bundle verification
+        run: npm run preflight:dist
+
+      - name: Verify deterministic release packaging
+        run: npm run package:release
+
+      - name: Run marketing site static & mobile smoke checks
+        run: npm run smoke:site
